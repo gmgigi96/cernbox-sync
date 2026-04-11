@@ -180,6 +180,12 @@ func scanLocal(root string) (map[string]*localInfo, error) {
 			rel = ""
 		}
 
+		// Skip the sync state DB — it lives inside the local root but must
+		// never be uploaded or treated as a sync-able file.
+		if rel == ".sync.db" {
+			return nil
+		}
+
 		info, err := d.Info()
 		if err != nil {
 			return err

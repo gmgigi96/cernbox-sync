@@ -7,17 +7,35 @@ Authentication is basic auth. The sync is always client-initiated.
 
 ```
 .
-├── main.go          — CLI entry-point (flag parsing, config assembly)
+├── main.go          — CLI entry-point: subcommand dispatch (add, list, remove, run)
+├── config/
+│   └── config.go    — Global config DB: registered sync folder pairs (Add, Get, All, Remove)
 ├── webdav/
 │   ├── types.go     — XML/response types: Multistatus, Response, Propstat, Props, Resource
 │   └── client.go    — WebDAV HTTP client: PROPFIND, GET, PUT, MKCOL, DELETE
 ├── db/
-│   └── db.go        — SQLite state store: Open, Get, All, Upsert, Delete
+│   └── db.go        — Per-folder SQLite state store: Open, Get, All, Upsert, Delete
 └── engine/
     └── engine.go    — Bidirectional sync algorithm: Run, scanRemote, scanLocal, classify, execute
 ```
 
 ## Packages
+
+### `config`
+
+Global application configuration store, backed by SQLite at `$XDG_CONFIG_HOME/cernbox-sync/config.db` (falls back to `~/.config/cernbox-sync/config.db`).
+
+Schema — one table `sync_folders`:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `name` | TEXT PK | User-chosen name for the sync pair |
+| `local_root` | TEXT | Absolute path of the local directory |
+| `remote_base` | TEXT | Full WebDAV URL of the remote directory |
+| `username` | TEXT | Basic-auth username |
+| `password` | TEXT | Basic-auth password |
+
+`DefaultPath()` resolves the DB path, creating the config directory if needed. `Add` inserts a new row (error on duplicate name). `All` returns all rows ordered by name. `Remove` deletes by name and returns an error if the name was not found.
 
 ### `webdav`
 
@@ -37,7 +55,7 @@ The fields extracted from every resource are: `ETag`, `Size`, `LastModified`, `F
 
 ### `db`
 
-SQLite-backed state store using `modernc.org/sqlite` (pure Go, no CGo).
+Per-folder SQLite-backed state store using `modernc.org/sqlite` (pure Go, no CGo). One DB file lives at `<local_root>/.sync.db` for each registered sync pair.
 
 Schema — one table `sync_state`:
 
@@ -78,7 +96,7 @@ Using Depth 1 (rather than Infinity) avoids oversized responses on servers that 
 
 **Phase 2 — Local scan (`scanLocal`)**
 
-`filepath.WalkDir` over `LocalRoot`. All paths are converted to forward-slash and made relative to `LocalRoot`. Returns `map[relativePath]*localInfo` where `localInfo` holds absolute path, size, mtime, isDir.
+`filepath.WalkDir` over `LocalRoot`. All paths are converted to forward-slash and made relative to `LocalRoot`. Returns `map[relativePath]*localInfo` where `localInfo` holds absolute path, size, mtime, isDir. `.sync.db` is unconditionally excluded so the per-folder state file is never uploaded or tracked.
 
 **Phase 3 — Load DB (`db.All`)**
 
@@ -120,29 +138,48 @@ Downloads use an atomic write: content is streamed to a `.tmp-sync-*` temp file 
 ## CLI
 
 ```
-go build -o syncclient .
-
-./syncclient \
-  -local  /path/to/local/dir \
-  -remote "https://cernbox.cern.ch/remote.php/dav/spaces/<space-id>/Documents" \
-  -user   <username> \
-  -pass   <password> \
-  [-db    /path/to/state.db]
+go build -o cernbox-sync .
 ```
 
-The DB defaults to `<local>/.sync.db`.
+### Register a sync folder pair
 
-## Dependencies
+```
+./cernbox-sync add \
+  -name    documents \
+  -local   /path/to/local/dir \
+  -remote  "https://cernbox.cern.ch/remote.php/dav/spaces/<space-id>/Documents" \
+  -user    <username> \
+  -pass    <password>
+```
 
-| Module | Purpose |
-|---|---|
-| `modernc.org/sqlite` | Pure-Go SQLite driver (no CGo) |
-| `golang.org/x/net` | Pulled in transitively |
+### List registered pairs
+
+```
+./cernbox-sync list
+```
+
+### Run a sync cycle
+
+```
+# All registered pairs
+./cernbox-sync run
+
+# One specific pair
+./cernbox-sync run -name documents
+```
+
+### Remove a pair
+
+```
+./cernbox-sync remove -name documents
+```
+
+Global config is stored in `$XDG_CONFIG_HOME/cernbox-sync/config.db` (default: `~/.config/cernbox-sync/config.db`). The per-folder sync state DB is always `<local_root>/.sync.db`.
 
 ## Known limitations / future work
 
 - No incremental remote scan: the entire remote tree is fetched every sync cycle. An optimisation would be to check only the root ETag first and skip the full scan if it has not changed since the last run.
 - Conflict resolution is hard-coded to "server wins". A pluggable strategy would be cleaner.
-- Basic auth credentials are passed on the command line (visible in `ps`). A secrets manager or keyring integration would be safer for production use.
+- Basic auth credentials are stored in plaintext in the global config DB. A secrets manager or keyring integration would be safer for production use.
 - No concurrency: uploads and downloads happen serially. A worker-pool over the action list would speed up syncs with many small files.
-- The `.sync.db` file is stored inside the sync root, so it appears as an untracked local file. It should be excluded from the local scan.
+- Multiple sync pairs registered with `run` (no `-name`) are executed sequentially; running them in parallel would reduce total wall-clock time.
