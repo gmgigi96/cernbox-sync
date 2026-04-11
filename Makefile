@@ -21,6 +21,9 @@ daemon: ## Build the background daemon (cernbox-syncd)
 test: ## Run all tests
 	$(GO) test ./...
 
+fmt: ## Format code
+	$(GO) fmt ./...
+
 clean: ## Remove built binaries
 	$(GO) clean
 	rm -f $(CLI) $(DAEMON)
