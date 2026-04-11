@@ -23,12 +23,14 @@ Usage:
   cernbox-sync <command> [flags]
 
 Commands:
-  add     Register a new sync folder pair
-  list    List registered sync folder pairs
-  remove  Remove a registered sync folder pair
-  run     Trigger a sync cycle in the daemon (non-blocking)
-  status  Show the daemon's current sync status
-  stop    Ask the daemon to shut down
+  add           Register a new sync folder pair
+  list          List registered sync folder pairs
+  remove        Remove a registered sync folder pair
+  run           Trigger a sync cycle in the daemon (non-blocking)
+  status        Show the daemon's current sync status
+  stop          Ask the daemon to shut down
+  set-settings  Configure daemon settings (e.g. log rotation)
+  get-settings  Show current daemon settings
 
 The cernbox-syncd daemon must be running for these commands to work.
 Start it with: cernbox-syncd [-interval 5m]
@@ -58,6 +60,10 @@ func main() {
 		cmdStatus(os.Args[2:])
 	case "stop":
 		cmdStop(os.Args[2:])
+	case "set-settings":
+		cmdSetSettings(os.Args[2:])
+	case "get-settings":
+		cmdGetSettings(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(1)
@@ -206,4 +212,32 @@ func cmdStop(args []string) {
 
 	send(ipc.Request{Cmd: ipc.CmdStop})
 	fmt.Println("Daemon stopped")
+}
+
+// ── set-settings ─────────────────────────────────────────────────────────────
+
+func cmdSetSettings(args []string) {
+	fs := flag.NewFlagSet("set-settings", flag.ExitOnError)
+	maxAge := fs.String("log-max-age", "", "Maximum age of per-folder log entries (e.g. 168h, 720h). Empty string disables rotation.")
+	fs.Parse(args)
+
+	send(ipc.Request{
+		Cmd:      ipc.CmdSetSettings,
+		Settings: ipc.SettingsPayload{LogRotateMaxAge: *maxAge},
+	})
+	fmt.Println("Settings updated")
+}
+
+// ── get-settings ─────────────────────────────────────────────────────────────
+
+func cmdGetSettings(args []string) {
+	fs := flag.NewFlagSet("get-settings", flag.ExitOnError)
+	fs.Parse(args)
+
+	resp := send(ipc.Request{Cmd: ipc.CmdGetSettings})
+	if resp.Settings == nil || resp.Settings.LogRotateMaxAge == "" {
+		fmt.Println("log-max-age: (disabled)")
+	} else {
+		fmt.Printf("log-max-age: %s\n", resp.Settings.LogRotateMaxAge)
+	}
 }

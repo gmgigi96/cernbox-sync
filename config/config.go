@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -21,7 +22,18 @@ CREATE TABLE IF NOT EXISTS sync_folders (
     password    TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (name)
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 `
+
+// Setting keys stored in the settings table.
+const (
+	// KeyLogRotateMaxAge holds the maximum age of log entries as a
+	// Go duration string (e.g. "30d", "168h"). Empty string means no rotation.
+	KeyLogRotateMaxAge = "log_rotate_max_age"
+)
 
 // Folder represents one registered sync pair.
 type Folder struct {
@@ -130,6 +142,63 @@ func (d *DB) Remove(name string) error {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("folder %q not found", name)
+	}
+	return nil
+}
+
+// ── settings ──────────────────────────────────────────────────────────────────
+
+// Settings holds global daemon settings.
+type Settings struct {
+	// LogRotateMaxAge is the maximum age of entries kept in per-folder sync
+	// logs. Entries older than this are removed when Rotate is called at the
+	// start of each sync cycle. Zero means no rotation.
+	LogRotateMaxAge time.Duration
+}
+
+// GetSettings reads the current settings from the DB, returning defaults for
+// any key that has not been explicitly set.
+func (d *DB) GetSettings() (Settings, error) {
+	rows, err := d.conn.Query(`SELECT key, value FROM settings`)
+	if err != nil {
+		return Settings{}, fmt.Errorf("get settings: %w", err)
+	}
+	defer rows.Close()
+
+	var s Settings
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return Settings{}, err
+		}
+		switch key {
+		case KeyLogRotateMaxAge:
+			if value != "" {
+				d, err := time.ParseDuration(value)
+				if err != nil {
+					return Settings{}, fmt.Errorf("invalid %s %q: %w", KeyLogRotateMaxAge, value, err)
+				}
+				s.LogRotateMaxAge = d
+			}
+		}
+	}
+	return s, rows.Err()
+}
+
+// SetSettings persists the given settings to the DB, overwriting any
+// previously stored values.
+func (d *DB) SetSettings(s Settings) error {
+	maxAge := ""
+	if s.LogRotateMaxAge > 0 {
+		maxAge = s.LogRotateMaxAge.String()
+	}
+	_, err := d.conn.Exec(
+		`INSERT INTO settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		KeyLogRotateMaxAge, maxAge,
+	)
+	if err != nil {
+		return fmt.Errorf("set settings: %w", err)
 	}
 	return nil
 }

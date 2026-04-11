@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/gmgigi96/cernbox-sync/db"
+	"github.com/gmgigi96/cernbox-sync/synclog"
 	"github.com/gmgigi96/cernbox-sync/webdav"
 )
 
@@ -43,6 +44,9 @@ type Config struct {
 	Password string
 	// DBPath is the path to the SQLite state database.
 	DBPath string
+	// FolderLog is the per-folder logger. When non-nil, sync actions are
+	// written to it in addition to the global logger.
+	FolderLog *synclog.Logger
 }
 
 // action classifies what needs to happen to a path.
@@ -73,9 +77,17 @@ type localInfo struct {
 	isDir   bool
 }
 
+// logf writes to both the global logger and, when set, the per-folder logger.
+func logf(fl *synclog.Logger, format string, args ...any) {
+	log.Printf(format, args...)
+	if fl != nil {
+		fl.Printf(format, args...)
+	}
+}
+
 // Run executes one full sync cycle.
 func Run(cfg Config) error {
-	log.Printf("[sync] starting — local: %s  remote: %s", cfg.LocalRoot, cfg.RemoteBase)
+	logf(cfg.FolderLog, "[sync] starting — local: %s  remote: %s", cfg.LocalRoot, cfg.RemoteBase)
 
 	wdc := webdav.NewClient(cfg.RemoteBase, cfg.Username, cfg.Password)
 
@@ -90,32 +102,32 @@ func Run(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("remote scan: %w", err)
 	}
-	log.Printf("[sync] remote resources: %d", len(remoteMap))
+	logf(cfg.FolderLog, "[sync] remote resources: %d", len(remoteMap))
 
 	// ── 2. Local scan ────────────────────────────────────────────────────────
 	localMap, err := scanLocal(cfg.LocalRoot)
 	if err != nil {
 		return fmt.Errorf("local scan: %w", err)
 	}
-	log.Printf("[sync] local resources: %d", len(localMap))
+	logf(cfg.FolderLog, "[sync] local resources: %d", len(localMap))
 
 	// ── 3. Load DB state ─────────────────────────────────────────────────────
 	dbState, err := state.All()
 	if err != nil {
 		return fmt.Errorf("load db: %w", err)
 	}
-	log.Printf("[sync] db entries: %d", len(dbState))
+	logf(cfg.FolderLog, "[sync] db entries: %d", len(dbState))
 
 	// ── 4. Classify ──────────────────────────────────────────────────────────
 	actions := classify(remoteMap, localMap, dbState)
-	log.Printf("[sync] actions: %d", len(actions))
+	logf(cfg.FolderLog, "[sync] actions: %d", len(actions))
 
 	// ── 5. Execute ───────────────────────────────────────────────────────────
-	if err := execute(cfg.LocalRoot, wdc, state, actions); err != nil {
+	if err := execute(cfg.LocalRoot, cfg.FolderLog, wdc, state, actions); err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}
 
-	log.Printf("[sync] done")
+	logf(cfg.FolderLog, "[sync] done")
 	return nil
 }
 
@@ -180,9 +192,9 @@ func scanLocal(root string) (map[string]*localInfo, error) {
 			rel = ""
 		}
 
-		// Skip the sync state DB — it lives inside the local root but must
-		// never be uploaded or treated as a sync-able file.
-		if rel == ".sync.db" {
+		// Skip internal files — they live inside the local root but must
+		// never be uploaded or treated as sync-able files.
+		if rel == ".sync.db" || rel == ".sync.log" {
 			return nil
 		}
 
@@ -359,14 +371,15 @@ func depth(p string) int         { return strings.Count(p, "/") }
 
 func execute(
 	localRoot string,
+	fl *synclog.Logger,
 	wdc *webdav.Client,
 	state *db.DB,
 	actions []action,
 ) error {
 	for _, a := range actions {
-		if err := execOne(localRoot, wdc, state, a); err != nil {
+		if err := execOne(localRoot, fl, wdc, state, a); err != nil {
 			// Log and continue — partial sync is better than aborting entirely.
-			log.Printf("[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
+			logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
 		}
 	}
 	return nil
@@ -374,6 +387,7 @@ func execute(
 
 func execOne(
 	localRoot string,
+	fl *synclog.Logger,
 	wdc *webdav.Client,
 	state *db.DB,
 	a action,
@@ -383,7 +397,7 @@ func execOne(
 	switch a.kind {
 
 	case mkdirLocal:
-		log.Printf("[sync] mkdir local  %q", a.path)
+		logf(fl, "[sync] mkdir local  %q", a.path)
 		if err := os.MkdirAll(localAbs, 0o755); err != nil {
 			return err
 		}
@@ -396,7 +410,7 @@ func execOne(
 		})
 
 	case download:
-		log.Printf("[sync] download     %q", a.path)
+		logf(fl, "[sync] download     %q", a.path)
 		if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
 			return err
 		}
@@ -433,7 +447,7 @@ func execOne(
 		})
 
 	case mkcolRemote:
-		log.Printf("[sync] mkcol remote %q", a.path)
+		logf(fl, "[sync] mkcol remote %q", a.path)
 		if err := wdc.Mkcol(a.path); err != nil {
 			return err
 		}
@@ -453,7 +467,7 @@ func execOne(
 		})
 
 	case upload:
-		log.Printf("[sync] upload       %q", a.path)
+		logf(fl, "[sync] upload       %q", a.path)
 		f, err := os.Open(localAbs)
 		if err != nil {
 			return err
@@ -483,7 +497,7 @@ func execOne(
 		})
 
 	case deleteLocal:
-		log.Printf("[sync] delete local %q", a.path)
+		logf(fl, "[sync] delete local %q", a.path)
 		var err error
 		if a.isDir {
 			err = os.RemoveAll(localAbs)
@@ -496,7 +510,7 @@ func execOne(
 		return state.Delete(a.path)
 
 	case deleteRemote:
-		log.Printf("[sync] delete remote %q", a.path)
+		logf(fl, "[sync] delete remote %q", a.path)
 		if err := wdc.Delete(a.path); err != nil {
 			return err
 		}
@@ -505,13 +519,13 @@ func execOne(
 	case conflictTake:
 		// Rename local copy, then download server version.
 		conflictPath := conflictName(localAbs)
-		log.Printf("[sync] conflict     %q — renaming local to %s", a.path, filepath.Base(conflictPath))
+		logf(fl, "[sync] conflict     %q — renaming local to %s", a.path, filepath.Base(conflictPath))
 		if err := os.Rename(localAbs, conflictPath); err != nil {
 			return fmt.Errorf("rename conflict copy: %w", err)
 		}
 		// Now download the server version as if it were a fresh download.
 		a.kind = download
-		return execOne(localRoot, wdc, state, a)
+		return execOne(localRoot, fl, wdc, state, a)
 	}
 
 	return nil

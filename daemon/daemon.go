@@ -19,6 +19,7 @@ import (
 	"github.com/gmgigi96/cernbox-sync/config"
 	"github.com/gmgigi96/cernbox-sync/engine"
 	"github.com/gmgigi96/cernbox-sync/ipc"
+	"github.com/gmgigi96/cernbox-sync/synclog"
 )
 
 // Daemon runs sync cycles on a schedule and serves IPC requests.
@@ -32,6 +33,8 @@ type Daemon struct {
 	mu       sync.Mutex
 	syncing  map[string]bool      // folders currently being synced
 	lastSync map[string]time.Time // time of last successful sync per folder
+
+	logRotateMaxAge time.Duration // 0 means no rotation; loaded from settings at startup
 }
 
 // New creates a new Daemon. interval controls how often all registered folders
@@ -49,6 +52,13 @@ func New(cfgDB *config.DB, interval time.Duration) *Daemon {
 // periodic sync loop, and serves IPC connections until ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	ctx, d.cancel = context.WithCancel(ctx)
+
+	// Load settings (best-effort; non-fatal if table is missing on old DBs).
+	if s, err := d.cfgDB.GetSettings(); err != nil {
+		log.Printf("[daemon] load settings: %v", err)
+	} else {
+		d.logRotateMaxAge = s.LogRotateMaxAge
+	}
 
 	// Remove stale socket from a previous (crashed) run.
 	os.Remove(sockPath)
@@ -132,15 +142,30 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		d.mu.Unlock()
 	}()
 
+	// Open per-folder log; rotate stale entries before the new cycle.
+	fl, err := synclog.Open(f.LocalRoot, d.logRotateMaxAge)
+	if err != nil {
+		log.Printf("[daemon] open folder log for %q: %v", f.Name, err)
+	} else {
+		if err := fl.Rotate(); err != nil {
+			log.Printf("[daemon] rotate folder log for %q: %v", f.Name, err)
+		}
+		defer fl.Close()
+	}
+
 	cfg := engine.Config{
 		LocalRoot:  f.LocalRoot,
 		RemoteBase: f.RemoteBase,
 		Username:   f.Username,
 		Password:   f.Password,
 		DBPath:     filepath.Join(f.LocalRoot, ".sync.db"),
+		FolderLog:  fl,
 	}
 	if err := engine.Run(cfg); err != nil {
 		log.Printf("[daemon] sync %q: %v", f.Name, err)
+		if fl != nil {
+			fl.Printf("[sync] ERROR: %v", err)
+		}
 	}
 }
 
@@ -242,6 +267,34 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 	case ipc.CmdStop:
 		// cancel() is called in handleConn after the response is sent.
 		return ok()
+
+	case ipc.CmdSetSettings:
+		s := config.Settings{}
+		if req.Settings.LogRotateMaxAge != "" {
+			dur, err := time.ParseDuration(req.Settings.LogRotateMaxAge)
+			if err != nil {
+				return fail("invalid log_rotate_max_age: " + err.Error())
+			}
+			s.LogRotateMaxAge = dur
+		}
+		if err := d.cfgDB.SetSettings(s); err != nil {
+			return fail(err.Error())
+		}
+		d.mu.Lock()
+		d.logRotateMaxAge = s.LogRotateMaxAge
+		d.mu.Unlock()
+		return ok()
+
+	case ipc.CmdGetSettings:
+		s, err := d.cfgDB.GetSettings()
+		if err != nil {
+			return fail(err.Error())
+		}
+		payload := ipc.SettingsPayload{}
+		if s.LogRotateMaxAge > 0 {
+			payload.LogRotateMaxAge = s.LogRotateMaxAge.String()
+		}
+		return ipc.Response{OK: true, Settings: &payload}
 
 	default:
 		return fail(fmt.Sprintf("unknown command %q", req.Cmd))
