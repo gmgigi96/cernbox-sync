@@ -14,11 +14,11 @@ Communication between the two uses a Unix domain socket (JSON over IPC).
 ## Building
 
 ```sh
-# CLI client
-go build -o cernbox-sync .
-
-# Daemon
-go build -o cernbox-syncd ./cmd/cernbox-syncd
+make          # build both binaries (cernbox-sync and cernbox-syncd)
+make cli      # build CLI only
+make daemon   # build daemon only
+make test     # run tests
+make clean    # remove built binaries
 ```
 
 ## Usage
