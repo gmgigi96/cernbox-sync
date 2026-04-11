@@ -1,0 +1,14 @@
+# Binary
+syncclient
+
+# Sync database
+*.db
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+
+# Go workspace
+go.work
+go.work.sum
