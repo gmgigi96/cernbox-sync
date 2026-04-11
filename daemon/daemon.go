@@ -1,0 +1,252 @@
+// Package daemon implements the cernbox-sync background daemon.
+//
+// The daemon owns the configuration database, runs sync cycles on a
+// configurable interval, and accepts IPC connections from CLI clients on a
+// Unix domain socket.
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/gmgigi96/cernbox-sync/config"
+	"github.com/gmgigi96/cernbox-sync/engine"
+	"github.com/gmgigi96/cernbox-sync/ipc"
+)
+
+// Daemon runs sync cycles on a schedule and serves IPC requests.
+type Daemon struct {
+	cfgDB    *config.DB
+	interval time.Duration
+
+	// cancel is set by Run; calling it shuts the daemon down.
+	cancel context.CancelFunc
+
+	mu       sync.Mutex
+	syncing  map[string]bool      // folders currently being synced
+	lastSync map[string]time.Time // time of last successful sync per folder
+}
+
+// New creates a new Daemon. interval controls how often all registered folders
+// are synced automatically.
+func New(cfgDB *config.DB, interval time.Duration) *Daemon {
+	return &Daemon{
+		cfgDB:    cfgDB,
+		interval: interval,
+		syncing:  make(map[string]bool),
+		lastSync: make(map[string]time.Time),
+	}
+}
+
+// Run starts the daemon: removes any stale socket, binds sockPath, runs the
+// periodic sync loop, and serves IPC connections until ctx is cancelled.
+func (d *Daemon) Run(ctx context.Context, sockPath string) error {
+	ctx, d.cancel = context.WithCancel(ctx)
+
+	// Remove stale socket from a previous (crashed) run.
+	os.Remove(sockPath)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", sockPath, err)
+	}
+
+	log.Printf("[daemon] listening on %s", sockPath)
+	log.Printf("[daemon] sync interval: %s", d.interval)
+
+	// Periodic sync loop.
+	go d.syncLoop(ctx)
+
+	// Accept IPC connections.
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					// Listener was closed intentionally — exit silently.
+				default:
+					log.Printf("[daemon] accept: %v", err)
+				}
+				return
+			}
+			go d.handleConn(conn)
+		}
+	}()
+
+	<-ctx.Done()
+	ln.Close()
+	os.Remove(sockPath)
+	log.Printf("[daemon] stopped")
+	return nil
+}
+
+// ── sync loop ─────────────────────────────────────────────────────────────────
+
+func (d *Daemon) syncLoop(ctx context.Context) {
+	d.syncAll() // run immediately on startup
+
+	t := time.NewTicker(d.interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			d.syncAll()
+		}
+	}
+}
+
+func (d *Daemon) syncAll() {
+	folders, err := d.cfgDB.All()
+	if err != nil {
+		log.Printf("[daemon] list folders: %v", err)
+		return
+	}
+	for _, f := range folders {
+		d.syncFolder(f)
+	}
+}
+
+func (d *Daemon) syncFolder(f config.Folder) {
+	d.mu.Lock()
+	if d.syncing[f.Name] {
+		d.mu.Unlock()
+		log.Printf("[daemon] %q already syncing, skipping", f.Name)
+		return
+	}
+	d.syncing[f.Name] = true
+	d.mu.Unlock()
+
+	defer func() {
+		d.mu.Lock()
+		delete(d.syncing, f.Name)
+		d.lastSync[f.Name] = time.Now()
+		d.mu.Unlock()
+	}()
+
+	cfg := engine.Config{
+		LocalRoot:  f.LocalRoot,
+		RemoteBase: f.RemoteBase,
+		Username:   f.Username,
+		Password:   f.Password,
+		DBPath:     filepath.Join(f.LocalRoot, ".sync.db"),
+	}
+	if err := engine.Run(cfg); err != nil {
+		log.Printf("[daemon] sync %q: %v", f.Name, err)
+	}
+}
+
+// ── IPC handling ──────────────────────────────────────────────────────────────
+
+func (d *Daemon) handleConn(conn net.Conn) {
+	defer conn.Close()
+
+	var req ipc.Request
+	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		log.Printf("[daemon] decode request: %v", err)
+		return
+	}
+
+	resp := d.dispatch(req)
+	if err := json.NewEncoder(conn).Encode(resp); err != nil {
+		log.Printf("[daemon] encode response: %v", err)
+		return
+	}
+
+	// Trigger stop after the response has been flushed.
+	if req.Cmd == ipc.CmdStop && resp.OK {
+		d.cancel()
+	}
+}
+
+func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
+	switch req.Cmd {
+
+	case ipc.CmdAdd:
+		abs, err := filepath.Abs(req.Folder.LocalRoot)
+		if err != nil {
+			return fail("invalid local path: " + err.Error())
+		}
+		if err := os.MkdirAll(abs, 0o755); err != nil {
+			return fail("cannot create local dir: " + err.Error())
+		}
+		req.Folder.LocalRoot = abs
+		if err := d.cfgDB.Add(req.Folder); err != nil {
+			return fail(err.Error())
+		}
+		return ok()
+
+	case ipc.CmdList:
+		folders, err := d.cfgDB.All()
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ipc.Response{OK: true, Folders: folders}
+
+	case ipc.CmdRemove:
+		if err := d.cfgDB.Remove(req.Name); err != nil {
+			return fail(err.Error())
+		}
+		return ok()
+
+	case ipc.CmdSync:
+		var folders []config.Folder
+		if req.Name != "" {
+			f, err := d.cfgDB.Get(req.Name)
+			if err != nil {
+				return fail(err.Error())
+			}
+			if f == nil {
+				return fail(fmt.Sprintf("folder %q not found", req.Name))
+			}
+			folders = []config.Folder{*f}
+		} else {
+			var err error
+			folders, err = d.cfgDB.All()
+			if err != nil {
+				return fail(err.Error())
+			}
+			if len(folders) == 0 {
+				return fail("no sync folders registered; use 'cernbox-sync add' to add one")
+			}
+		}
+		for _, f := range folders {
+			go d.syncFolder(f)
+		}
+		return ok()
+
+	case ipc.CmdStatus:
+		d.mu.Lock()
+		syncing := make([]string, 0, len(d.syncing))
+		for name := range d.syncing {
+			syncing = append(syncing, name)
+		}
+		last := make(map[string]string, len(d.lastSync))
+		for name, t := range d.lastSync {
+			last[name] = t.Format(time.RFC3339)
+		}
+		d.mu.Unlock()
+		return ipc.Response{OK: true, Status: &ipc.Status{
+			Syncing:  syncing,
+			LastSync: last,
+		}}
+
+	case ipc.CmdStop:
+		// cancel() is called in handleConn after the response is sent.
+		return ok()
+
+	default:
+		return fail(fmt.Sprintf("unknown command %q", req.Cmd))
+	}
+}
+
+func ok() ipc.Response             { return ipc.Response{OK: true} }
+func fail(msg string) ipc.Response { return ipc.Response{OK: false, Error: msg} }

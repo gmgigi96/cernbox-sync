@@ -37,17 +37,16 @@ type DB struct {
 	conn *sql.DB
 }
 
-// DefaultPath returns the default path for the global config database:
-// $XDG_CONFIG_HOME/cernbox-sync/config.db, falling back to
-// ~/.config/cernbox-sync/config.db.
+// DefaultPath returns the default path for the global config database.
+//
+// The location is platform-specific:
+//   - Linux:   $XDG_CONFIG_HOME/cernbox-sync/config.db  (default ~/.config/…)
+//   - macOS:   ~/Library/Application Support/cernbox-sync/config.db
+//   - Windows: %AppData%\cernbox-sync\config.db
 func DefaultPath() (string, error) {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		base = filepath.Join(home, ".config")
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine config directory: %w", err)
 	}
 	dir := filepath.Join(base, "cernbox-sync")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

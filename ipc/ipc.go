@@ -1,0 +1,89 @@
+// Package ipc defines the IPC protocol between the cernbox-sync CLI and the
+// cernbox-syncd daemon. Communication happens over a Unix domain socket using
+// newline-delimited JSON.
+//
+// Unix sockets are supported on Linux, macOS, and Windows 10+.
+package ipc
+
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+
+	"github.com/gmgigi96/cernbox-sync/config"
+)
+
+// Command names sent in Request.Cmd.
+const (
+	CmdAdd    = "add"
+	CmdList   = "list"
+	CmdRemove = "remove"
+	CmdSync   = "sync"
+	CmdStatus = "status"
+	CmdStop   = "stop"
+)
+
+// Request is sent by the CLI to the daemon.
+type Request struct {
+	Cmd    string        `json:"cmd"`
+	Folder config.Folder `json:"folder"` // used by CmdAdd
+	Name   string        `json:"name"`   // used by CmdRemove and CmdSync
+}
+
+// Response is sent by the daemon back to the CLI.
+type Response struct {
+	OK      bool            `json:"ok"`
+	Error   string          `json:"error,omitempty"`
+	Folders []config.Folder `json:"folders,omitempty"` // CmdList
+	Status  *Status         `json:"status,omitempty"`  // CmdStatus
+}
+
+// Status holds a snapshot of the daemon's sync state.
+type Status struct {
+	// Syncing is the list of folder names currently being synced.
+	Syncing []string `json:"syncing"`
+	// LastSync maps folder name → RFC 3339 timestamp of the last completed sync.
+	LastSync map[string]string `json:"last_sync"`
+}
+
+// SocketPath returns the platform-appropriate Unix socket path for the daemon.
+//
+//   - Linux/other: $XDG_RUNTIME_DIR/cernbox-sync.sock, falling back to
+//     $XDG_CACHE_HOME/cernbox-sync/sync.sock
+//   - macOS / Windows: <UserCacheDir>/cernbox-sync/sync.sock
+func SocketPath() (string, error) {
+	// On Linux, prefer XDG_RUNTIME_DIR (RAM-backed, cleaned on logout).
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return filepath.Join(xdg, "cernbox-sync.sock"), nil
+	}
+	// Fall back to the user cache directory — available on Linux, macOS, Windows.
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine cache directory: %w", err)
+	}
+	dir := filepath.Join(base, "cernbox-sync")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("cannot create cache dir %s: %w", dir, err)
+	}
+	return filepath.Join(dir, "sync.sock"), nil
+}
+
+// Send dials sockPath, sends req, and returns the decoded Response.
+func Send(sockPath string, req Request) (*Response, error) {
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot connect to daemon at %s (is cernbox-syncd running?): %w", sockPath, err)
+	}
+	defer conn.Close()
+
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+	var resp Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("receive response: %w", err)
+	}
+	return &resp, nil
+}

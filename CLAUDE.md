@@ -3,27 +3,78 @@
 A bidirectional WebDAV sync client written in Go, targeting CernBox (ownCloud/Nextcloud-compatible servers).
 Authentication is basic auth. The sync is always client-initiated.
 
+The system is split into two binaries:
+
+- **`cernbox-syncd`** — background daemon that owns the config DB, runs sync cycles on a schedule, and serves IPC requests.
+- **`cernbox-sync`** — CLI client that forwards every command to the daemon over a Unix domain socket.
+
 ## Repository layout
 
 ```
 .
-├── main.go          — CLI entry-point: subcommand dispatch (add, list, remove, run)
+├── main.go                      — CLI entry-point (add, list, remove, run, status, stop)
+├── cmd/
+│   └── cernbox-syncd/
+│       └── main.go              — Daemon entry-point
+├── ipc/
+│   └── ipc.go                   — Shared IPC protocol: socket path, Request/Response types, Send()
+├── daemon/
+│   └── daemon.go                — Daemon: sync loop, IPC server, command dispatch
 ├── config/
-│   └── config.go    — Global config DB: registered sync folder pairs (Add, Get, All, Remove)
+│   └── config.go                — Global config DB: registered sync folder pairs (Add, Get, All, Remove)
 ├── webdav/
-│   ├── types.go     — XML/response types: Multistatus, Response, Propstat, Props, Resource
-│   └── client.go    — WebDAV HTTP client: PROPFIND, GET, PUT, MKCOL, DELETE
+│   ├── types.go                 — XML/response types: Multistatus, Response, Propstat, Props, Resource
+│   └── client.go                — WebDAV HTTP client: PROPFIND, GET, PUT, MKCOL, DELETE
 ├── db/
-│   └── db.go        — Per-folder SQLite state store: Open, Get, All, Upsert, Delete
+│   └── db.go                    — Per-folder SQLite state store: Open, Get, All, Upsert, Delete
 └── engine/
-    └── engine.go    — Bidirectional sync algorithm: Run, scanRemote, scanLocal, classify, execute
+    └── engine.go                — Bidirectional sync algorithm: Run, scanRemote, scanLocal, classify, execute
 ```
 
 ## Packages
 
+### `ipc`
+
+Defines the IPC protocol between the CLI and the daemon.
+
+**Transport:** Unix domain socket (supported on Linux, macOS, Windows 10+). One JSON object per direction per connection — the CLI sends a `Request`, the daemon replies with a `Response`.
+
+**`SocketPath()`** resolves the socket path in a platform-specific way:
+- Linux: `$XDG_RUNTIME_DIR/cernbox-sync.sock` (preferred, RAM-backed)
+- All platforms (fallback): `<UserCacheDir>/cernbox-sync/sync.sock`
+  - Linux fallback: `~/.cache/cernbox-sync/sync.sock`
+  - macOS: `~/Library/Caches/cernbox-sync/sync.sock`
+  - Windows: `%LocalAppData%\cernbox-sync\sync.sock`
+
+**`Send(sockPath, req)`** dials the socket, encodes the request, and decodes the response.
+
+Command names (`Request.Cmd`): `add`, `list`, `remove`, `sync`, `status`, `stop`.
+
+### `daemon`
+
+The background service. Entry-point is `daemon.New(cfgDB, interval).Run(ctx, sockPath)`.
+
+**Sync loop:** on startup and then every `interval`, all registered folders are synced sequentially via `engine.Run`. A folder is skipped if it is already mid-sync (guarded by a mutex).
+
+**IPC server:** accepts connections on the Unix socket; each connection is handled in its own goroutine. Supported commands:
+
+| Command  | Action |
+|----------|--------|
+| `add`    | Resolve local path to absolute, `os.MkdirAll`, insert into config DB |
+| `list`   | Return all registered folders |
+| `remove` | Delete folder from config DB |
+| `sync`   | Trigger `syncFolder` in a goroutine (non-blocking); accepts optional `name` |
+| `status` | Return list of currently-syncing folders and last-sync timestamps |
+| `stop`   | Send `ok` response, then call `context.CancelFunc` |
+
+**`daemon.Status`** (embedded in `ipc.Status`): `Syncing []string` and `LastSync map[string]string` (RFC 3339).
+
 ### `config`
 
-Global application configuration store, backed by SQLite at `$XDG_CONFIG_HOME/cernbox-sync/config.db` (falls back to `~/.config/cernbox-sync/config.db`).
+Global application configuration store, backed by SQLite. Path is platform-specific via `os.UserConfigDir()`:
+- Linux: `$XDG_CONFIG_HOME/cernbox-sync/config.db` (default `~/.config/…`)
+- macOS: `~/Library/Application Support/cernbox-sync/config.db`
+- Windows: `%AppData%\cernbox-sync\config.db`
 
 Schema — one table `sync_folders`:
 
@@ -135,16 +186,32 @@ After every successful transfer the DB is updated with the new ETag from the ser
 
 Downloads use an atomic write: content is streamed to a `.tmp-sync-*` temp file in the same directory, then `os.Rename`d into place to avoid leaving a partial file visible.
 
-## CLI
+## Building
 
-```
+```sh
+# CLI client
 go build -o cernbox-sync .
+
+# Daemon
+go build -o cernbox-syncd ./cmd/cernbox-syncd
 ```
+
+## Usage
+
+### Start the daemon
+
+```sh
+cernbox-syncd                        # default interval: 5 minutes
+cernbox-syncd -interval 10m
+cernbox-syncd -interval 30s -socket /tmp/my.sock
+```
+
+The daemon writes logs to stderr. To run it as a background service see the systemd / launchd examples below.
 
 ### Register a sync folder pair
 
 ```
-./cernbox-sync add \
+cernbox-sync add \
   -name    documents \
   -local   /path/to/local/dir \
   -remote  "https://cernbox.cern.ch/remote.php/dav/spaces/<space-id>/Documents" \
@@ -155,31 +222,55 @@ go build -o cernbox-sync .
 ### List registered pairs
 
 ```
-./cernbox-sync list
+cernbox-sync list
 ```
 
-### Run a sync cycle
+### Trigger an immediate sync
 
 ```
 # All registered pairs
-./cernbox-sync run
+cernbox-sync run
 
 # One specific pair
-./cernbox-sync run -name documents
+cernbox-sync run -name documents
 ```
+
+The command returns immediately; the sync runs asynchronously inside the daemon.
+
+### Show daemon status
+
+```
+cernbox-sync status
+```
+
+Prints which folders are currently syncing and when each folder was last synced.
 
 ### Remove a pair
 
 ```
-./cernbox-sync remove -name documents
+cernbox-sync remove -name documents
 ```
 
-Global config is stored in `$XDG_CONFIG_HOME/cernbox-sync/config.db` (default: `~/.config/cernbox-sync/config.db`). The per-folder sync state DB is always `<local_root>/.sync.db`.
+### Stop the daemon
+
+```
+cernbox-sync stop
+```
+
+## Config and state file locations
+
+| Artifact | Linux | macOS | Windows |
+|---|---|---|---|
+| Config DB | `$XDG_CONFIG_HOME/cernbox-sync/config.db` | `~/Library/Application Support/cernbox-sync/config.db` | `%AppData%\cernbox-sync\config.db` |
+| IPC socket | `$XDG_RUNTIME_DIR/cernbox-sync.sock` | `~/Library/Caches/cernbox-sync/sync.sock` | `%LocalAppData%\cernbox-sync\sync.sock` |
+| Sync state DB | `<local_root>/.sync.db` | same | same |
 
 ## Known limitations / future work
 
 - No incremental remote scan: the entire remote tree is fetched every sync cycle. An optimisation would be to check only the root ETag first and skip the full scan if it has not changed since the last run.
 - Conflict resolution is hard-coded to "server wins". A pluggable strategy would be cleaner.
 - Basic auth credentials are stored in plaintext in the global config DB. A secrets manager or keyring integration would be safer for production use.
-- No concurrency: uploads and downloads happen serially. A worker-pool over the action list would speed up syncs with many small files.
-- Multiple sync pairs registered with `run` (no `-name`) are executed sequentially; running them in parallel would reduce total wall-clock time.
+- No concurrency within a sync cycle: uploads and downloads happen serially. A worker-pool over the action list would speed up syncs with many small files.
+- Multiple sync pairs are executed sequentially inside the daemon's sync loop; running them in parallel would reduce total wall-clock time.
+- The daemon has no built-in file-watcher: syncs are purely interval-driven. Integrating `fsnotify` would allow near-instant upload of local changes.
+- No TLS certificate pinning or mutual-TLS support.
