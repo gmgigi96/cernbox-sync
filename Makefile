@@ -2,7 +2,9 @@ CLI    := cernbox-sync
 DAEMON := cernbox-syncd
 GO     := go
 
-.PHONY: all build cli daemon test clean help
+COMPOSE := docker compose -f dev/docker-compose.yaml
+
+.PHONY: all build cli daemon test clean help dev-up dev-down
 
 all: build
 
@@ -23,6 +25,12 @@ test: ## Run all tests
 
 fmt: ## Format code
 	$(GO) fmt ./...
+
+dev-up: ## Start dev services via docker compose
+	$(COMPOSE) up --build -d
+
+dev-down: ## Stop dev services via docker compose
+	$(COMPOSE) down
 
 clean: ## Remove built binaries
 	$(GO) clean
