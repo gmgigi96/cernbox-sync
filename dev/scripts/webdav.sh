@@ -21,7 +21,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration — override via env vars or edit defaults below
 # ---------------------------------------------------------------------------
-BASE_URL="${WEBDAV_URL:-http://localhost:443/remote.php/webdav}"
+BASE_URL="${WEBDAV_URL:-http://localhost/remote.php/webdav}"
 USER="${WEBDAV_USER:-einstein}"
 PASS="${WEBDAV_PASS:-relativity}"
 

@@ -23,6 +23,7 @@ userprovidersvc = "{{ grpc.services.userprovider.address }}"
 usershareprovidersvc = "{{ grpc.services.usershareprovider.address }}"
 publicshareprovidersvc = "{{ grpc.services.publicshareprovider.address }}"
 groupprovidersvc = "{{ grpc.services.groupprovider.address }}"
+spacessvc = "{{ grpc.services.spacesregistry.address }}"
 datagateway = "http://{{ http.services.datagateway.address }}/data"
 
 transfer_expires = 6     # give it a moment
@@ -67,7 +68,6 @@ home_provider = "/"
 "/" = {"address" = "{{ grpc.services.storageprovider[0].address }}"}
 "localhome" = {"address" = "{{ grpc.services.storageprovider[0].address }}"}
 
-
 [[grpc.services.storageprovider]]
 driver = "eos"
 mount_path = "/"
@@ -88,6 +88,14 @@ master_grpc_uri = "eos-storage:50051"
 master_url = "https://eos-storage:8443" # I know it's wrong, but this is passed to the http layer like this...
 allow_insecure = true
 http_client_cafiles = "/etc/pki/ca.crt"
+
+[grpc.services.spacesregistry]
+driver = "memory"
+user_space = "/eos/user/{{substr 0 1 .Username}}/{{ .Username }}"
+machine_secret = "{{ vars.machine_api_key }}"
+
+[grpc.services.spacesregistry.drivers.memory]
+# Here the project spaces
 
 ### OTHER PROVIDERS ###
 
@@ -122,7 +130,7 @@ token_strategy_chain = ["bearer", "header"]
 "mirall" = "basic"
 
 [http.services.datagateway]
-address = ":443"
+address = ":80"
 
 [[http.services.dataprovider]]
 driver = "eos"
@@ -142,11 +150,11 @@ allow_insecure = true
 http_client_cafiles = "/etc/pki/ca.crt"
 
 [http.services.wellknown]
-address = ":443"
+address = ":80"
 
 # OCS
 [http.services.ocs]
-address = ":443"
+address = ":80"
 prefix = "ocs"
 share_prefix = "/"
 home_namespace = "/"
@@ -225,7 +233,7 @@ outgoing = true
 incoming = true
 
 [http.services.ocs.capabilities.capabilities.spaces]
-enabled = false
+enabled = true
 projects = true
 
 [http.services.ocs.capabilities.version]
@@ -236,8 +244,17 @@ micro = 11
 string = "10.0.11"
 
 [http.services.ocdav]
-address = ":443"
+address = ":80"
 insecure = true
+public_url = "http://localhost"
+files_namespace = "/eos/{{substr 0 1 .Username}}"
+
+[http.services.ocapi]
+address = ":80"
+
+[http.services.ocgraph]
+address = ":80"
+base_url = "http://localhost"
 
 [http.middlewares.cors]
 allowed_origins = ["*"]
@@ -247,7 +264,4 @@ debug = true
 exposed_headers = []
 
 [http.middlewares.log]
-level = "debug"
-
-[http.interceptors.log]
 level = "debug"

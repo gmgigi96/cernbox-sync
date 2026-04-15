@@ -21,7 +21,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "443:443"
+      - "80:80"
     tmpfs:
       - /tmp:size=256m,mode=1777
     volumes:
