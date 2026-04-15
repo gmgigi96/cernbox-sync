@@ -23,6 +23,9 @@ daemon: ## Build the background daemon (cernbox-syncd)
 test: ## Run all tests
 	$(GO) test ./...
 
+test-integration: build ## Run integration tests
+	$(GO) test -v -tags integration -timeout 120s ./integration/
+
 fmt: ## Format code
 	$(GO) fmt ./...
 
