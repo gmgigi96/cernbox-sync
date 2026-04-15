@@ -94,12 +94,10 @@ func cmdAdd(args []string) {
 	name := fs.String("name", "", "Unique name for this sync pair (required)")
 	localDir := fs.String("local", "", "Local directory to sync (required)")
 	remoteURL := fs.String("remote", "", "Remote WebDAV URL (required)")
-	username := fs.String("user", "", "WebDAV username (required)")
-	password := fs.String("pass", "", "WebDAV password (required)")
 	fs.Parse(args)
 
-	if *name == "" || *localDir == "" || *remoteURL == "" || *username == "" || *password == "" {
-		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync add -name <n> -local <dir> -remote <url> -user <u> -pass <p>\n\n")
+	if *name == "" || *localDir == "" || *remoteURL == "" {
+		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync add -name <n> -local <dir> -remote <url>\n\n")
 		fs.PrintDefaults()
 		os.Exit(1)
 	}
@@ -110,8 +108,6 @@ func cmdAdd(args []string) {
 			Name:       *name,
 			LocalRoot:  *localDir,
 			RemoteBase: *remoteURL,
-			Username:   *username,
-			Password:   *password,
 		},
 	})
 	fmt.Printf("Registered sync folder %q\n", *name)
@@ -129,9 +125,9 @@ func cmdList(args []string) {
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tLOCAL\tREMOTE\tUSER")
+	fmt.Fprintln(w, "NAME\tLOCAL\tREMOTE")
 	for _, f := range resp.Folders {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", f.Name, f.LocalRoot, f.RemoteBase, f.Username)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", f.Name, f.LocalRoot, f.RemoteBase)
 	}
 	w.Flush()
 }

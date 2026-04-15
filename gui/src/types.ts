@@ -2,8 +2,11 @@ export interface Folder {
   Name: string;
   LocalRoot: string;
   RemoteBase: string;
-  Username: string;
-  Password: string;
+}
+
+export interface Account {
+  username: string;
+  password: string;
 }
 
 export interface SyncStatus {

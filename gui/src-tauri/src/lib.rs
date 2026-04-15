@@ -15,16 +15,18 @@ pub struct Folder {
     pub local_root: String,
     #[serde(rename = "RemoteBase")]
     pub remote_base: String,
-    #[serde(rename = "Username")]
-    pub username: String,
-    #[serde(rename = "Password")]
-    pub password: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SettingsPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     log_rotate_max_age: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AccountPayload {
+    username: String,
+    password: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,6 +38,8 @@ struct IpcRequest {
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     settings: Option<SettingsPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<AccountPayload>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -49,6 +53,8 @@ struct IpcResponse {
     status: Option<StatusPayload>,
     #[serde(default)]
     settings: Option<SettingsPayload>,
+    #[serde(default)]
+    account: Option<AccountPayload>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -154,30 +160,46 @@ fn ipc_list() -> Result<Vec<Folder>, String> {
         folder: None,
         name: None,
         settings: None,
+        account: None,
     };
     let resp = ipc_send(&req)?;
     Ok(resp.folders)
 }
 
 #[tauri::command]
-fn ipc_add(
-    name: String,
-    local_root: String,
-    remote_base: String,
-    username: String,
-    password: String,
-) -> Result<(), String> {
+fn ipc_add(name: String, local_root: String, remote_base: String) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "add".into(),
-        folder: Some(Folder {
-            name,
-            local_root,
-            remote_base,
-            username,
-            password,
-        }),
+        folder: Some(Folder { name, local_root, remote_base }),
         name: None,
         settings: None,
+        account: None,
+    };
+    ipc_send(&req)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn ipc_get_account() -> Result<Option<AccountPayload>, String> {
+    let req = IpcRequest {
+        cmd: "get-account".into(),
+        folder: None,
+        name: None,
+        settings: None,
+        account: None,
+    };
+    let resp = ipc_send(&req)?;
+    Ok(resp.account)
+}
+
+#[tauri::command]
+fn ipc_set_account(username: String, password: String) -> Result<(), String> {
+    let req = IpcRequest {
+        cmd: "set-account".into(),
+        folder: None,
+        name: None,
+        settings: None,
+        account: Some(AccountPayload { username, password }),
     };
     ipc_send(&req)?;
     Ok(())
@@ -190,6 +212,7 @@ fn ipc_remove(name: String) -> Result<(), String> {
         folder: None,
         name: Some(name),
         settings: None,
+        account: None,
     };
     ipc_send(&req)?;
     Ok(())
@@ -202,6 +225,7 @@ fn ipc_sync(name: Option<String>) -> Result<(), String> {
         folder: None,
         name,
         settings: None,
+        account: None,
     };
     ipc_send(&req)?;
     Ok(())
@@ -214,6 +238,7 @@ fn ipc_status() -> Result<SyncStatus, String> {
         folder: None,
         name: None,
         settings: None,
+        account: None,
     };
     let resp = ipc_send(&req)?;
     let s = resp.status.ok_or("No status in response")?;
@@ -230,6 +255,7 @@ fn ipc_stop() -> Result<(), String> {
         folder: None,
         name: None,
         settings: None,
+        account: None,
     };
     ipc_send(&req)?;
     Ok(())
@@ -242,6 +268,7 @@ fn ipc_get_settings() -> Result<Option<String>, String> {
         folder: None,
         name: None,
         settings: None,
+        account: None,
     };
     let resp = ipc_send(&req)?;
     Ok(resp
@@ -256,6 +283,7 @@ fn ipc_set_settings(log_rotate_max_age: Option<String>) -> Result<(), String> {
         folder: None,
         name: None,
         settings: Some(SettingsPayload { log_rotate_max_age }),
+        account: None,
     };
     ipc_send(&req)?;
     Ok(())
@@ -291,6 +319,8 @@ pub fn run() {
             ipc_stop,
             ipc_get_settings,
             ipc_set_settings,
+            ipc_get_account,
+            ipc_set_account,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

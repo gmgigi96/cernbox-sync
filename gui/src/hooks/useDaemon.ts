@@ -9,7 +9,7 @@ export interface DaemonState {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  addFolder: (f: Omit<Folder, "Password"> & { Password: string }) => Promise<void>;
+  addFolder: (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase">) => Promise<void>;
   removeFolder: (name: string) => Promise<void>;
   syncFolder: (name?: string) => Promise<void>;
 }
@@ -43,8 +43,8 @@ export function useDaemon(): DaemonState {
   }, [refresh]);
 
   const addFolder = useCallback(
-    async (f: Folder) => {
-      await ipc.add(f.Name, f.LocalRoot, f.RemoteBase, f.Username, f.Password);
+    async (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase">) => {
+      await ipc.add(f.Name, f.LocalRoot, f.RemoteBase);
       await refresh();
     },
     [refresh],

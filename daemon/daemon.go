@@ -35,6 +35,8 @@ type Daemon struct {
 	lastSync map[string]time.Time // time of last successful sync per folder
 
 	logRotateMaxAge time.Duration // 0 means no rotation; loaded from settings at startup
+	accountUsername string        // loaded from settings at startup; updated by set-account
+	accountPassword string
 }
 
 // New creates a new Daemon. interval controls how often all registered folders
@@ -58,6 +60,8 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 		log.Printf("[daemon] load settings: %v", err)
 	} else {
 		d.logRotateMaxAge = s.LogRotateMaxAge
+		d.accountUsername = s.AccountUsername
+		d.accountPassword = s.AccountPassword
 	}
 
 	// Remove stale socket from a previous (crashed) run.
@@ -153,11 +157,16 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		defer fl.Close()
 	}
 
+	d.mu.Lock()
+	username := d.accountUsername
+	password := d.accountPassword
+	d.mu.Unlock()
+
 	cfg := engine.Config{
 		LocalRoot:  f.LocalRoot,
 		RemoteBase: f.RemoteBase,
-		Username:   f.Username,
-		Password:   f.Password,
+		Username:   username,
+		Password:   password,
 		DBPath:     filepath.Join(f.LocalRoot, ".sync.db"),
 		FolderLog:  fl,
 	}
@@ -295,6 +304,35 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			payload.LogRotateMaxAge = s.LogRotateMaxAge.String()
 		}
 		return ipc.Response{OK: true, Settings: &payload}
+
+	case ipc.CmdGetAccount:
+		s, err := d.cfgDB.GetSettings()
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ipc.Response{OK: true, Account: &ipc.AccountPayload{
+			Username: s.AccountUsername,
+			Password: s.AccountPassword,
+		}}
+
+	case ipc.CmdSetAccount:
+		if req.Account == nil {
+			return fail("missing account payload")
+		}
+		s, err := d.cfgDB.GetSettings()
+		if err != nil {
+			return fail(err.Error())
+		}
+		s.AccountUsername = req.Account.Username
+		s.AccountPassword = req.Account.Password
+		if err := d.cfgDB.SetSettings(s); err != nil {
+			return fail(err.Error())
+		}
+		d.mu.Lock()
+		d.accountUsername = req.Account.Username
+		d.accountPassword = req.Account.Password
+		d.mu.Unlock()
+		return ok()
 
 	default:
 		return fail(fmt.Sprintf("unknown command %q", req.Cmd))

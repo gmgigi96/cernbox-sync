@@ -18,8 +18,6 @@ CREATE TABLE IF NOT EXISTS sync_folders (
     name        TEXT    NOT NULL,
     local_root  TEXT    NOT NULL,
     remote_base TEXT    NOT NULL,
-    username    TEXT    NOT NULL DEFAULT '',
-    password    TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (name)
 );
 CREATE TABLE IF NOT EXISTS settings (
@@ -33,6 +31,10 @@ const (
 	// KeyLogRotateMaxAge holds the maximum age of log entries as a
 	// Go duration string (e.g. "30d", "168h"). Empty string means no rotation.
 	KeyLogRotateMaxAge = "log_rotate_max_age"
+	// KeyAccountUsername holds the CERN account username used for basic auth.
+	KeyAccountUsername = "account_username"
+	// KeyAccountPassword holds the CERN account password used for basic auth.
+	KeyAccountPassword = "account_password"
 )
 
 // Folder represents one registered sync pair.
@@ -40,8 +42,6 @@ type Folder struct {
 	Name       string
 	LocalRoot  string
 	RemoteBase string
-	Username   string
-	Password   string
 }
 
 // DB is the global application configuration store.
@@ -86,9 +86,8 @@ func (d *DB) Close() error { return d.conn.Close() }
 // Add registers a new sync folder pair. Returns an error if the name already exists.
 func (d *DB) Add(f Folder) error {
 	_, err := d.conn.Exec(
-		`INSERT INTO sync_folders (name, local_root, remote_base, username, password)
-		 VALUES (?, ?, ?, ?, ?)`,
-		f.Name, f.LocalRoot, f.RemoteBase, f.Username, f.Password,
+		`INSERT INTO sync_folders (name, local_root, remote_base) VALUES (?, ?, ?)`,
+		f.Name, f.LocalRoot, f.RemoteBase,
 	)
 	if err != nil {
 		return fmt.Errorf("add folder %q: %w", f.Name, err)
@@ -99,11 +98,10 @@ func (d *DB) Add(f Folder) error {
 // Get returns the folder with the given name, or (nil, nil) if not found.
 func (d *DB) Get(name string) (*Folder, error) {
 	row := d.conn.QueryRow(
-		`SELECT name, local_root, remote_base, username, password
-		 FROM sync_folders WHERE name = ?`, name,
+		`SELECT name, local_root, remote_base FROM sync_folders WHERE name = ?`, name,
 	)
 	var f Folder
-	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &f.Username, &f.Password); err == sql.ErrNoRows {
+	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("get folder %q: %w", name, err)
@@ -114,8 +112,7 @@ func (d *DB) Get(name string) (*Folder, error) {
 // All returns every registered folder.
 func (d *DB) All() ([]Folder, error) {
 	rows, err := d.conn.Query(
-		`SELECT name, local_root, remote_base, username, password
-		 FROM sync_folders ORDER BY name`,
+		`SELECT name, local_root, remote_base FROM sync_folders ORDER BY name`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list folders: %w", err)
@@ -125,7 +122,7 @@ func (d *DB) All() ([]Folder, error) {
 	var result []Folder
 	for rows.Next() {
 		var f Folder
-		if err := rows.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &f.Username, &f.Password); err != nil {
+		if err := rows.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase); err != nil {
 			return nil, err
 		}
 		result = append(result, f)
@@ -154,6 +151,10 @@ type Settings struct {
 	// logs. Entries older than this are removed when Rotate is called at the
 	// start of each sync cycle. Zero means no rotation.
 	LogRotateMaxAge time.Duration
+	// AccountUsername is the CERN account username used for basic auth.
+	AccountUsername string
+	// AccountPassword is the CERN account password used for basic auth.
+	AccountPassword string
 }
 
 // GetSettings reads the current settings from the DB, returning defaults for
@@ -180,6 +181,10 @@ func (d *DB) GetSettings() (Settings, error) {
 				}
 				s.LogRotateMaxAge = d
 			}
+		case KeyAccountUsername:
+			s.AccountUsername = value
+		case KeyAccountPassword:
+			s.AccountPassword = value
 		}
 	}
 	return s, rows.Err()
@@ -192,13 +197,19 @@ func (d *DB) SetSettings(s Settings) error {
 	if s.LogRotateMaxAge > 0 {
 		maxAge = s.LogRotateMaxAge.String()
 	}
-	_, err := d.conn.Exec(
-		`INSERT INTO settings (key, value) VALUES (?, ?)
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		KeyLogRotateMaxAge, maxAge,
-	)
-	if err != nil {
-		return fmt.Errorf("set settings: %w", err)
+	pairs := []struct{ k, v string }{
+		{KeyLogRotateMaxAge, maxAge},
+		{KeyAccountUsername, s.AccountUsername},
+		{KeyAccountPassword, s.AccountPassword},
+	}
+	for _, p := range pairs {
+		if _, err := d.conn.Exec(
+			`INSERT INTO settings (key, value) VALUES (?, ?)
+			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			p.k, p.v,
+		); err != nil {
+			return fmt.Errorf("set settings %s: %w", p.k, err)
+		}
 	}
 	return nil
 }

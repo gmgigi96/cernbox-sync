@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, FolderOpen, Globe, User, Lock, Plus, AlertCircle } from "lucide-react";
+import { X, FolderOpen, Globe, Plus, AlertCircle } from "lucide-react";
 import type { DaemonState } from "../hooks/useDaemon";
 
 interface AddFolderModalProps {
@@ -11,11 +11,9 @@ interface FormState {
   name: string;
   localRoot: string;
   remoteBase: string;
-  username: string;
-  password: string;
 }
 
-const EMPTY: FormState = { name: "", localRoot: "", remoteBase: "", username: "", password: "" };
+const EMPTY: FormState = { name: "", localRoot: "", remoteBase: "" };
 
 export function AddFolderModal({ onClose, daemon }: AddFolderModalProps) {
   const [form, setForm] = useState<FormState>(EMPTY);
@@ -40,8 +38,6 @@ export function AddFolderModal({ onClose, daemon }: AddFolderModalProps) {
         Name: form.name.trim(),
         LocalRoot: form.localRoot.trim(),
         RemoteBase: form.remoteBase.trim(),
-        Username: form.username.trim(),
-        Password: form.password,
       });
       onClose();
     } catch (err) {
@@ -105,34 +101,6 @@ export function AddFolderModal({ onClose, daemon }: AddFolderModalProps) {
               onChange={set("remoteBase")}
             />
           </Field>
-
-          <div style={styles.row}>
-            <Field
-              label="Username"
-              hint="CERN account username"
-              icon={<User size={14} strokeWidth={1.5} />}
-            >
-              <input
-                placeholder="jdoe"
-                value={form.username}
-                onChange={set("username")}
-                autoComplete="username"
-              />
-            </Field>
-            <Field
-              label="Password"
-              hint="CERN account password"
-              icon={<Lock size={14} strokeWidth={1.5} />}
-            >
-              <input
-                type="password"
-                placeholder="••••••••"
-                value={form.password}
-                onChange={set("password")}
-                autoComplete="current-password"
-              />
-            </Field>
-          </div>
 
           {error && (
             <div style={styles.errorBox}>
