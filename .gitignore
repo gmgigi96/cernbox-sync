@@ -1,5 +1,6 @@
 # Binary
-syncclient
+cernbox-sync
+cernbox-syncd
 
 # Sync database
 *.db
@@ -12,3 +13,5 @@ coverage.out
 # Go workspace
 go.work
 go.work.sum
+
+.claude
