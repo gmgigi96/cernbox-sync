@@ -1,0 +1,264 @@
+/* ── Design tokens ───────────────────────────────────────────────────────────── */
+:root {
+  /* Surfaces */
+  --surface:                  #131313;
+  --surface-container-lowest: #0D0D0D;
+  --surface-container-low:    #1C1B1B;
+  --surface-container:        #222222;
+  --surface-container-high:   #2A2A2A;
+  --surface-container-highest:#353535;
+
+  /* Primary */
+  --primary:           #B4C5FF;
+  --primary-container: #2563EB;
+  --on-primary:        #0A1240;
+
+  /* On-surface */
+  --on-surface:         #E2E4F3;
+  --on-surface-variant: #C3C6D7;
+
+  /* Outline */
+  --outline:         #6C7086;
+  --outline-variant: #44475A;
+
+  /* Semantic */
+  --tertiary:              #FFB596;
+  --tertiary-container:    #4A2A1A;
+  --secondary-container:   #3D3D5C;
+  --on-secondary-container:#C3C6D7;
+  --error:                 #FF6B6B;
+  --success:               #6BD9A0;
+
+  /* Gradient */
+  --gradient-primary: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%);
+
+  /* Typography */
+  --font-family: "Inter", system-ui, -apple-system, sans-serif;
+
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+  --radius-full: 9999px;
+
+  /* Shadow */
+  --shadow-float: 0px 12px 32px rgba(0, 0, 0, 0.4);
+
+  /* Transitions */
+  --transition-fast: 120ms ease-out;
+  --transition-base: 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-family);
+  background: var(--surface);
+  color: var(--on-surface);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  user-select: none;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--outline-variant);
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--outline); }
+
+/* ── Typography helpers ──────────────────────────────────────────────────────── */
+.display-lg {
+  font-size: 2.25rem;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  color: var(--on-surface);
+}
+.display-md {
+  font-size: 1.75rem;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  color: var(--on-surface);
+}
+.headline {
+  font-size: 1.125rem;
+  font-weight: 500;
+  color: var(--on-surface);
+}
+.title-lg {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+.title-md {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+.body-lg {
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--on-surface-variant);
+}
+.body-md {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--on-surface-variant);
+}
+.label-md {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--outline);
+}
+.label-sm {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--outline);
+  letter-spacing: 0.02em;
+}
+
+/* ── Button primitives ───────────────────────────────────────────────────────── */
+button {
+  font-family: var(--font-family);
+  cursor: pointer;
+  border: none;
+  outline: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  transition: all var(--transition-base);
+}
+
+.btn-primary {
+  background: var(--gradient-primary);
+  color: var(--on-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+}
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+.btn-primary:active {
+  filter: brightness(0.95);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(68, 71, 90, 0.15);
+}
+.btn-secondary:hover {
+  background: rgba(180, 197, 255, 0.06);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--on-surface-variant);
+  font-size: 0.875rem;
+  font-weight: 400;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--radius-md);
+}
+.btn-ghost:hover {
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+}
+
+.btn-icon {
+  background: transparent;
+  color: var(--on-surface-variant);
+  padding: 0.375rem;
+  border-radius: var(--radius-md);
+  line-height: 0;
+}
+.btn-icon:hover {
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+}
+
+/* ── Input primitives ────────────────────────────────────────────────────────── */
+input, select {
+  font-family: var(--font-family);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
+  border: 1px solid rgba(68, 71, 90, 0.10);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  outline: none;
+  transition: all var(--transition-base);
+  width: 100%;
+}
+input::placeholder { color: var(--outline); }
+input:focus, select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.20);
+}
+
+/* ── Chip ───────────────────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  padding: 0.1875rem 0.625rem;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+.chip-success { background: rgba(107, 217, 160, 0.15); color: var(--success); }
+.chip-warning { background: rgba(255, 181, 150, 0.15); color: var(--tertiary); }
+.chip-error   { background: rgba(255, 107, 107, 0.15); color: var(--error); }
+.chip-syncing { background: rgba(180, 197, 255, 0.15); color: var(--primary); }
+
+/* ── Card ───────────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface-container-high);
+  border-radius: var(--radius-xl);
+  padding: 1.25rem;
+}
+
+/* ── Progress bar ───────────────────────────────────────────────────────────── */
+.progress-track {
+  height: 4px;
+  background: var(--surface-container-highest);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-full);
+  transition: width 0.4s ease;
+}
+
+/* ── Divider-free list spacing ───────────────────────────────────────────────── */
+.list-group > * + * {
+  margin-top: 0.75rem;
+}

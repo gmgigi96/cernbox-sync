@@ -4,7 +4,7 @@ GO     := go
 
 COMPOSE := docker compose -f dev/docker-compose.yaml
 
-.PHONY: all build cli daemon test clean help dev-up dev-down
+.PHONY: all build cli daemon test clean help dev-up dev-down gui gui-dev
 
 all: build
 
@@ -34,6 +34,12 @@ dev-up: ## Start dev services via docker compose
 
 dev-down: ## Stop dev services via docker compose
 	$(COMPOSE) down
+
+gui: ## Build the GUI (Tauri app)
+	cd gui && npm install && NO_STRIP=1 npm run tauri build
+
+gui-dev: ## Start the GUI in development mode
+	cd gui && npm install && npm run tauri dev
 
 clean: ## Remove built binaries
 	$(GO) clean

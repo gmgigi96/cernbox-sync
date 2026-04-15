@@ -15,3 +15,10 @@ go.work
 go.work.sum
 
 .claude
+
+# GUI (Tauri + Node)
+gui/node_modules/
+gui/dist/
+gui/src-tauri/target/
+gui/src-tauri/gen/
+gui/src-tauri/Cargo.lock
