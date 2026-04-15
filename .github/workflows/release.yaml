@@ -1,0 +1,209 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Standalone Go binaries (all platforms, cross-compiled) ───────────────────
+  build-go:
+    name: Build Go binaries (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - os: linux-amd64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: linux-arm64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: darwin-amd64
+            runner: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: darwin-arm64
+            runner: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-amd64
+            runner: windows-latest
+            goos: windows
+            goarch: amd64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build CLI and daemon (Unix)
+        if: matrix.goos != 'windows'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o cernbox-sync-${{ matrix.os }} .
+          go build -ldflags="-s -w" -o cernbox-syncd-${{ matrix.os }} ./cmd/cernbox-syncd
+
+      - name: Build CLI and daemon (Windows)
+        if: matrix.goos == 'windows'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o cernbox-sync-${{ matrix.os }}.exe .
+          go build -ldflags="-s -w" -o cernbox-syncd-${{ matrix.os }}.exe ./cmd/cernbox-syncd
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-binaries-${{ matrix.os }}
+          path: |
+            cernbox-sync-*
+            cernbox-syncd-*
+
+  # ── GUI installers (daemon bundled inside) ────────────────────────────────────
+  build-gui:
+    name: Build GUI (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-22.04
+            goos: linux
+            goarch: amd64
+            # Tauri appends this triple to sidecar binaries on Linux x86_64
+            rust_triple: x86_64-unknown-linux-gnu
+          - platform: macos
+            runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            rust_triple: aarch64-apple-darwin
+          - platform: windows
+            runner: windows-latest
+            goos: windows
+            goarch: amd64
+            rust_triple: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The daemon sidecar is bundled only on Windows.
+      # On Linux/macOS we still need the file to exist so Tauri's build script
+      # doesn't error — a zero-byte placeholder is enough since it won't be
+      # included in the installer.
+      - name: Build daemon sidecar (Windows)
+        if: matrix.platform == 'windows'
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries
+          go build -ldflags="-s -w" `
+            -o gui/src-tauri/binaries/cernbox-syncd-${{ matrix.rust_triple }}.exe `
+            ./cmd/cernbox-syncd
+
+      - name: Create sidecar placeholder (Linux/macOS)
+        if: matrix.platform != 'windows'
+        run: |
+          mkdir -p gui/src-tauri/binaries
+          touch gui/src-tauri/binaries/cernbox-syncd-${{ matrix.rust_triple }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          args: --verbose
+
+      - name: Upload GUI artifacts (Linux)
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-linux
+          path: |
+            gui/src-tauri/target/release/bundle/deb/*.deb
+            gui/src-tauri/target/release/bundle/rpm/*.rpm
+            gui/src-tauri/target/release/bundle/appimage/*.AppImage
+
+      - name: Upload GUI artifacts (macOS)
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-macos
+          path: |
+            gui/src-tauri/target/release/bundle/dmg/*.dmg
+            gui/src-tauri/target/release/bundle/macos/*.app.tar.gz
+
+      - name: Upload GUI artifacts (Windows)
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-windows
+          path: |
+            gui/src-tauri/target/release/bundle/msi/*.msi
+            gui/src-tauri/target/release/bundle/nsis/*.exe
+
+  # ── GitHub Release ────────────────────────────────────────────────────────────
+  release:
+    name: Create Release
+    needs: [build-go, build-gui]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/**/*
