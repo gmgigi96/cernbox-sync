@@ -44,3 +44,4 @@ gui-dev: ## Start the GUI in development mode
 clean: ## Remove built binaries
 	$(GO) clean
 	rm -f $(CLI) $(DAEMON)
+	rm -rf gui/src-tauri/target gui/dist gui/node_modules
