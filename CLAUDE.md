@@ -45,3 +45,10 @@ Conflict resolution is hardcoded to server wins; the local file is renamed `.con
 - `config` — CRUD for the global config DB
 - `db` — CRUD for the per-folder sync state DB
 - `ipc` — shared protocol types and socket path resolution
+
+## Project Rules
+
+### Verification
+
+- **CRITICAL**: Always build the project and run the tests after any code change and before declaring the task complete.
+- The integration tests should use the dev test environment, that can be created with `make dev-up`. If needed check the logs of the `revad` container (`docker compose -f dev/docker-compose.yaml logs revad`).
