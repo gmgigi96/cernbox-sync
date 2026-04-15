@@ -36,6 +36,7 @@ dev-down: ## Stop dev services via docker compose
 	$(COMPOSE) down
 
 gui: ## Build the GUI (Tauri app)
+	$(GO) build -ldflags="-s -w" -o gui/src-tauri/binaries/cernbox-syncd-$$(rustc -vV | awk '/^host:/{print $$2}') ./cmd/cernbox-syncd
 	cd gui && npm install && NO_STRIP=1 npm run tauri build
 
 gui-dev: ## Start the GUI in development mode
@@ -44,4 +45,4 @@ gui-dev: ## Start the GUI in development mode
 clean: ## Remove built binaries
 	$(GO) clean
 	rm -f $(CLI) $(DAEMON)
-	rm -rf gui/src-tauri/target gui/dist gui/node_modules
+	rm -rf gui/src-tauri/target gui/src-tauri/binaries gui/dist gui/node_modules

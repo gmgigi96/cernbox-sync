@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager};
+use tauri_plugin_shell::ShellExt;
 
 // ── IPC types (must mirror the Go structs) ────────────────────────────────────
 
@@ -63,6 +65,13 @@ pub struct SyncStatus {
     pub last_sync: HashMap<String, String>,
 }
 
+// ── Daemon sidecar state (Windows only) ───────────────────────────────────────
+
+#[cfg(windows)]
+pub struct DaemonState {
+    pub child: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+}
+
 // ── Socket path (mirrors Go SocketPath()) ─────────────────────────────────────
 
 fn socket_path() -> String {
@@ -78,11 +87,24 @@ fn socket_path() -> String {
 
 fn ipc_send(req: &IpcRequest) -> Result<IpcResponse, String> {
     let path = socket_path();
-    let mut stream =
-        UnixStream::connect(&path).map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?;
 
+    #[cfg(unix)]
+    let stream = {
+        use std::os::unix::net::UnixStream;
+        UnixStream::connect(&path)
+            .map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?
+    };
+
+    #[cfg(windows)]
+    let stream = {
+        use std::os::windows::net::UnixStream;
+        UnixStream::connect(&path)
+            .map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?
+    };
+
+    let mut writer = &stream;
     let payload = serde_json::to_string(req).map_err(|e| e.to_string())?;
-    stream
+    writer
         .write_all(format!("{}\n", payload).as_bytes())
         .map_err(|e| format!("Send error: {e}"))?;
 
@@ -97,6 +119,30 @@ fn ipc_send(req: &IpcRequest) -> Result<IpcResponse, String> {
         return Err(resp.error);
     }
     Ok(resp)
+}
+
+// ── Daemon lifecycle (Windows only) ───────────────────────────────────────────
+
+#[cfg(windows)]
+fn start_daemon(app: &AppHandle) -> Result<(), String> {
+    let sidecar_command = app
+        .shell()
+        .sidecar("cernbox-syncd")
+        .map_err(|e| format!("Failed to prepare sidecar: {e}"))?;
+
+    let (_rx, child) = sidecar_command
+        .spawn()
+        .map_err(|e| format!("Failed to spawn daemon: {e}"))?;
+
+    let handle = tauri::async_runtime::spawn(async move {
+        // Keep the child handle alive for the lifetime of the app.
+        // Dropping it would kill the process on some platforms.
+        let _ = child;
+        std::future::pending::<()>().await;
+    });
+
+    app.state::<DaemonState>().child.lock().unwrap().replace(handle);
+    Ok(())
 }
 
 // ── Tauri commands ─────────────────────────────────────────────────────────────
@@ -221,6 +267,21 @@ fn ipc_set_settings(log_rotate_max_age: Option<String>) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            // On Windows the daemon is bundled as a sidecar and started automatically.
+            // On Linux/macOS the user is expected to run cernbox-syncd themselves.
+            #[cfg(windows)]
+            {
+                app.manage(DaemonState {
+                    child: Mutex::new(None),
+                });
+                if let Err(e) = start_daemon(app.handle()) {
+                    eprintln!("Warning: could not start cernbox-syncd sidecar: {e}");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             ipc_list,
             ipc_add,
