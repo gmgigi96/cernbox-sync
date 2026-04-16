@@ -214,6 +214,13 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			return fail("cannot create local dir: " + err.Error())
 		}
 		req.Folder.LocalRoot = abs
+		existing, err := d.cfgDB.GetByRemoteBase(req.Folder.RemoteBase)
+		if err != nil {
+			return fail(err.Error())
+		}
+		if existing != nil {
+			return fail(fmt.Sprintf("space %q is already registered as sync folder %q", req.Folder.RemoteBase, existing.Name))
+		}
 		if err := d.cfgDB.Add(req.Folder); err != nil {
 			return fail(err.Error())
 		}

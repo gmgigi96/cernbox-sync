@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { ArrowLeft, Grid3X3, Search, ChevronLeft, ChevronRight } from "lucide-react";
 import { listSpaces } from "../graph";
-import type { Space } from "../types";
+import type { Folder, Space } from "../types";
 
 interface SpacePickerProps {
   serverUrl: string;
   username: string;
   password: string;
+  existingFolders: Folder[];
   onBack: () => void;
   onSelectSpace: (space: Space) => void;
 }
@@ -15,7 +16,7 @@ type Filter = "all" | "personal" | "project";
 
 const PAGE_SIZE = 12;
 
-export function SpacePicker({ serverUrl, username, password, onBack, onSelectSpace }: SpacePickerProps) {
+export function SpacePicker({ serverUrl, username, password, existingFolders, onBack, onSelectSpace }: SpacePickerProps) {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -110,9 +111,12 @@ export function SpacePicker({ serverUrl, username, password, onBack, onSelectSpa
 
         {!loading && !error && pageItems.length > 0 && (
           <div style={styles.grid}>
-            {pageItems.map((space) => (
-              <SpaceCard key={space.id} space={space} onClick={() => onSelectSpace(space)} />
-            ))}
+            {pageItems.map((space) => {
+              const alreadySynced = existingFolders.some((f) => f.RemoteBase === space.webdav_url);
+              return (
+                <SpaceCard key={space.id} space={space} disabled={alreadySynced} onClick={() => { if (!alreadySynced) onSelectSpace(space); }} />
+              );
+            })}
           </div>
         )}
       </div>
@@ -150,7 +154,7 @@ export function SpacePicker({ serverUrl, username, password, onBack, onSelectSpa
 
 // ── SpaceCard ──────────────────────────────────────────────────────────────────
 
-function SpaceCard({ space, onClick }: { space: Space; onClick: () => void }) {
+function SpaceCard({ space, disabled, onClick }: { space: Space; disabled: boolean; onClick: () => void }) {
   const [hovered, setHovered] = useState(false);
   const isPersonal = space.drive_type === "personal";
   const gradient = isPersonal
@@ -159,14 +163,16 @@ function SpaceCard({ space, onClick }: { space: Space; onClick: () => void }) {
 
   return (
     <div
-      style={{ ...styles.card, ...(hovered ? styles.cardHovered : {}) }}
+      style={{ ...styles.card, ...(hovered && !disabled ? styles.cardHovered : {}), ...(disabled ? styles.cardDisabled : {}) }}
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
+      onMouseEnter={() => { if (!disabled) setHovered(true); }}
       onMouseLeave={() => setHovered(false)}
+      title={disabled ? "Already synced" : undefined}
     >
       <div style={{ ...styles.thumbnail, background: gradient }}>
         <Grid3X3 size={24} strokeWidth={1} style={{ color: "rgba(255,255,255,0.45)" }} />
         {isPersonal && <span style={styles.personalBadge}>PERSONAL</span>}
+        {disabled && <span style={styles.syncedBadge}>SYNCED</span>}
       </div>
       <div style={styles.cardBody}>
         <div style={styles.cardInfo}>
@@ -290,6 +296,10 @@ const styles: Record<string, React.CSSProperties> = {
     background: "var(--surface-container-highest)",
     transform: "translateY(-2px)",
   },
+  cardDisabled: {
+    opacity: 0.5,
+    cursor: "default",
+  },
   thumbnail: {
     height: 90,
     display: "flex",
@@ -306,6 +316,18 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: "0.06em",
     background: "rgba(180,197,255,0.2)",
     color: "var(--primary)",
+    padding: "0.125rem 0.375rem",
+    borderRadius: "var(--radius-full)",
+  },
+  syncedBadge: {
+    position: "absolute" as const,
+    top: "0.5rem",
+    right: "0.5rem",
+    fontSize: "0.5625rem",
+    fontWeight: 700,
+    letterSpacing: "0.06em",
+    background: "rgba(100,220,100,0.25)",
+    color: "#6fcf97",
     padding: "0.125rem 0.375rem",
     borderRadius: "var(--radius-full)",
   },

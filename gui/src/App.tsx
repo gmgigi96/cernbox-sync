@@ -56,6 +56,7 @@ export function App() {
           serverUrl={SERVER_URL}
           username={account.username}
           password={account.password}
+          existingFolders={daemon.folders}
           onBack={() => setFlow({ step: "none" })}
           onSelectSpace={(space) => setFlow({ step: "folderPicker", space })}
         />

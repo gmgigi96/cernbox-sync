@@ -152,6 +152,25 @@ func (d *DB) All() ([]Folder, error) {
 	return result, rows.Err()
 }
 
+// GetByRemoteBase returns the folder whose RemoteBase matches the given URL,
+// or (nil, nil) if none is found.
+func (d *DB) GetByRemoteBase(remoteBase string) (*Folder, error) {
+	row := d.conn.QueryRow(
+		`SELECT name, local_root, remote_base, folders FROM sync_folders WHERE remote_base = ?`, remoteBase,
+	)
+	var f Folder
+	var foldersJSON string
+	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("get folder by remote_base %q: %w", remoteBase, err)
+	}
+	if err := json.Unmarshal([]byte(foldersJSON), &f.Folders); err != nil {
+		return nil, fmt.Errorf("unmarshal folders for remote_base %q: %w", remoteBase, err)
+	}
+	return &f, nil
+}
+
 // Remove deletes the folder with the given name.
 func (d *DB) Remove(name string) error {
 	res, err := d.conn.Exec(`DELETE FROM sync_folders WHERE name = ?`, name)

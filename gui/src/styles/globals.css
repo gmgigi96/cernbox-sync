@@ -174,6 +174,10 @@ button {
 .btn-secondary:hover {
   background: rgba(180, 197, 255, 0.06);
 }
+.btn-secondary:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 .btn-ghost {
   background: transparent;

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ArrowLeft,
   Folder,
@@ -56,8 +56,9 @@ function sortChildren(nodes: TreeNode[]): TreeNode[] {
   });
 }
 
-/** Collect all hrefs in a subtree (including the root node itself). */
+/** Collect all collection hrefs in a subtree (including the root node itself). Files are excluded since sync operates at folder granularity. */
 function collectHrefs(node: TreeNode): string[] {
+  if (!node.resource.isCollection) return [];
   const hrefs = [node.resource.href];
   if (node.children) {
     for (const child of node.children) hrefs.push(...collectHrefs(child));
@@ -73,6 +74,56 @@ function subtreeSize(node: TreeNode): number {
   if (!node.resource.isCollection) return node.resource.size;
   if (node.resource.size > 0) return node.resource.size;
   return (node.children ?? []).reduce((acc, c) => acc + subtreeSize(c), 0);
+}
+
+/**
+ * Recursively collect the minimal set of URLs that represents the selection.
+ * - Fully selected node: emit its own href (no need to recurse into children).
+ * - Partially selected node: recurse into children to find the selected subtrees.
+ * - Unselected node: emit nothing.
+ */
+function collectSelectedUrls(node: TreeNode, selected: Set<string>): string[] {
+  const state = nodeSelectionState(node, selected);
+  if (state === "none") return [];
+  if (state === "all") return [node.resource.href];
+  // partial — recurse into children
+  const urls: string[] = [];
+  for (const child of node.children ?? []) {
+    urls.push(...collectSelectedUrls(child, selected));
+  }
+  return urls;
+}
+
+/**
+ * Remove from `selected` any folder href whose subtree has become fully
+ * deselected. Mutates `selected` in place.
+ * Returns true if this node or any of its descendants is still selected.
+ */
+function pruneEmptyAncestors(node: TreeNode, selected: Set<string>): boolean {
+  if (!node.resource.isCollection) return false;
+  const anyChildSelected = (node.children ?? []).some((c) => pruneEmptyAncestors(c, selected));
+  if (!anyChildSelected && selected.has(node.resource.href)) {
+    // No descendants are selected — only keep this href if its children haven't
+    // been loaded yet (null means unloaded; we treat it as a valid leaf selection).
+    if (node.children !== null) {
+      selected.delete(node.resource.href);
+      return false;
+    }
+  }
+  return anyChildSelected || selected.has(node.resource.href);
+}
+
+/** Recursively collect the fully-selected nodes (for sidebar display and size). */
+function collectSelectedNodes(node: TreeNode, selected: Set<string>): TreeNode[] {
+  const state = nodeSelectionState(node, selected);
+  if (state === "none") return [];
+  if (state === "all") return [node];
+  // partial — recurse into children
+  const nodes: TreeNode[] = [];
+  for (const child of node.children ?? []) {
+    nodes.push(...collectSelectedNodes(child, selected));
+  }
+  return nodes;
 }
 
 /** Compute selection state for a node given the selected set. */
@@ -105,6 +156,8 @@ function makeSpaceRootNode(space: Space): TreeNode {
 
 export function FolderPicker({ space, username, password, onBack, onConfirm }: FolderPickerProps) {
   const [rootNode, setRootNode] = useState<TreeNode>(() => makeSpaceRootNode(space));
+  const rootNodeRef = useRef(rootNode);
+  rootNodeRef.current = rootNode;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -189,35 +242,25 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
       } else {
         hrefs.forEach((h) => next.add(h));
       }
+      // Clean up ancestor hrefs that no longer have any selected descendants
+      pruneEmptyAncestors(rootNodeRef.current, next);
       return next;
     });
   }
 
   // ── Stats ────────────────────────────────────────────────────────────────────
 
-  const selState = nodeSelectionState(rootNode, selected);
-  const totalSelectedSize = selState !== "none" ? subtreeSize(rootNode) : 0;
-
-  // Selected items to show in the sidebar: if the root itself is fully selected,
-  // show it; otherwise show its selected children.
-  const selectedTopLevel: TreeNode[] = selState === "all"
-    ? [rootNode]
-    : (rootNode.children ?? []).filter((n: TreeNode) => nodeSelectionState(n, selected) !== "none");
+  const selectedTopLevel = collectSelectedNodes(rootNode, selected);
+  const totalSelectedSize = selectedTopLevel.reduce((acc, n) => acc + subtreeSize(n), 0);
 
   // ── Confirm ──────────────────────────────────────────────────────────────────
 
   function handleConfirm() {
-    // If the root space node is fully selected, sync the whole space.
-    // Otherwise collect selected children hrefs.
-    const rootSelState = nodeSelectionState(rootNode, selected);
-    if (rootSelState === "all") {
-      onConfirm([rootNode.resource.href]);
+    if (nodeSelectionState(rootNode, selected) === "all") {
+      onConfirm([]);
       return;
     }
-    const childSelected = (rootNode.children ?? [])
-      .filter((n: TreeNode) => nodeSelectionState(n, selected) !== "none")
-      .map((n: TreeNode) => n.resource.href);
-    onConfirm(childSelected.length > 0 ? childSelected : [rootNode.resource.href]);
+    onConfirm(collectSelectedUrls(rootNode, selected));
   }
 
   // ── Render ───────────────────────────────────────────────────────────────────
