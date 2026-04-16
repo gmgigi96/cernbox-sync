@@ -5,6 +5,7 @@ package config
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS sync_folders (
     name        TEXT    NOT NULL,
     local_root  TEXT    NOT NULL,
     remote_base TEXT    NOT NULL,
+    folders     TEXT    NOT NULL DEFAULT '[]',
     PRIMARY KEY (name)
 );
 CREATE TABLE IF NOT EXISTS settings (
@@ -42,6 +44,9 @@ type Folder struct {
 	Name       string
 	LocalRoot  string
 	RemoteBase string
+	// Folders is the list of sub-folder names (relative to RemoteBase) to
+	// synchronize. An empty slice means "sync the entire space".
+	Folders []string
 }
 
 // DB is the global application configuration store.
@@ -77,6 +82,8 @@ func Open(path string) (*DB, error) {
 		conn.Close()
 		return nil, fmt.Errorf("create config schema: %w", err)
 	}
+	// Migration: add folders column if it does not exist yet (added in v2).
+	_, _ = conn.Exec(`ALTER TABLE sync_folders ADD COLUMN folders TEXT NOT NULL DEFAULT '[]'`)
 	return &DB{conn: conn}, nil
 }
 
@@ -85,9 +92,16 @@ func (d *DB) Close() error { return d.conn.Close() }
 
 // Add registers a new sync folder pair. Returns an error if the name already exists.
 func (d *DB) Add(f Folder) error {
-	_, err := d.conn.Exec(
-		`INSERT INTO sync_folders (name, local_root, remote_base) VALUES (?, ?, ?)`,
-		f.Name, f.LocalRoot, f.RemoteBase,
+	foldersJSON, err := json.Marshal(f.Folders)
+	if err != nil {
+		return fmt.Errorf("marshal folders for %q: %w", f.Name, err)
+	}
+	if f.Folders == nil {
+		foldersJSON = []byte("[]")
+	}
+	_, err = d.conn.Exec(
+		`INSERT INTO sync_folders (name, local_root, remote_base, folders) VALUES (?, ?, ?, ?)`,
+		f.Name, f.LocalRoot, f.RemoteBase, string(foldersJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("add folder %q: %w", f.Name, err)
@@ -98,13 +112,17 @@ func (d *DB) Add(f Folder) error {
 // Get returns the folder with the given name, or (nil, nil) if not found.
 func (d *DB) Get(name string) (*Folder, error) {
 	row := d.conn.QueryRow(
-		`SELECT name, local_root, remote_base FROM sync_folders WHERE name = ?`, name,
+		`SELECT name, local_root, remote_base, folders FROM sync_folders WHERE name = ?`, name,
 	)
 	var f Folder
-	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase); err == sql.ErrNoRows {
+	var foldersJSON string
+	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("get folder %q: %w", name, err)
+	}
+	if err := json.Unmarshal([]byte(foldersJSON), &f.Folders); err != nil {
+		return nil, fmt.Errorf("unmarshal folders for %q: %w", name, err)
 	}
 	return &f, nil
 }
@@ -112,7 +130,7 @@ func (d *DB) Get(name string) (*Folder, error) {
 // All returns every registered folder.
 func (d *DB) All() ([]Folder, error) {
 	rows, err := d.conn.Query(
-		`SELECT name, local_root, remote_base FROM sync_folders ORDER BY name`,
+		`SELECT name, local_root, remote_base, folders FROM sync_folders ORDER BY name`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list folders: %w", err)
@@ -122,8 +140,12 @@ func (d *DB) All() ([]Folder, error) {
 	var result []Folder
 	for rows.Next() {
 		var f Folder
-		if err := rows.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase); err != nil {
+		var foldersJSON string
+		if err := rows.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON); err != nil {
 			return nil, err
+		}
+		if err := json.Unmarshal([]byte(foldersJSON), &f.Folders); err != nil {
+			return nil, fmt.Errorf("unmarshal folders for %q: %w", f.Name, err)
 		}
 		result = append(result, f)
 	}

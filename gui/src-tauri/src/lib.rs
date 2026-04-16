@@ -15,6 +15,10 @@ pub struct Folder {
     pub local_root: String,
     #[serde(rename = "RemoteBase")]
     pub remote_base: String,
+    /// Sub-folder names relative to RemoteBase to synchronize.
+    /// An empty list means "sync the entire space".
+    #[serde(rename = "Folders", default)]
+    pub folders: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -176,10 +180,15 @@ fn ipc_list() -> Result<Vec<Folder>, String> {
 }
 
 #[tauri::command]
-fn ipc_add(name: String, local_root: String, remote_base: String) -> Result<(), String> {
+fn ipc_add(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "add".into(),
-        folder: Some(Folder { name, local_root, remote_base }),
+        folder: Some(Folder {
+            name,
+            local_root,
+            remote_base,
+            folders: folders.unwrap_or_default(),
+        }),
         name: None,
         settings: None,
         account: None,

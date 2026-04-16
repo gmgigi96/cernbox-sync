@@ -46,6 +46,16 @@ function formatBytes(bytes: number): string {
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
 }
 
+/** Sort tree nodes so directories appear before files, both groups alphabetically. */
+function sortChildren(nodes: TreeNode[]): TreeNode[] {
+  return [...nodes].sort((a, b) => {
+    if (a.resource.isCollection !== b.resource.isCollection) {
+      return a.resource.isCollection ? -1 : 1;
+    }
+    return a.resource.name.localeCompare(b.resource.name);
+  });
+}
+
 /** Collect all hrefs in a subtree (including the root node itself). */
 function collectHrefs(node: TreeNode): string[] {
   const hrefs = [node.resource.href];
@@ -55,9 +65,13 @@ function collectHrefs(node: TreeNode): string[] {
   return hrefs;
 }
 
-/** Sum the sizes of all non-collection descendants. */
+/** Return the size of a node's subtree.
+ *  - Files: use resource.size directly.
+ *  - Collections with a server-provided oc:size (resource.size > 0): use it directly.
+ *  - Collections without a server size (synthetic root): sum loaded children. */
 function subtreeSize(node: TreeNode): number {
   if (!node.resource.isCollection) return node.resource.size;
+  if (node.resource.size > 0) return node.resource.size;
   return (node.children ?? []).reduce((acc, c) => acc + subtreeSize(c), 0);
 }
 
@@ -106,12 +120,12 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
       .then((resources) => {
         setRootNode({
           ...spaceRoot,
-          children: resources.map((r) => ({
+          children: sortChildren(resources.map((r) => ({
             resource: r,
             children: r.isCollection ? null : [],
             loading: false,
             error: null,
-          })),
+          }))),
         });
         // Auto-expand the space root so children are visible immediately
         setExpanded((prev) => new Set(prev).add(spaceRoot.resource.href));
@@ -145,12 +159,12 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
         updateNode(node, (n) => ({
           ...n,
           loading: false,
-          children: resources.map((r) => ({
+          children: sortChildren(resources.map((r) => ({
             resource: r,
             children: r.isCollection ? null : [],
             loading: false,
             error: null,
-          })),
+          }))),
         }));
       })
       .catch((e) => {
@@ -408,7 +422,7 @@ function TreeRow({ node, depth, expanded, selected, onToggleExpand, onToggleSele
 
         {/* Size */}
         <span style={s.rowSize}>
-          {resource.isCollection ? "—" : formatBytes(resource.size)}
+          {formatBytes(subtreeSize(node))}
         </span>
 
         {/* Status badge — folders only */}

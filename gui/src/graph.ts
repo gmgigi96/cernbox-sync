@@ -88,7 +88,7 @@ export async function listRemoteResources(
       Depth: "1",
       "Content-Type": "application/xml",
     },
-    body: `<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:displayname/><D:resourcetype/><D:getcontentlength/><D:getlastmodified/></D:prop></D:propfind>`,
+    body: `<?xml version="1.0"?><D:propfind xmlns:D="DAV:" xmlns:OC="http://owncloud.org/ns"><D:prop><D:displayname/><D:resourcetype/><D:getcontentlength/><D:getlastmodified/><OC:size/></D:prop></D:propfind>`,
   });
 
   if (!resp.ok && resp.status !== 207) {
@@ -114,8 +114,11 @@ export async function listRemoteResources(
       "";
     const isCollection =
       r.getElementsByTagNameNS("DAV:", "collection").length > 0;
-    const sizeText =
+    const contentLengthText =
       r.getElementsByTagNameNS("DAV:", "getcontentlength")[0]?.textContent?.trim() ?? "0";
+    const ocSizeText =
+      r.getElementsByTagNameNS("http://owncloud.org/ns", "size")[0]?.textContent?.trim() ?? "0";
+    const sizeText = isCollection ? ocSizeText : contentLengthText;
     const lastModified =
       r.getElementsByTagNameNS("DAV:", "getlastmodified")[0]?.textContent?.trim() ?? "";
 

@@ -5,8 +5,8 @@ export const ipc = {
   list(): Promise<Folder[]> {
     return invoke<Folder[]>("ipc_list");
   },
-  add(name: string, localRoot: string, remoteBase: string): Promise<void> {
-    return invoke("ipc_add", { name, localRoot, remoteBase });
+  add(name: string, localRoot: string, remoteBase: string, folders?: string[]): Promise<void> {
+    return invoke("ipc_add", { name, localRoot, remoteBase, folders: folders ?? null });
   },
   getAccount(): Promise<Account | null> {
     return invoke<Account | null>("ipc_get_account");

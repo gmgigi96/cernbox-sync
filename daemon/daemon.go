@@ -165,6 +165,7 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	cfg := engine.Config{
 		LocalRoot:  f.LocalRoot,
 		RemoteBase: f.RemoteBase,
+		Folders:    f.Folders,
 		Username:   username,
 		Password:   password,
 		DBPath:     filepath.Join(f.LocalRoot, ".sync.db"),

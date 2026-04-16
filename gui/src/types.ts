@@ -2,6 +2,8 @@ export interface Folder {
   Name: string;
   LocalRoot: string;
   RemoteBase: string;
+  /** Sub-folder names relative to RemoteBase. Empty means sync entire space. */
+  Folders: string[];
 }
 
 export interface Account {

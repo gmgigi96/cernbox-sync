@@ -39,6 +39,9 @@ type Config struct {
 	LocalRoot string
 	// RemoteBase is the full WebDAV URL of the remote root directory.
 	RemoteBase string
+	// Folders is the list of top-level sub-folder names (relative to
+	// RemoteBase) to synchronize. An empty slice means "sync everything".
+	Folders []string
 	// Username / Password for basic auth.
 	Username string
 	Password string
@@ -98,7 +101,7 @@ func Run(cfg Config) error {
 	defer state.Close()
 
 	// ── 1. Remote scan ───────────────────────────────────────────────────────
-	remoteMap, err := scanRemote(wdc)
+	remoteMap, err := scanRemote(wdc, cfg.Folders)
 	if err != nil {
 		return fmt.Errorf("remote scan: %w", err)
 	}
@@ -133,14 +136,38 @@ func Run(cfg Config) error {
 
 // ─── remote scan ─────────────────────────────────────────────────────────────
 
-// scanRemote does a BFS PROPFIND (Depth 1) to build the full remote tree.
+// scanRemote does a BFS PROPFIND (Depth 1) to build the remote tree.
 // Returns a map of relative path → Resource.
 // The root itself (empty path "") is included.
-func scanRemote(wdc *webdav.Client) (map[string]*webdav.Resource, error) {
+//
+// If folders is non-empty only those top-level sub-directories (and their
+// descendants) are visited; the root entry is still included so the engine
+// can track the anchor point.
+func scanRemote(wdc *webdav.Client, folders []string) (map[string]*webdav.Resource, error) {
 	result := make(map[string]*webdav.Resource)
 
-	// Queue of remote paths to explore (relative to base).
-	queue := []string{""}
+	// Seed the BFS queue.
+	// When a folder filter is active we start directly from each selected
+	// sub-folder instead of the root, but we still record the root entry so
+	// the rest of the algorithm has a stable anchor.
+	var queue []string
+	if len(folders) == 0 {
+		// No filter — traverse everything from the root.
+		queue = []string{""}
+	} else {
+		// Record the root resource without recursing into all children.
+		rootEntries, err := wdc.Propfind("", 1)
+		if err != nil {
+			return nil, fmt.Errorf("propfind root: %w", err)
+		}
+		if len(rootEntries) > 0 {
+			result[""] = &rootEntries[0]
+		}
+		// Seed the queue with only the selected sub-folders.
+		for _, f := range folders {
+			queue = append(queue, f)
+		}
+	}
 
 	for len(queue) > 0 {
 		cur := queue[0]
