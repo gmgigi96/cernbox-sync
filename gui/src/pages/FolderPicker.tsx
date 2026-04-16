@@ -71,8 +71,25 @@ function nodeSelectionState(node: TreeNode, selected: Set<string>): SelectionSta
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
+// Build the synthetic root node representing the space itself.
+// Its children are loaded lazily (null = not yet loaded).
+function makeSpaceRootNode(space: Space): TreeNode {
+  return {
+    resource: {
+      href: space.webdav_url.endsWith("/") ? space.webdav_url : space.webdav_url + "/",
+      name: space.name,
+      isCollection: true,
+      size: 0,
+      lastModified: "",
+    },
+    children: null,
+    loading: false,
+    error: null,
+  };
+}
+
 export function FolderPicker({ space, username, password, onBack, onConfirm }: FolderPickerProps) {
-  const [rootNodes, setRootNodes] = useState<TreeNode[]>([]);
+  const [rootNode, setRootNode] = useState<TreeNode>(() => makeSpaceRootNode(space));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -83,16 +100,20 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
   const loadRoot = useCallback(() => {
     setLoading(true);
     setError(null);
+    const spaceRoot = makeSpaceRootNode(space);
     listRemoteResources(space.webdav_url, username, password)
       .then((resources) => {
-        setRootNodes(
-          resources.map((r) => ({
+        setRootNode({
+          ...spaceRoot,
+          children: resources.map((r) => ({
             resource: r,
             children: r.isCollection ? null : [],
             loading: false,
             error: null,
           })),
-        );
+        });
+        // Auto-expand the space root so children are visible immediately
+        setExpanded((prev) => new Set(prev).add(spaceRoot.resource.href));
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -138,7 +159,7 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
 
   /** Immutably update a node anywhere in the tree by href. */
   function updateNode(target: TreeNode, fn: (n: TreeNode) => TreeNode) {
-    setRootNodes((prev) => updateInForest(prev, target.resource.href, fn));
+    setRootNode((prev) => updateInTree(prev, target.resource.href, fn));
   }
 
   // ── Selection logic ──────────────────────────────────────────────────────────
@@ -159,20 +180,29 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
 
   // ── Stats ────────────────────────────────────────────────────────────────────
 
-  const totalSelectedSize = rootNodes
-    .filter((n) => nodeSelectionState(n, selected) !== "none")
-    .reduce((acc, n) => acc + subtreeSize(n), 0);
+  const selState = nodeSelectionState(rootNode, selected);
+  const totalSelectedSize = selState !== "none" ? subtreeSize(rootNode) : 0;
 
-  const selectedTopLevel = rootNodes.filter((n) => selected.has(n.resource.href));
+  // Selected items to show in the sidebar: if the root itself is fully selected,
+  // show it; otherwise show its selected children.
+  const selectedTopLevel: TreeNode[] = selState === "all"
+    ? [rootNode]
+    : (rootNode.children ?? []).filter((n: TreeNode) => nodeSelectionState(n, selected) !== "none");
 
   // ── Confirm ──────────────────────────────────────────────────────────────────
 
   function handleConfirm() {
-    // Return only top-level selected hrefs (we'll sync those entire subtrees)
-    const topSelected = rootNodes
-      .filter((n) => nodeSelectionState(n, selected) !== "none")
-      .map((n) => n.resource.href);
-    onConfirm(topSelected.length > 0 ? topSelected : [space.webdav_url]);
+    // If the root space node is fully selected, sync the whole space.
+    // Otherwise collect selected children hrefs.
+    const rootSelState = nodeSelectionState(rootNode, selected);
+    if (rootSelState === "all") {
+      onConfirm([rootNode.resource.href]);
+      return;
+    }
+    const childSelected = (rootNode.children ?? [])
+      .filter((n: TreeNode) => nodeSelectionState(n, selected) !== "none")
+      .map((n: TreeNode) => n.resource.href);
+    onConfirm(childSelected.length > 0 ? childSelected : [rootNode.resource.href]);
   }
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -218,22 +248,17 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
                 <button className="btn-secondary" onClick={loadRoot}>Retry</button>
               </div>
             )}
-            {!loading && !error && rootNodes.length === 0 && (
-              <div style={s.center}>
-                <p style={{ color: "var(--outline)", fontSize: "0.8125rem" }}>This space is empty.</p>
-              </div>
-            )}
-            {!loading && !error && rootNodes.map((node) => (
+            {!loading && !error && (
               <TreeRow
-                key={node.resource.href}
-                node={node}
+                key={rootNode.resource.href}
+                node={rootNode}
                 depth={0}
                 expanded={expanded}
                 selected={selected}
                 onToggleExpand={toggleExpand}
                 onToggleSelect={toggleSelect}
               />
-            ))}
+            )}
           </div>
         </div>
 
@@ -442,12 +467,16 @@ function CheckboxIcon({ state }: { state: SelectionState }) {
 
 // ── Tree update helper ─────────────────────────────────────────────────────────
 
-function updateInForest(nodes: TreeNode[], href: string, fn: (n: TreeNode) => TreeNode): TreeNode[] {
-  return nodes.map((n) => {
-    if (n.resource.href === href) return fn(n);
-    if (n.children) return { ...n, children: updateInForest(n.children, href, fn) };
-    return n;
-  });
+/** Immutably update a single node anywhere in the tree rooted at `root`. */
+function updateInTree(root: TreeNode, href: string, fn: (n: TreeNode) => TreeNode): TreeNode {
+  if (root.resource.href === href) return fn(root);
+  if (root.children) {
+    return {
+      ...root,
+      children: root.children.map((n) => updateInTree(n, href, fn)),
+    };
+  }
+  return root;
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
