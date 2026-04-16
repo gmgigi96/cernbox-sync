@@ -23,3 +23,7 @@ gui/src-tauri/target/
 gui/src-tauri/gen/
 gui/src-tauri/Cargo.lock
 gui/src-tauri/binaries/
+
+# Local env overrides (never commit)
+gui/.env.local
+gui/.env.*.local
