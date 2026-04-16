@@ -216,7 +216,7 @@ export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }:
                 key={entry.path}
                 entry={entry}
                 selected={selected === entry.path}
-                onSelect={() => { if (entry.name !== "..") setSelected(entry.path); }}
+                onSelect={() => { if (entry.is_dir && entry.name !== "..") setSelected(entry.path); }}
                 onNavigate={() => navigate(entry)}
               />
             ))}

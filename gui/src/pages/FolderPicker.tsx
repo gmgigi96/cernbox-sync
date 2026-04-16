@@ -349,6 +349,7 @@ function TreeRow({ node, depth, expanded, selected, onToggleExpand, onToggleSele
   const [hovered, setHovered] = useState(false);
   const { resource } = node;
   const isOpen = expanded.has(resource.href);
+  const isFile = !resource.isCollection;
   const selState = nodeSelectionState(node, selected);
 
   return (
@@ -357,19 +358,25 @@ function TreeRow({ node, depth, expanded, selected, onToggleExpand, onToggleSele
         style={{
           ...s.treeRow,
           paddingLeft: `${0.75 + depth * 1.25}rem`,
-          background: hovered ? "var(--surface-container-high)" : "transparent",
+          background: !isFile && hovered ? "var(--surface-container-high)" : "transparent",
+          opacity: isFile ? 0.45 : 1,
+          cursor: isFile ? "default" : "pointer",
         }}
-        onMouseEnter={() => setHovered(true)}
+        onMouseEnter={() => { if (!isFile) setHovered(true); }}
         onMouseLeave={() => setHovered(false)}
       >
-        {/* Checkbox */}
-        <button
-          style={s.checkbox}
-          onClick={() => onToggleSelect(node)}
-          title={selState === "all" ? "Deselect" : "Select"}
-        >
-          <CheckboxIcon state={selState} />
-        </button>
+        {/* Checkbox — folders only */}
+        {resource.isCollection ? (
+          <button
+            style={s.checkbox}
+            onClick={() => onToggleSelect(node)}
+            title={selState === "all" ? "Deselect" : "Select"}
+          >
+            <CheckboxIcon state={selState} />
+          </button>
+        ) : (
+          <span style={{ ...s.checkbox, width: 15, flexShrink: 0 }} />
+        )}
 
         {/* Expand toggle (collections only) */}
         {resource.isCollection ? (
@@ -404,10 +411,10 @@ function TreeRow({ node, depth, expanded, selected, onToggleExpand, onToggleSele
           {resource.isCollection ? "—" : formatBytes(resource.size)}
         </span>
 
-        {/* Status badge */}
+        {/* Status badge — folders only */}
         <span style={s.rowStatus}>
-          {selState === "all" && <span className="chip chip-success">SELECTED</span>}
-          {selState === "partial" && <span className="chip chip-warning">PARTIAL</span>}
+          {resource.isCollection && selState === "all" && <span className="chip chip-success">SELECTED</span>}
+          {resource.isCollection && selState === "partial" && <span className="chip chip-warning">PARTIAL</span>}
         </span>
       </div>
 
