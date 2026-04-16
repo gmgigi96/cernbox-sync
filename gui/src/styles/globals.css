@@ -10,8 +10,8 @@
 
   /* Primary */
   --primary:           #B4C5FF;
-  --primary-container: #2563EB;
-  --on-primary:        #0A1240;
+  --primary-container: #1D4ED8;
+  --on-primary:        #FFFFFF;
 
   /* On-surface */
   --on-surface:         #E2E4F3;
@@ -30,7 +30,7 @@
   --success:               #6BD9A0;
 
   /* Gradient */
-  --gradient-primary: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%);
+  --gradient-primary: linear-gradient(90deg, #1A4FBF 0%, #4A8FE7 100%);
 
   /* Typography */
   --font-family: "Inter", system-ui, -apple-system, sans-serif;

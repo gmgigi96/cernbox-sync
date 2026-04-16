@@ -332,12 +332,12 @@ const styles: Record<string, React.CSSProperties> = {
   folderIcon: {
     width: 36,
     height: 36,
-    background: "var(--surface-container-highest)",
+    background: "var(--gradient-primary)",
     borderRadius: "var(--radius-lg)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    color: "var(--primary)",
+    color: "#FFFFFF",
     flexShrink: 0,
   },
   folderName: {
