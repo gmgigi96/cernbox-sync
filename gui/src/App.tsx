@@ -6,17 +6,23 @@ import { Folders } from "./pages/Folders";
 import { Settings } from "./pages/Settings";
 import { AccountSetup } from "./pages/AccountSetup";
 import { SpacePicker } from "./pages/SpacePicker";
+import { FolderPicker } from "./pages/FolderPicker";
 import { useDaemon } from "./hooks/useDaemon";
 import { ipc } from "./ipc";
 import type { Account, NavPage, Space } from "./types";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 
+type FlowStep =
+  | { step: "none" }
+  | { step: "spacePicker" }
+  | { step: "folderPicker"; space: Space }
+  | { step: "localPath"; space: Space; remoteUrls: string[] };
+
 export function App() {
   const daemon = useDaemon();
   const [page, setPage] = useState<NavPage>("dashboard");
-  const [showSpacePicker, setShowSpacePicker] = useState(false);
-  const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
+  const [flow, setFlow] = useState<FlowStep>({ step: "none" });
   // null = still checking, false = no account, Account = loaded
   const [account, setAccount] = useState<Account | null | false>(null);
 
@@ -39,25 +45,35 @@ export function App() {
   }
 
   function openAddFolder() {
-    setShowSpacePicker(true);
-    setSelectedSpace(null);
-  }
-
-  function handleSpaceSelected(space: Space) {
-    setShowSpacePicker(false);
-    setSelectedSpace(space);
+    setFlow({ step: "spacePicker" });
   }
 
   // Space picker replaces the main content area.
-  if (showSpacePicker) {
+  if (flow.step === "spacePicker") {
     return (
       <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
         <SpacePicker
           serverUrl={SERVER_URL}
           username={account.username}
           password={account.password}
-          onBack={() => setShowSpacePicker(false)}
-          onSelectSpace={handleSpaceSelected}
+          onBack={() => setFlow({ step: "none" })}
+          onSelectSpace={(space) => setFlow({ step: "folderPicker", space })}
+        />
+      </Layout>
+    );
+  }
+
+  // Folder picker replaces the main content area.
+  if (flow.step === "folderPicker") {
+    const { space } = flow;
+    return (
+      <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
+        <FolderPicker
+          space={space}
+          username={account.username}
+          password={account.password}
+          onBack={() => setFlow({ step: "spacePicker" })}
+          onConfirm={(remoteUrls) => setFlow({ step: "localPath", space, remoteUrls })}
         />
       </Layout>
     );
@@ -75,11 +91,12 @@ export function App() {
         {page === "settings" && <Settings />}
       </Layout>
 
-      {selectedSpace !== null && (
+      {flow.step === "localPath" && (
         <LocalPathModal
-          space={selectedSpace}
+          space={flow.space}
+          remoteUrls={flow.remoteUrls}
           daemon={daemon}
-          onClose={() => setSelectedSpace(null)}
+          onClose={() => setFlow({ step: "none" })}
         />
       )}
     </>

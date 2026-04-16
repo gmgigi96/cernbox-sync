@@ -5,15 +5,21 @@ import type { Space } from "../types";
 
 interface LocalPathModalProps {
   space: Space;
+  /** Selected remote URLs from the FolderPicker. Falls back to the space root. */
+  remoteUrls: string[];
   daemon: DaemonState;
   onClose: () => void;
 }
 
-export function LocalPathModal({ space, daemon, onClose }: LocalPathModalProps) {
+export function LocalPathModal({ space, remoteUrls, daemon, onClose }: LocalPathModalProps) {
   const [name, setName] = useState(space.name);
   const [localRoot, setLocalRoot] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Use the first selected URL as the remote base for now.
+  // Once the daemon supports multiple remotes per folder this can be expanded.
+  const remoteBase = remoteUrls[0] ?? space.webdav_url;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -27,7 +33,7 @@ export function LocalPathModal({ space, daemon, onClose }: LocalPathModalProps) 
       await daemon.addFolder({
         Name: name.trim(),
         LocalRoot: localRoot.trim(),
-        RemoteBase: space.webdav_url,
+        RemoteBase: remoteBase,
       });
       onClose();
     } catch (err) {
@@ -87,7 +93,10 @@ export function LocalPathModal({ space, daemon, onClose }: LocalPathModalProps) 
           {/* Remote URL (read-only) */}
           <div style={fieldStyles.wrap}>
             <label style={fieldStyles.label}>Remote URL</label>
-            <input value={space.webdav_url} readOnly style={{ color: "var(--outline)", cursor: "default" }} />
+            <input value={remoteBase} readOnly style={{ color: "var(--outline)", cursor: "default" }} />
+            {remoteUrls.length > 1 && (
+              <p style={fieldStyles.hint}>+{remoteUrls.length - 1} more selected folder{remoteUrls.length > 2 ? "s" : ""} (will be supported in a future update)</p>
+            )}
           </div>
 
           {error && (

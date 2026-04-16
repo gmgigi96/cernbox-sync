@@ -23,3 +23,11 @@ export interface Space {
 }
 
 export type NavPage = "dashboard" | "folders" | "settings";
+
+export interface RemoteResource {
+  href: string;           // full WebDAV href
+  name: string;           // display name
+  isCollection: boolean;
+  size: number;           // bytes (0 for collections)
+  lastModified: string;   // RFC 1123 date string, empty for collections
+}
