@@ -237,6 +237,24 @@ fn ipc_remove(name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn ipc_update(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>) -> Result<(), String> {
+    let req = IpcRequest {
+        cmd: "update".into(),
+        folder: Some(Folder {
+            name,
+            local_root,
+            remote_base,
+            folders: folders.unwrap_or_default(),
+        }),
+        name: None,
+        settings: None,
+        account: None,
+    };
+    ipc_send(&req)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn ipc_sync(name: Option<String>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "sync".into(),
@@ -393,6 +411,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ipc_list,
             ipc_add,
+            ipc_update,
             ipc_remove,
             ipc_sync,
             ipc_status,

@@ -38,6 +38,7 @@ export function AddFolderModal({ onClose, daemon }: AddFolderModalProps) {
         Name: form.name.trim(),
         LocalRoot: form.localRoot.trim(),
         RemoteBase: form.remoteBase.trim(),
+        Folders: [],
       });
       onClose();
     } catch (err) {

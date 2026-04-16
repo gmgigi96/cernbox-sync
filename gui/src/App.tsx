@@ -9,15 +9,15 @@ import { FolderPicker } from "./pages/FolderPicker";
 import { LocalFolderPicker } from "./pages/LocalFolderPicker";
 import { useDaemon } from "./hooks/useDaemon";
 import { ipc } from "./ipc";
-import type { Account, NavPage, Space } from "./types";
+import type { Account, Folder, NavPage, Space } from "./types";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 
 type FlowStep =
   | { step: "none" }
   | { step: "spacePicker" }
-  | { step: "folderPicker"; space: Space }
-  | { step: "localPath"; space: Space; remoteUrls: string[] };
+  | { step: "folderPicker"; space: Space; existingFolder?: Folder }
+  | { step: "localPath"; space: Space; remoteUrls: string[]; existingFolder?: Folder };
 
 export function App() {
   const daemon = useDaemon();
@@ -59,6 +59,7 @@ export function App() {
           existingFolders={daemon.folders}
           onBack={() => setFlow({ step: "none" })}
           onSelectSpace={(space) => setFlow({ step: "folderPicker", space })}
+          onEditSpace={(space, existingFolder) => setFlow({ step: "folderPicker", space, existingFolder })}
         />
       </Layout>
     );
@@ -66,15 +67,16 @@ export function App() {
 
   // Folder picker replaces the main content area.
   if (flow.step === "folderPicker") {
-    const { space } = flow;
+    const { space, existingFolder } = flow;
     return (
       <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
         <FolderPicker
           space={space}
           username={account.username}
           password={account.password}
+          initialUrls={existingFolder?.Folders}
           onBack={() => setFlow({ step: "spacePicker" })}
-          onConfirm={(remoteUrls) => setFlow({ step: "localPath", space, remoteUrls })}
+          onConfirm={(remoteUrls) => setFlow({ step: "localPath", space, remoteUrls, existingFolder })}
         />
       </Layout>
     );
@@ -82,14 +84,15 @@ export function App() {
 
   // Local folder picker replaces the main content area.
   if (flow.step === "localPath") {
-    const { space, remoteUrls } = flow;
+    const { space, remoteUrls, existingFolder } = flow;
     return (
       <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
         <LocalFolderPicker
           space={space}
           remoteUrls={remoteUrls}
+          existingFolder={existingFolder}
           daemon={daemon}
-          onBack={() => setFlow({ step: "folderPicker", space })}
+          onBack={() => setFlow({ step: "folderPicker", space, existingFolder })}
           onDone={() => setFlow({ step: "none" })}
         />
       </Layout>

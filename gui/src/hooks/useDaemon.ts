@@ -9,7 +9,8 @@ export interface DaemonState {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  addFolder: (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase">) => Promise<void>;
+  addFolder: (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase" | "Folders">) => Promise<void>;
+  updateFolder: (f: Folder) => Promise<void>;
   removeFolder: (name: string) => Promise<void>;
   syncFolder: (name?: string) => Promise<void>;
 }
@@ -43,8 +44,16 @@ export function useDaemon(): DaemonState {
   }, [refresh]);
 
   const addFolder = useCallback(
-    async (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase">) => {
-      await ipc.add(f.Name, f.LocalRoot, f.RemoteBase);
+    async (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase" | "Folders">) => {
+      await ipc.add(f.Name, f.LocalRoot, f.RemoteBase, f.Folders.length > 0 ? f.Folders : undefined);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const updateFolder = useCallback(
+    async (f: Folder) => {
+      await ipc.update(f.Name, f.LocalRoot, f.RemoteBase, f.Folders.length > 0 ? f.Folders : undefined);
       await refresh();
     },
     [refresh],
@@ -66,5 +75,5 @@ export function useDaemon(): DaemonState {
     [refresh],
   );
 
-  return { folders, status, daemonOnline, loading, error, refresh, addFolder, removeFolder, syncFolder };
+  return { folders, status, daemonOnline, loading, error, refresh, addFolder, updateFolder, removeFolder, syncFolder };
 }

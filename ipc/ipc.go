@@ -20,6 +20,7 @@ const (
 	CmdAdd         = "add"
 	CmdList        = "list"
 	CmdRemove      = "remove"
+	CmdUpdate      = "update"
 	CmdSync        = "sync"
 	CmdStatus      = "status"
 	CmdStop        = "stop"

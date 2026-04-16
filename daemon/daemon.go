@@ -239,6 +239,20 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		return ok()
 
+	case ipc.CmdUpdate:
+		abs, err := filepath.Abs(req.Folder.LocalRoot)
+		if err != nil {
+			return fail("invalid local path: " + err.Error())
+		}
+		if err := os.MkdirAll(abs, 0o755); err != nil {
+			return fail("cannot create local dir: " + err.Error())
+		}
+		req.Folder.LocalRoot = abs
+		if err := d.cfgDB.Update(req.Folder); err != nil {
+			return fail(err.Error())
+		}
+		return ok()
+
 	case ipc.CmdSync:
 		var folders []config.Folder
 		if req.Name != "" {

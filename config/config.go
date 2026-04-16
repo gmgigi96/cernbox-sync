@@ -171,6 +171,30 @@ func (d *DB) GetByRemoteBase(remoteBase string) (*Folder, error) {
 	return &f, nil
 }
 
+// Update replaces the stored configuration for an existing folder identified
+// by name. Returns an error if no folder with that name exists.
+func (d *DB) Update(f Folder) error {
+	foldersJSON, err := json.Marshal(f.Folders)
+	if err != nil {
+		return fmt.Errorf("marshal folders for %q: %w", f.Name, err)
+	}
+	if f.Folders == nil {
+		foldersJSON = []byte("[]")
+	}
+	res, err := d.conn.Exec(
+		`UPDATE sync_folders SET local_root = ?, remote_base = ?, folders = ? WHERE name = ?`,
+		f.LocalRoot, f.RemoteBase, string(foldersJSON), f.Name,
+	)
+	if err != nil {
+		return fmt.Errorf("update folder %q: %w", f.Name, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("folder %q not found", f.Name)
+	}
+	return nil
+}
+
 // Remove deletes the folder with the given name.
 func (d *DB) Remove(name string) error {
 	res, err := d.conn.Exec(`DELETE FROM sync_folders WHERE name = ?`, name)

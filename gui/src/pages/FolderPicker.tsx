@@ -30,6 +30,8 @@ interface FolderPickerProps {
   space: Space;
   username: string;
   password: string;
+  /** Pre-selected folder URLs to restore when editing an existing sync pair. */
+  initialUrls?: string[];
   onBack: () => void;
   /** Called when the user confirms; receives the list of selected resource URLs */
   onConfirm: (selectedUrls: string[]) => void;
@@ -154,7 +156,7 @@ function makeSpaceRootNode(space: Space): TreeNode {
   };
 }
 
-export function FolderPicker({ space, username, password, onBack, onConfirm }: FolderPickerProps) {
+export function FolderPicker({ space, username, password, initialUrls, onBack, onConfirm }: FolderPickerProps) {
   const [rootNode, setRootNode] = useState<TreeNode>(() => makeSpaceRootNode(space));
   const rootNodeRef = useRef(rootNode);
   rootNodeRef.current = rootNode;
@@ -182,10 +184,23 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
         });
         // Auto-expand the space root so children are visible immediately
         setExpanded((prev) => new Set(prev).add(spaceRoot.resource.href));
+        // Pre-populate selection from initialUrls (edit mode).
+        // initialUrls holds relative paths (e.g. "documents"); convert them
+        // back to absolute hrefs so they match what the tree nodes use.
+        if (initialUrls && initialUrls.length > 0) {
+          const base = spaceRoot.resource.href.endsWith("/")
+            ? spaceRoot.resource.href
+            : spaceRoot.resource.href + "/";
+          const absoluteUrls = initialUrls.map((rel) => base + rel + "/");
+          setSelected(new Set(absoluteUrls));
+        } else if (initialUrls && initialUrls.length === 0) {
+          // Empty array means "entire space selected"
+          setSelected(new Set([spaceRoot.resource.href]));
+        }
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [space.webdav_url, username, password]);
+  }, [space.webdav_url, username, password]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadRoot(); }, [loadRoot]);
 

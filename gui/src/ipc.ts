@@ -14,6 +14,9 @@ export const ipc = {
   setAccount(username: string, password: string): Promise<void> {
     return invoke("ipc_set_account", { username, password });
   },
+  update(name: string, localRoot: string, remoteBase: string, folders?: string[]): Promise<void> {
+    return invoke("ipc_update", { name, localRoot, remoteBase, folders: folders ?? null });
+  },
   remove(name: string): Promise<void> {
     return invoke("ipc_remove", { name });
   },

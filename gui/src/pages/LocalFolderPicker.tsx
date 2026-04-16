@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ArrowLeft,
-  Folder,
+  Folder as FolderIcon,
   FolderPlus,
   ChevronRight,
   HardDrive,
@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { ipc } from "../ipc";
 import type { LocalEntry } from "../ipc";
-import type { Space } from "../types";
+import type { Folder, Space } from "../types";
 import type { DaemonState } from "../hooks/useDaemon";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -21,6 +21,8 @@ import type { DaemonState } from "../hooks/useDaemon";
 interface LocalFolderPickerProps {
   space: Space;
   remoteUrls: string[];
+  /** When set, we are editing an existing sync pair rather than creating a new one. */
+  existingFolder?: Folder;
   daemon: DaemonState;
   onBack: () => void;
   onDone: () => void;
@@ -39,13 +41,13 @@ function parentPath(path: string): string | null {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }: LocalFolderPickerProps) {
+export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, onBack, onDone }: LocalFolderPickerProps) {
   const [currentPath, setCurrentPath] = useState<string>("");
   const [entries, setEntries] = useState<LocalEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [syncName, setSyncName] = useState(space.name);
+  const [selected, setSelected] = useState<string | null>(existingFolder?.LocalRoot ?? null);
+  const [syncName, setSyncName] = useState(existingFolder?.Name ?? space.name);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [newFolderActive, setNewFolderActive] = useState(false);
@@ -53,7 +55,7 @@ export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }:
   const [newFolderError, setNewFolderError] = useState<string | null>(null);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
 
-  const remoteBase = remoteUrls[0] ?? space.webdav_url;
+  const remoteBase = space.webdav_url;
 
   const loadDir = useCallback((path?: string) => {
     setLoading(true);
@@ -79,7 +81,14 @@ export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }:
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { loadDir(); }, [loadDir]);
+  // When editing, open the directory that contains the existing local root
+  useEffect(() => {
+    if (existingFolder?.LocalRoot) {
+      loadDir(parentPath(existingFolder.LocalRoot) ?? undefined);
+    } else {
+      loadDir();
+    }
+  }, [loadDir]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function navigate(entry: LocalEntry) {
     if (!entry.is_dir) return;
@@ -97,11 +106,30 @@ export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }:
     setSubmitError(null);
     setSubmitting(true);
     try {
-      await daemon.addFolder({
-        Name: syncName.trim(),
-        LocalRoot: selected,
-        RemoteBase: remoteBase,
-      });
+      // Convert absolute WebDAV URLs to paths relative to the space root.
+      // The daemon expects e.g. "documents" not "http://host/.../spaces/abc/documents/".
+      const base = remoteBase.endsWith("/") ? remoteBase : remoteBase + "/";
+      const relativeFolders = remoteUrls
+        .map((url) => {
+          const u = url.endsWith("/") ? url : url + "/";
+          return u.startsWith(base) ? u.slice(base.length).replace(/\/$/, "") : null;
+        })
+        .filter((p): p is string => p !== null && p !== "");
+      if (existingFolder) {
+        await daemon.updateFolder({
+          Name: existingFolder.Name,
+          LocalRoot: selected,
+          RemoteBase: remoteBase,
+          Folders: relativeFolders,
+        });
+      } else {
+        await daemon.addFolder({
+          Name: syncName.trim(),
+          LocalRoot: selected,
+          RemoteBase: remoteBase,
+          Folders: relativeFolders,
+        });
+      }
       onDone();
     } catch (err) {
       setSubmitError(String(err));
@@ -156,7 +184,11 @@ export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }:
         </button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={s.title}>Local Folder</h1>
-          <p style={s.subtitle}>Choose the local folder to synchronize with <strong>{space.name}</strong>.</p>
+          <p style={s.subtitle}>
+            {existingFolder
+              ? <>Update the local folder synchronized with <strong>{space.name}</strong>.</>
+              : <>Choose the local folder to synchronize with <strong>{space.name}</strong>.</>}
+          </p>
         </div>
         <button className="btn-icon" onClick={() => loadDir(currentPath || undefined)} title="Reload">
           <RefreshCw size={15} strokeWidth={1.5} />
@@ -223,7 +255,7 @@ export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }:
             {/* Inline new-folder row */}
             {newFolderActive && (
               <div style={s.newFolderRow}>
-                <Folder size={14} strokeWidth={1.5} style={{ color: "var(--primary)", flexShrink: 0 }} />
+                <FolderIcon size={14} strokeWidth={1.5} style={{ color: "var(--primary)", flexShrink: 0 }} />
                 <input
                   ref={newFolderInputRef}
                   style={s.newFolderInput}
@@ -258,7 +290,7 @@ export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }:
             <p style={s.sideCardLabel}>SELECTED FOLDER</p>
             {selected ? (
               <div style={s.summaryRow}>
-                <Folder size={14} strokeWidth={1.5} style={{ color: "var(--primary)", flexShrink: 0 }} />
+                <FolderIcon size={14} strokeWidth={1.5} style={{ color: "var(--primary)", flexShrink: 0 }} />
                 <p style={{ fontSize: "0.8125rem", color: "var(--on-surface)", wordBreak: "break-all" as const }}>
                   {selected}
                 </p>
@@ -315,7 +347,7 @@ export function LocalFolderPicker({ space, remoteUrls, daemon, onBack, onDone }:
               }
             >
               <Check size={14} strokeWidth={2} />
-              {submitting ? "Adding…" : "Add Sync Folder"}
+              {submitting ? (existingFolder ? "Updating…" : "Adding…") : (existingFolder ? "Update Sync Folder" : "Add Sync Folder")}
             </button>
           </div>
         </div>
@@ -359,7 +391,7 @@ function EntryRow({ entry, selected, onSelect, onNavigate }: EntryRowProps) {
       {isParent ? (
         <ChevronUp size={14} strokeWidth={1.5} style={{ color: "var(--outline)", flexShrink: 0 }} />
       ) : (
-        <Folder size={14} strokeWidth={1.5} style={{ color: selected ? "var(--primary)" : "var(--on-surface-variant)", flexShrink: 0 }} />
+        <FolderIcon size={14} strokeWidth={1.5} style={{ color: selected ? "var(--primary)" : "var(--on-surface-variant)", flexShrink: 0 }} />
       )}
 
       {/* Name */}

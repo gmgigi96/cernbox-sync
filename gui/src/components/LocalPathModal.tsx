@@ -34,6 +34,7 @@ export function LocalPathModal({ space, remoteUrls, daemon, onClose }: LocalPath
         Name: name.trim(),
         LocalRoot: localRoot.trim(),
         RemoteBase: remoteBase,
+        Folders: [],
       });
       onClose();
     } catch (err) {

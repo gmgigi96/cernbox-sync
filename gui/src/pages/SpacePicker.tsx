@@ -10,13 +10,15 @@ interface SpacePickerProps {
   existingFolders: Folder[];
   onBack: () => void;
   onSelectSpace: (space: Space) => void;
+  /** Called when the user clicks a space that is already synced (to edit it). */
+  onEditSpace: (space: Space, existingFolder: Folder) => void;
 }
 
 type Filter = "all" | "personal" | "project";
 
 const PAGE_SIZE = 12;
 
-export function SpacePicker({ serverUrl, username, password, existingFolders, onBack, onSelectSpace }: SpacePickerProps) {
+export function SpacePicker({ serverUrl, username, password, existingFolders, onBack, onSelectSpace, onEditSpace }: SpacePickerProps) {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -112,9 +114,18 @@ export function SpacePicker({ serverUrl, username, password, existingFolders, on
         {!loading && !error && pageItems.length > 0 && (
           <div style={styles.grid}>
             {pageItems.map((space) => {
-              const alreadySynced = existingFolders.some((f) => f.RemoteBase === space.webdav_url);
+              const existingFolder = existingFolders.find((f) => f.RemoteBase === space.webdav_url);
+              const alreadySynced = existingFolder !== undefined;
               return (
-                <SpaceCard key={space.id} space={space} disabled={alreadySynced} onClick={() => { if (!alreadySynced) onSelectSpace(space); }} />
+                <SpaceCard
+                  key={space.id}
+                  space={space}
+                  synced={alreadySynced}
+                  onClick={() => {
+                    if (alreadySynced) onEditSpace(space, existingFolder!);
+                    else onSelectSpace(space);
+                  }}
+                />
               );
             })}
           </div>
@@ -154,7 +165,7 @@ export function SpacePicker({ serverUrl, username, password, existingFolders, on
 
 // ── SpaceCard ──────────────────────────────────────────────────────────────────
 
-function SpaceCard({ space, disabled, onClick }: { space: Space; disabled: boolean; onClick: () => void }) {
+function SpaceCard({ space, synced, onClick }: { space: Space; synced: boolean; onClick: () => void }) {
   const [hovered, setHovered] = useState(false);
   const isPersonal = space.drive_type === "personal";
   const gradient = isPersonal
@@ -163,16 +174,16 @@ function SpaceCard({ space, disabled, onClick }: { space: Space; disabled: boole
 
   return (
     <div
-      style={{ ...styles.card, ...(hovered && !disabled ? styles.cardHovered : {}), ...(disabled ? styles.cardDisabled : {}) }}
+      style={{ ...styles.card, ...(hovered ? styles.cardHovered : {}) }}
       onClick={onClick}
-      onMouseEnter={() => { if (!disabled) setHovered(true); }}
+      onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      title={disabled ? "Already synced" : undefined}
+      title={synced ? "Click to update synced folders" : undefined}
     >
       <div style={{ ...styles.thumbnail, background: gradient }}>
         <Grid3X3 size={24} strokeWidth={1} style={{ color: "rgba(255,255,255,0.45)" }} />
         {isPersonal && <span style={styles.personalBadge}>PERSONAL</span>}
-        {disabled && <span style={styles.syncedBadge}>SYNCED</span>}
+        {synced && <span style={styles.syncedBadge}>SYNCED</span>}
       </div>
       <div style={styles.cardBody}>
         <div style={styles.cardInfo}>
@@ -295,10 +306,6 @@ const styles: Record<string, React.CSSProperties> = {
   cardHovered: {
     background: "var(--surface-container-highest)",
     transform: "translateY(-2px)",
-  },
-  cardDisabled: {
-    opacity: 0.5,
-    cursor: "default",
   },
   thumbnail: {
     height: 90,
