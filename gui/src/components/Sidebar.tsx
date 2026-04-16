@@ -4,7 +4,6 @@ import type { NavPage } from "../types";
 interface SidebarProps {
   page: NavPage;
   onNavigate: (p: NavPage) => void;
-  daemonOnline: boolean;
   onAddFolder: () => void;
 }
 
@@ -20,26 +19,12 @@ const NAV_ITEMS: NavItem[] = [
   { id: "settings",  label: "Settings", icon: Settings },
 ];
 
-export function Sidebar({ page, onNavigate, daemonOnline, onAddFolder }: SidebarProps) {
+export function Sidebar({ page, onNavigate, onAddFolder }: SidebarProps) {
   return (
     <aside style={styles.sidebar}>
       {/* Brand */}
       <div style={styles.brand}>
-        <div style={styles.brandIcon}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-            <line x1="12" y1="22.08" x2="12" y2="12"/>
-          </svg>
-        </div>
-        <div>
-          <div style={styles.brandName}>CERNBox</div>
-          <div style={styles.brandSub}>
-            <span style={{ ...styles.statusDot, background: daemonOnline ? "var(--success)" : "var(--error)" }} />
-            {daemonOnline ? "Connected" : "Offline"}
-          </div>
-        </div>
+        <img src="/cernbox-lrg.svg" alt="CERNBox" style={styles.brandLogo} />
       </div>
 
       {/* Navigation */}
@@ -92,27 +77,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   brand: {
     display: "flex",
-    alignItems: "center",
-    gap: "0.625rem",
-    padding: "0 0.5rem",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "0.375rem",
     marginBottom: "1.5rem",
   },
-  brandIcon: {
-    width: 34,
-    height: 34,
-    background: "var(--gradient-primary)",
-    borderRadius: "var(--radius-lg)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "var(--on-primary)",
-    flexShrink: 0,
-  },
-  brandName: {
-    fontSize: "0.875rem",
-    fontWeight: 700,
-    color: "var(--on-surface)",
-    letterSpacing: "-0.01em",
+  brandLogo: {
+    width: "65%",
+    marginLeft: "0.25rem",
+    height: "auto",
   },
   brandSub: {
     fontSize: "0.6875rem",
@@ -120,7 +93,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: "0.3125rem",
-    marginTop: "0.0625rem",
+    padding: "0 0.625rem",
   },
   statusDot: {
     width: 6,

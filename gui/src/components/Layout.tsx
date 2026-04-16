@@ -5,18 +5,16 @@ import type { NavPage } from "../types";
 interface LayoutProps {
   page: NavPage;
   onNavigate: (p: NavPage) => void;
-  daemonOnline: boolean;
   onAddFolder: () => void;
   children: React.ReactNode;
 }
 
-export function Layout({ page, onNavigate, daemonOnline, onAddFolder, children }: LayoutProps) {
+export function Layout({ page, onNavigate, onAddFolder, children }: LayoutProps) {
   return (
     <div style={styles.root}>
       <Sidebar
         page={page}
         onNavigate={onNavigate}
-        daemonOnline={daemonOnline}
         onAddFolder={onAddFolder}
       />
       <main style={styles.main}>{children}</main>

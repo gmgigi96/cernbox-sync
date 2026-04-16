@@ -40,7 +40,6 @@ export function App() {
       <Layout
         page={page}
         onNavigate={navigate}
-        daemonOnline={daemon.daemonOnline}
         onAddFolder={() => setShowAdd(true)}
       >
         {page === "dashboard" && (
