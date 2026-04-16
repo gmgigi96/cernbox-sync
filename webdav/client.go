@@ -201,6 +201,7 @@ func parseResponse(r Response, base string) (Resource, error) {
 		relPath = relPath[idx+len(basePath):]
 	}
 	relPath = strings.TrimLeft(relPath, "/")
+	relPath = strings.TrimRight(relPath, "/")
 	res.Path = relPath
 
 	// Pick up the 200-OK propstat.
