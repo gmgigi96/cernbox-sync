@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import { Layout } from "./components/Layout";
-import { LocalPathModal } from "./components/LocalPathModal";
 import { Dashboard } from "./pages/Dashboard";
 import { Folders } from "./pages/Folders";
 import { Settings } from "./pages/Settings";
 import { AccountSetup } from "./pages/AccountSetup";
 import { SpacePicker } from "./pages/SpacePicker";
 import { FolderPicker } from "./pages/FolderPicker";
+import { LocalFolderPicker } from "./pages/LocalFolderPicker";
 import { useDaemon } from "./hooks/useDaemon";
 import { ipc } from "./ipc";
 import type { Account, NavPage, Space } from "./types";
@@ -79,26 +79,31 @@ export function App() {
     );
   }
 
-  return (
-    <>
+  // Local folder picker replaces the main content area.
+  if (flow.step === "localPath") {
+    const { space, remoteUrls } = flow;
+    return (
       <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
-        {page === "dashboard" && (
-          <Dashboard daemon={daemon} onNavigate={(p) => setPage(p)} />
-        )}
-        {page === "folders" && (
-          <Folders daemon={daemon} onAddFolder={openAddFolder} />
-        )}
-        {page === "settings" && <Settings />}
-      </Layout>
-
-      {flow.step === "localPath" && (
-        <LocalPathModal
-          space={flow.space}
-          remoteUrls={flow.remoteUrls}
+        <LocalFolderPicker
+          space={space}
+          remoteUrls={remoteUrls}
           daemon={daemon}
-          onClose={() => setFlow({ step: "none" })}
+          onBack={() => setFlow({ step: "folderPicker", space })}
+          onDone={() => setFlow({ step: "none" })}
         />
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
+      {page === "dashboard" && (
+        <Dashboard daemon={daemon} onNavigate={(p) => setPage(p)} />
       )}
-    </>
+      {page === "folders" && (
+        <Folders daemon={daemon} onAddFolder={openAddFolder} />
+      )}
+      {page === "settings" && <Settings />}
+    </Layout>
   );
 }

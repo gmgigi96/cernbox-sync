@@ -151,6 +151,15 @@ fn start_daemon(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ── Local filesystem types ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocalEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+}
+
 // ── Tauri commands ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -277,6 +286,68 @@ fn ipc_get_settings() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn list_local_dir(path: Option<String>) -> Result<Vec<LocalEntry>, String> {
+    use std::path::Path;
+
+    let dir_path = match path {
+        Some(ref p) if !p.is_empty() => std::path::PathBuf::from(p),
+        _ => dirs_next::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
+    };
+
+    let read = std::fs::read_dir(&dir_path)
+        .map_err(|e| format!("Cannot read directory: {e}"))?;
+
+    let mut entries: Vec<LocalEntry> = read
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden entries (starting with .)
+            if name.starts_with('.') {
+                return None;
+            }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            // Only include directories
+            if !is_dir {
+                return None;
+            }
+            let path = entry.path().to_string_lossy().to_string();
+            Some(LocalEntry { name, path, is_dir: true })
+        })
+        .collect();
+
+    // Sort alphabetically
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    // Prepend a ".." entry if we're not at the root
+    let parent = Path::new(&dir_path).parent();
+    if let Some(parent_path) = parent {
+        let parent_str = parent_path.to_string_lossy().to_string();
+        entries.insert(0, LocalEntry {
+            name: "..".to_string(),
+            path: parent_str,
+            is_dir: true,
+        });
+    }
+
+    Ok(entries)
+}
+
+#[tauri::command]
+fn create_local_dir(parent: String, name: String) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Folder name cannot be empty".into());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err("Folder name contains invalid characters".into());
+    }
+    let new_path = std::path::Path::new(&parent).join(&name);
+    std::fs::create_dir(&new_path)
+        .map_err(|e| format!("Could not create folder: {e}"))?;
+    Ok(new_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn ipc_set_settings(log_rotate_max_age: Option<String>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "set-settings".into(),
@@ -321,6 +392,8 @@ pub fn run() {
             ipc_set_settings,
             ipc_get_account,
             ipc_set_account,
+            list_local_dir,
+            create_local_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

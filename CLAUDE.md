@@ -48,6 +48,10 @@ Conflict resolution is hardcoded to server wins; the local file is renamed `.con
 
 ## Project Rules
 
+### Development Guidance
+
+- The sync daemon should only contain the logic for the synchronization. This means it just has to know the local and remote path to synchronize and the algorithm to perform it. All the rest should be added in the "client" (GUI and CLI) when a new feature is requested.
+
 ### Verification
 
 - **CRITICAL**: Always build the project and run the tests after any code change and before declaring the task complete.

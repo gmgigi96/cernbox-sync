@@ -5,8 +5,8 @@ export const ipc = {
   list(): Promise<Folder[]> {
     return invoke<Folder[]>("ipc_list");
   },
-  add(name: string, local_root: string, remote_base: string): Promise<void> {
-    return invoke("ipc_add", { name, local_root, remote_base });
+  add(name: string, localRoot: string, remoteBase: string): Promise<void> {
+    return invoke("ipc_add", { name, localRoot, remoteBase });
   },
   getAccount(): Promise<Account | null> {
     return invoke<Account | null>("ipc_get_account");
@@ -29,7 +29,19 @@ export const ipc = {
   getSettings(): Promise<string | null> {
     return invoke<string | null>("ipc_get_settings");
   },
-  setSettings(log_rotate_max_age: string | null): Promise<void> {
-    return invoke("ipc_set_settings", { log_rotate_max_age });
+  setSettings(logRotateMaxAge: string | null): Promise<void> {
+    return invoke("ipc_set_settings", { logRotateMaxAge });
+  },
+  listLocalDir(path?: string): Promise<LocalEntry[]> {
+    return invoke<LocalEntry[]>("list_local_dir", { path: path ?? null });
+  },
+  createLocalDir(parent: string, name: string): Promise<string> {
+    return invoke<string>("create_local_dir", { parent, name });
   },
 };
+
+export interface LocalEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+}

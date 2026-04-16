@@ -10,6 +10,7 @@ import {
   AlertCircle,
   Check,
   Minus,
+  ArrowRight,
 } from "lucide-react";
 import { listRemoteResources } from "../graph";
 import type { Space, RemoteResource } from "../types";
@@ -314,15 +315,15 @@ export function FolderPicker({ space, username, password, onBack, onConfirm }: F
 
           {/* Actions */}
           <div style={s.actions}>
-            <button className="btn-secondary" onClick={onBack}>Cancel</button>
             <button
-              className="btn-primary"
+              className="btn-secondary"
               onClick={handleConfirm}
               disabled={selected.size === 0}
               title={selected.size === 0 ? "Select at least one folder" : undefined}
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0.375rem" }}
             >
-              <Check size={14} strokeWidth={2} />
-              Confirm
+              Continue
+              <ArrowRight size={14} strokeWidth={1.5} />
             </button>
           </div>
         </div>
