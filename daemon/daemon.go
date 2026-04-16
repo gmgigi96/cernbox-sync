@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 	"github.com/gmgigi96/cernbox-sync/config"
 	"github.com/gmgigi96/cernbox-sync/engine"
 	"github.com/gmgigi96/cernbox-sync/ipc"
+	"github.com/gmgigi96/cernbox-sync/logger"
 	"github.com/gmgigi96/cernbox-sync/synclog"
 )
 
@@ -26,6 +26,7 @@ import (
 type Daemon struct {
 	cfgDB    *config.DB
 	interval time.Duration
+	log      *logger.Logger
 
 	// cancel is set by Run; calling it shuts the daemon down.
 	cancel context.CancelFunc
@@ -40,11 +41,16 @@ type Daemon struct {
 }
 
 // New creates a new Daemon. interval controls how often all registered folders
-// are synced automatically.
-func New(cfgDB *config.DB, interval time.Duration) *Daemon {
+// are synced automatically. log is the levelled logger to use; if nil the
+// package-level default logger is used.
+func New(cfgDB *config.DB, interval time.Duration, log *logger.Logger) *Daemon {
+	if log == nil {
+		log = logger.GetDefault()
+	}
 	return &Daemon{
 		cfgDB:    cfgDB,
 		interval: interval,
+		log:      log,
 		syncing:  make(map[string]bool),
 		lastSync: make(map[string]time.Time),
 	}
@@ -57,7 +63,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 
 	// Load settings (best-effort; non-fatal if table is missing on old DBs).
 	if s, err := d.cfgDB.GetSettings(); err != nil {
-		log.Printf("[daemon] load settings: %v", err)
+		d.log.Errorf("[daemon] load settings: %v", err)
 	} else {
 		d.logRotateMaxAge = s.LogRotateMaxAge
 		d.accountUsername = s.AccountUsername
@@ -71,8 +77,9 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 		return fmt.Errorf("listen on %s: %w", sockPath, err)
 	}
 
-	log.Printf("[daemon] listening on %s", sockPath)
-	log.Printf("[daemon] sync interval: %s", d.interval)
+	d.log.Infof("[daemon] listening on %s", sockPath)
+	d.log.Infof("[daemon] sync interval: %s", d.interval)
+	d.log.Debugf("[daemon] log level: %s", d.log.Level())
 
 	// Periodic sync loop.
 	go d.syncLoop(ctx)
@@ -86,7 +93,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 				case <-ctx.Done():
 					// Listener was closed intentionally — exit silently.
 				default:
-					log.Printf("[daemon] accept: %v", err)
+					d.log.Errorf("[daemon] accept: %v", err)
 				}
 				return
 			}
@@ -97,7 +104,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	<-ctx.Done()
 	ln.Close()
 	os.Remove(sockPath)
-	log.Printf("[daemon] stopped")
+	d.log.Infof("[daemon] stopped")
 	return nil
 }
 
@@ -121,38 +128,44 @@ func (d *Daemon) syncLoop(ctx context.Context) {
 func (d *Daemon) syncAll() {
 	folders, err := d.cfgDB.All()
 	if err != nil {
-		log.Printf("[daemon] list folders: %v", err)
+		d.log.Errorf("[daemon] list folders: %v", err)
 		return
 	}
+	d.log.Infof("[daemon] starting sync cycle for %d folder(s)", len(folders))
 	for _, f := range folders {
 		d.syncFolder(f)
 	}
+	d.log.Infof("[daemon] sync cycle complete")
 }
 
 func (d *Daemon) syncFolder(f config.Folder) {
 	d.mu.Lock()
 	if d.syncing[f.Name] {
 		d.mu.Unlock()
-		log.Printf("[daemon] %q already syncing, skipping", f.Name)
+		d.log.Debugf("[daemon] %q already syncing, skipping", f.Name)
 		return
 	}
 	d.syncing[f.Name] = true
 	d.mu.Unlock()
+
+	start := time.Now()
+	d.log.Infof("[daemon] sync start: %q (local=%s remote=%s)", f.Name, f.LocalRoot, f.RemoteBase)
 
 	defer func() {
 		d.mu.Lock()
 		delete(d.syncing, f.Name)
 		d.lastSync[f.Name] = time.Now()
 		d.mu.Unlock()
+		d.log.Infof("[daemon] sync done: %q (elapsed=%s)", f.Name, time.Since(start).Round(time.Millisecond))
 	}()
 
 	// Open per-folder log; rotate stale entries before the new cycle.
 	fl, err := synclog.Open(f.LocalRoot, d.logRotateMaxAge)
 	if err != nil {
-		log.Printf("[daemon] open folder log for %q: %v", f.Name, err)
+		d.log.Errorf("[daemon] open folder log for %q: %v", f.Name, err)
 	} else {
 		if err := fl.Rotate(); err != nil {
-			log.Printf("[daemon] rotate folder log for %q: %v", f.Name, err)
+			d.log.Errorf("[daemon] rotate folder log for %q: %v", f.Name, err)
 		}
 		defer fl.Close()
 	}
@@ -171,11 +184,14 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		DBPath:     filepath.Join(f.LocalRoot, ".sync.db"),
 		FolderLog:  fl,
 	}
+	d.log.Debugf("[daemon] running engine for %q", f.Name)
 	if err := engine.Run(cfg); err != nil {
-		log.Printf("[daemon] sync %q: %v", f.Name, err)
+		d.log.Errorf("[daemon] sync %q: %v", f.Name, err)
 		if fl != nil {
 			fl.Printf("[sync] ERROR: %v", err)
 		}
+	} else {
+		d.log.Infof("[daemon] sync %q: OK", f.Name)
 	}
 }
 
@@ -186,13 +202,24 @@ func (d *Daemon) handleConn(conn net.Conn) {
 
 	var req ipc.Request
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
-		log.Printf("[daemon] decode request: %v", err)
+		d.log.Errorf("[daemon] decode request: %v", err)
 		return
 	}
 
+	// Log raw command at trace; summary at debug.
+	d.log.Tracef("[daemon] received command %q payload=%+v", req.Cmd, req)
+	d.log.Debugf("[daemon] received command %q", req.Cmd)
+
 	resp := d.dispatch(req)
+
+	if resp.OK {
+		d.log.Debugf("[daemon] command %q: OK", req.Cmd)
+	} else {
+		d.log.Errorf("[daemon] command %q: FAILED: %s", req.Cmd, resp.Error)
+	}
+
 	if err := json.NewEncoder(conn).Encode(resp); err != nil {
-		log.Printf("[daemon] encode response: %v", err)
+		d.log.Errorf("[daemon] encode response: %v", err)
 		return
 	}
 
@@ -206,6 +233,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 	switch req.Cmd {
 
 	case ipc.CmdAdd:
+		d.log.Debugf("[daemon] add: name=%q local=%q remote=%q", req.Folder.Name, req.Folder.LocalRoot, req.Folder.RemoteBase)
 		abs, err := filepath.Abs(req.Folder.LocalRoot)
 		if err != nil {
 			return fail("invalid local path: " + err.Error())
@@ -224,6 +252,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err := d.cfgDB.Add(req.Folder); err != nil {
 			return fail(err.Error())
 		}
+		d.log.Infof("[daemon] add: registered folder %q", req.Folder.Name)
 		return ok()
 
 	case ipc.CmdList:
@@ -231,15 +260,19 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err != nil {
 			return fail(err.Error())
 		}
+		d.log.Debugf("[daemon] list: returning %d folder(s)", len(folders))
 		return ipc.Response{OK: true, Folders: folders}
 
 	case ipc.CmdRemove:
+		d.log.Debugf("[daemon] remove: name=%q", req.Name)
 		if err := d.cfgDB.Remove(req.Name); err != nil {
 			return fail(err.Error())
 		}
+		d.log.Infof("[daemon] remove: removed folder %q", req.Name)
 		return ok()
 
 	case ipc.CmdUpdate:
+		d.log.Debugf("[daemon] update: name=%q local=%q remote=%q", req.Folder.Name, req.Folder.LocalRoot, req.Folder.RemoteBase)
 		abs, err := filepath.Abs(req.Folder.LocalRoot)
 		if err != nil {
 			return fail("invalid local path: " + err.Error())
@@ -251,11 +284,13 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err := d.cfgDB.Update(req.Folder); err != nil {
 			return fail(err.Error())
 		}
+		d.log.Infof("[daemon] update: updated folder %q", req.Folder.Name)
 		return ok()
 
 	case ipc.CmdSync:
 		var folders []config.Folder
 		if req.Name != "" {
+			d.log.Debugf("[daemon] sync: requested for folder %q", req.Name)
 			f, err := d.cfgDB.Get(req.Name)
 			if err != nil {
 				return fail(err.Error())
@@ -265,6 +300,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			}
 			folders = []config.Folder{*f}
 		} else {
+			d.log.Debugf("[daemon] sync: requested for all folders")
 			var err error
 			folders, err = d.cfgDB.All()
 			if err != nil {
@@ -274,6 +310,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 				return fail("no sync folders registered; use 'cernbox-sync add' to add one")
 			}
 		}
+		d.log.Debugf("[daemon] sync: dispatching %d folder(s)", len(folders))
 		for _, f := range folders {
 			go d.syncFolder(f)
 		}
@@ -290,16 +327,19 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			last[name] = t.Format(time.RFC3339)
 		}
 		d.mu.Unlock()
+		d.log.Debugf("[daemon] status: syncing=%v last=%v", syncing, last)
 		return ipc.Response{OK: true, Status: &ipc.Status{
 			Syncing:  syncing,
 			LastSync: last,
 		}}
 
 	case ipc.CmdStop:
+		d.log.Infof("[daemon] stop: shutdown requested")
 		// cancel() is called in handleConn after the response is sent.
 		return ok()
 
 	case ipc.CmdSetSettings:
+		d.log.Debugf("[daemon] set-settings: log_rotate_max_age=%q", req.Settings.LogRotateMaxAge)
 		s := config.Settings{}
 		if req.Settings.LogRotateMaxAge != "" {
 			dur, err := time.ParseDuration(req.Settings.LogRotateMaxAge)
@@ -314,6 +354,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		d.mu.Lock()
 		d.logRotateMaxAge = s.LogRotateMaxAge
 		d.mu.Unlock()
+		d.log.Infof("[daemon] set-settings: applied log_rotate_max_age=%s", s.LogRotateMaxAge)
 		return ok()
 
 	case ipc.CmdGetSettings:
@@ -325,6 +366,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if s.LogRotateMaxAge > 0 {
 			payload.LogRotateMaxAge = s.LogRotateMaxAge.String()
 		}
+		d.log.Debugf("[daemon] get-settings: log_rotate_max_age=%s", payload.LogRotateMaxAge)
 		return ipc.Response{OK: true, Settings: &payload}
 
 	case ipc.CmdGetAccount:
@@ -332,6 +374,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err != nil {
 			return fail(err.Error())
 		}
+		d.log.Debugf("[daemon] get-account: username=%q", s.AccountUsername)
 		return ipc.Response{OK: true, Account: &ipc.AccountPayload{
 			Username: s.AccountUsername,
 			Password: s.AccountPassword,
@@ -341,6 +384,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if req.Account == nil {
 			return fail("missing account payload")
 		}
+		d.log.Debugf("[daemon] set-account: username=%q", req.Account.Username)
 		s, err := d.cfgDB.GetSettings()
 		if err != nil {
 			return fail(err.Error())
@@ -354,9 +398,11 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		d.accountUsername = req.Account.Username
 		d.accountPassword = req.Account.Password
 		d.mu.Unlock()
+		d.log.Infof("[daemon] set-account: account updated for username=%q", req.Account.Username)
 		return ok()
 
 	default:
+		d.log.Errorf("[daemon] unknown command %q", req.Cmd)
 		return fail(fmt.Sprintf("unknown command %q", req.Cmd))
 	}
 }
