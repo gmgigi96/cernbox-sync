@@ -78,22 +78,6 @@ export function Folders({ daemon, onAddFolder, onOpenFolder }: FoldersProps) {
         </div>
       )}
 
-      {/* Stats footer */}
-      {folders.length > 0 && (
-        <div style={styles.statsBar}>
-          <span style={{ color: "var(--on-surface-variant)", fontSize: "0.8125rem" }}>
-            <strong style={{ color: "var(--on-surface)" }}>{folders.length}</strong> total folders
-          </span>
-          <span style={{ color: "var(--outline)", fontSize: "0.8125rem" }}>•</span>
-          <span style={{ color: "var(--on-surface-variant)", fontSize: "0.8125rem" }}>
-            Status:{" "}
-            <strong style={{ color: daemonOnline ? "var(--success)" : "var(--error)" }}>
-              {daemonOnline ? "Optimal" : "Offline"}
-            </strong>
-          </span>
-        </div>
-      )}
-
       {/* Confirm remove dialog */}
       {confirmRemove && (
         <ConfirmDialog
