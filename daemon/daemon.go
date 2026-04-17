@@ -471,6 +471,9 @@ func countLocalEntries(localRoot string) ipc.FileCounts {
 			c.Dirs++
 		} else {
 			c.Files++
+			if info, err := d.Info(); err == nil {
+				c.Size += info.Size()
+			}
 		}
 		return nil
 	})

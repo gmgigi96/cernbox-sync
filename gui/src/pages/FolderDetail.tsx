@@ -42,6 +42,13 @@ interface FolderDetailProps {
   onFolderUpdated: (f: FolderType) => void;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 function formatRelative(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const s = Math.floor(diff / 1000);
@@ -332,10 +339,10 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
           </div>
 
           <div style={s.statCard}>
-            <p style={s.statLabel}>FILES</p>
-            <p style={s.statValue}>{counts ? counts.files.toLocaleString() : "—"}</p>
+            <p style={s.statLabel}>SYNCED ITEMS</p>
+            <p style={s.statValue}>{counts ? (counts.files + counts.dirs).toLocaleString() : "—"}</p>
             <p style={s.statMeta}>
-              {counts ? `Across ${counts.dirs} subfolder${counts.dirs !== 1 ? "s" : ""}` : "No data yet"}
+              {counts ? `${formatBytes(counts.size ?? 0)} · ${counts.files} file${counts.files !== 1 ? "s" : ""}` : "No data yet"}
             </p>
           </div>
 

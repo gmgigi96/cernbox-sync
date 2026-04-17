@@ -65,8 +65,9 @@ type Response struct {
 
 // FileCounts holds the number of files and directories synced for a folder.
 type FileCounts struct {
-	Files int `json:"files"`
-	Dirs  int `json:"dirs"`
+	Files int   `json:"files"`
+	Dirs  int   `json:"dirs"`
+	Size  int64 `json:"size"` // total size in bytes of all local files
 }
 
 // Status holds a snapshot of the daemon's sync state.

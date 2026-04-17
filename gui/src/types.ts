@@ -23,6 +23,7 @@ export interface Account {
 export interface FileCounts {
   files: number;
   dirs: number;
+  size: number; // total size in bytes of all local files
 }
 
 export interface SyncStatus {

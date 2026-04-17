@@ -77,6 +77,8 @@ struct IpcResponse {
 struct FileCounts {
     files: i64,
     dirs: i64,
+    #[serde(default)]
+    size: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
