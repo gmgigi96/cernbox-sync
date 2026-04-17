@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -129,8 +128,7 @@ func TestWatcher_StartWatcher_AddsEnabledFolders(t *testing.T) {
 	localRoot := t.TempDir()
 	registerFolder(t, d, "myspace", localRoot, "http://fake/dav", true)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	if !isWatched(d, localRoot) {
@@ -144,8 +142,7 @@ func TestWatcher_StartWatcher_IgnoresDisabledFolders(t *testing.T) {
 	localRoot := t.TempDir()
 	registerFolder(t, d, "myspace", localRoot, "http://fake/dav", false)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	if isWatched(d, localRoot) {
@@ -158,8 +155,7 @@ func TestWatcher_UpdateFolderWatch_Enable(t *testing.T) {
 	d := newTestDaemon(t, time.Hour)
 	localRoot := t.TempDir()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	f := config.Folder{
@@ -179,8 +175,7 @@ func TestWatcher_UpdateFolderWatch_Disable(t *testing.T) {
 	d := newTestDaemon(t, time.Hour)
 	localRoot := t.TempDir()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	f := config.Folder{
@@ -203,8 +198,7 @@ func TestWatcher_RemoveFolderWatch_RemovesFromMap(t *testing.T) {
 	d := newTestDaemon(t, time.Hour)
 	localRoot := t.TempDir()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	f := config.Folder{Name: "myspace", LocalRoot: localRoot}
@@ -221,8 +215,7 @@ func TestWatcher_RemoveFolderWatch_CancelsPendingDebounce(t *testing.T) {
 	d := newTestDaemon(t, time.Hour) // long debounce: timer must not fire during test
 	localRoot := t.TempDir()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	f := config.Folder{Name: "myspace", LocalRoot: localRoot}
@@ -314,8 +307,7 @@ func TestWatcher_FileChange_TriggerSync(t *testing.T) {
 	localRoot := t.TempDir()
 	registerFolder(t, d, "myspace", localRoot, srv.URL+"/dav", true)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	if err := os.WriteFile(filepath.Join(localRoot, "hello.txt"), []byte("hi"), 0o644); err != nil {
@@ -335,8 +327,7 @@ func TestWatcher_SyncDB_DoesNotTriggerSync(t *testing.T) {
 	// completes quickly (with an error) and is detectable via lastSync.
 	registerFolder(t, d, "myspace", localRoot, "http://127.0.0.1:0/dav", true)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	if err := os.WriteFile(filepath.Join(localRoot, ".sync.db"), []byte("db-data"), 0o644); err != nil {
@@ -360,8 +351,7 @@ func TestWatcher_DisabledFolder_NoSync(t *testing.T) {
 	localRoot := t.TempDir()
 	registerFolder(t, d, "myspace", localRoot, "http://127.0.0.1:0/dav", false)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	if err := os.WriteFile(filepath.Join(localRoot, "data.txt"), []byte("data"), 0o644); err != nil {
@@ -386,8 +376,7 @@ func TestWatcher_Debounce_BurstCoalesces(t *testing.T) {
 	localRoot := t.TempDir()
 	registerFolder(t, d, "myspace", localRoot, srv.URL+"/dav", true)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	// Write 10 files in rapid succession — each write should reset the debounce timer.
@@ -429,8 +418,7 @@ func TestWatcher_SubdirChange_TriggerSync(t *testing.T) {
 	}
 	registerFolder(t, d, "myspace", localRoot, srv.URL+"/dav", true)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	d.startWatcher(ctx)
 
 	if err := os.WriteFile(filepath.Join(subdir, "report.txt"), []byte("data"), 0o644); err != nil {

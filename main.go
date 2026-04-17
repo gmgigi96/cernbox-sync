@@ -105,7 +105,7 @@ func cmdAdd(args []string) {
 
 	var folders []string
 	if *foldersRaw != "" {
-		for _, f := range strings.Split(*foldersRaw, ",") {
+		for f := range strings.SplitSeq(*foldersRaw, ",") {
 			f = strings.TrimSpace(f)
 			if f != "" {
 				folders = append(folders, f)

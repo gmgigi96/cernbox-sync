@@ -88,10 +88,10 @@ type AccountPayload struct {
 // Request is sent by the CLI to the daemon.
 type Request struct {
 	Cmd      string          `json:"cmd"`
-	Folder   config.Folder   `json:"folder,omitempty"`   // used by CmdAdd
-	Name     string          `json:"name,omitempty"`     // used by CmdRemove and CmdSync
-	Settings SettingsPayload `json:"settings,omitempty"` // used by CmdSetSettings
-	Account  *AccountPayload `json:"account,omitempty"`  // used by CmdSetAccount
+	Folder   config.Folder   `json:"folder"`            // used by CmdAdd
+	Name     string          `json:"name,omitempty"`    // used by CmdRemove and CmdSync
+	Settings SettingsPayload `json:"settings"`          // used by CmdSetSettings
+	Account  *AccountPayload `json:"account,omitempty"` // used by CmdSetAccount
 }
 
 // Response is sent by the daemon back to the CLI.
