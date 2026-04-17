@@ -130,6 +130,15 @@ function collectSelectedNodes(node: TreeNode, selected: Set<string>): TreeNode[]
 
 /** Compute selection state for a node given the selected set. */
 function nodeSelectionState(node: TreeNode, selected: Set<string>): SelectionState {
+  if (!node.resource.isCollection) return "none";
+  // If the node itself is in selected, the whole subtree is selected (minimal-URL invariant).
+  if (selected.has(node.resource.href)) return "all";
+  // If any ancestor is in selected, this node is fully covered.
+  const href = node.resource.href;
+  for (const s of selected) {
+    if (href.startsWith(s) && href !== s) return "all";
+  }
+  // Otherwise count how many descendant hrefs are selected.
   const hrefs = collectHrefs(node);
   const selectedCount = hrefs.filter((h) => selected.has(h)).length;
   if (selectedCount === 0) return "none";
