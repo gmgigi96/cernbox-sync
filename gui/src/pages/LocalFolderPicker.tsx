@@ -117,9 +117,8 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
         .filter((p): p is string => p !== null && p !== "");
       if (existingFolder) {
         await daemon.updateFolder({
-          Name: existingFolder.Name,
+          ...existingFolder,
           LocalRoot: selected,
-          RemoteBase: remoteBase,
           Folders: relativeFolders,
         });
       } else {

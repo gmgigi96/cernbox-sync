@@ -5,8 +5,8 @@ export const ipc = {
   list(): Promise<Folder[]> {
     return invoke<Folder[]>("ipc_list");
   },
-  add(name: string, localRoot: string, remoteBase: string, folders?: string[]): Promise<void> {
-    return invoke("ipc_add", { name, localRoot, remoteBase, folders: folders ?? null });
+  add(name: string, localRoot: string, remoteBase: string, folders?: string[], syncHiddenFiles?: boolean): Promise<void> {
+    return invoke("ipc_add", { name, localRoot, remoteBase, folders: folders ?? null, syncHiddenFiles: syncHiddenFiles ?? null });
   },
   getAccount(): Promise<Account | null> {
     return invoke<Account | null>("ipc_get_account");
@@ -14,8 +14,8 @@ export const ipc = {
   setAccount(username: string, password: string): Promise<void> {
     return invoke("ipc_set_account", { username, password });
   },
-  update(name: string, localRoot: string, remoteBase: string, folders?: string[]): Promise<void> {
-    return invoke("ipc_update", { name, localRoot, remoteBase, folders: folders ?? null });
+  update(name: string, localRoot: string, remoteBase: string, folders?: string[], syncHiddenFiles?: boolean): Promise<void> {
+    return invoke("ipc_update", { name, localRoot, remoteBase, folders: folders ?? null, syncHiddenFiles: syncHiddenFiles ?? null });
   },
   remove(name: string): Promise<void> {
     return invoke("ipc_remove", { name });

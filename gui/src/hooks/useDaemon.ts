@@ -53,7 +53,7 @@ export function useDaemon(): DaemonState {
 
   const updateFolder = useCallback(
     async (f: Folder) => {
-      await ipc.update(f.Name, f.LocalRoot, f.RemoteBase, f.Folders.length > 0 ? f.Folders : undefined);
+      await ipc.update(f.Name, f.LocalRoot, f.RemoteBase, f.Folders.length > 0 ? f.Folders : undefined, f.Settings.sync_hidden_files);
       await refresh();
     },
     [refresh],

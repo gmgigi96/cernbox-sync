@@ -50,6 +50,9 @@ type Config struct {
 	// FolderLog is the per-folder logger. When non-nil, sync actions are
 	// written to it in addition to the global logger.
 	FolderLog *synclog.Logger
+	// SyncHiddenFiles controls whether files and directories whose names begin
+	// with a dot are included in the sync. Defaults to false.
+	SyncHiddenFiles bool
 }
 
 // action classifies what needs to happen to a path.

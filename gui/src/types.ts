@@ -1,9 +1,16 @@
+export interface FolderSettings {
+  /** Include dotfiles and system items whose names begin with a dot. */
+  sync_hidden_files: boolean;
+}
+
 export interface Folder {
   Name: string;
   LocalRoot: string;
   RemoteBase: string;
   /** Sub-folder names relative to RemoteBase. Empty means sync entire space. */
   Folders: string[];
+  /** Per-folder sync settings. */
+  Settings: FolderSettings;
 }
 
 export interface Account {

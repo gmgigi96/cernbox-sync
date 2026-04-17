@@ -182,13 +182,14 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	d.mu.Unlock()
 
 	cfg := engine.Config{
-		LocalRoot:  f.LocalRoot,
-		RemoteBase: f.RemoteBase,
-		Folders:    f.Folders,
-		Username:   username,
-		Password:   password,
-		DBPath:     filepath.Join(f.LocalRoot, ".sync.db"),
-		FolderLog:  fl,
+		LocalRoot:       f.LocalRoot,
+		RemoteBase:      f.RemoteBase,
+		Folders:         f.Folders,
+		Username:        username,
+		Password:        password,
+		DBPath:          filepath.Join(f.LocalRoot, ".sync.db"),
+		FolderLog:       fl,
+		SyncHiddenFiles: f.Settings.SyncHiddenFiles,
 	}
 	d.log.Debugf("[daemon] running engine for %q", f.Name)
 	if err := engine.Run(cfg); err != nil {
@@ -290,7 +291,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err := d.cfgDB.Update(req.Folder); err != nil {
 			return fail(err.Error())
 		}
-		d.log.Infof("[daemon] update: updated folder %q (selected=%v)", req.Folder.Name, req.Folder.Folders)
+		d.log.Infof("[daemon] update: updated folder %q (selected=%v settings=%+v)", req.Folder.Name, req.Folder.Folders, req.Folder.Settings)
 		return ok()
 
 	case ipc.CmdSync:

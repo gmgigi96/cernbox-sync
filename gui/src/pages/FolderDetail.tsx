@@ -231,7 +231,11 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
                 <SettingRow
                   label="Sync hidden files"
                   description="Include dotfiles and system items"
-                  enabled={false}
+                  enabled={folder.Settings?.sync_hidden_files ?? false}
+                  onChange={(val) => {
+                    const updated: FolderType = { ...folder, Settings: { ...folder.Settings, sync_hidden_files: val } };
+                    daemon.updateFolder(updated).then(() => onFolderUpdated(updated));
+                  }}
                 />
                 <SettingRow
                   label="Auto-sync on change"
@@ -267,8 +271,13 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
 
 // ── SettingRow ─────────────────────────────────────────────────────────────────
 
-function SettingRow({ label, description, enabled }: { label: string; description: string; enabled: boolean }) {
+function SettingRow({ label, description, enabled, onChange }: { label: string; description: string; enabled: boolean; onChange?: (val: boolean) => void }) {
   const [on, setOn] = useState(enabled);
+  function toggle() {
+    const next = !on;
+    setOn(next);
+    onChange?.(next);
+  }
   return (
     <div style={sr.row}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -277,7 +286,7 @@ function SettingRow({ label, description, enabled }: { label: string; descriptio
       </div>
       <button
         style={{ ...sr.track, background: on ? "var(--primary-container)" : "var(--surface-container-highest)" }}
-        onClick={() => setOn(!on)}
+        onClick={toggle}
         role="switch"
         aria-checked={on}
       >

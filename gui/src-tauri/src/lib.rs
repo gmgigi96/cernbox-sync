@@ -7,6 +7,12 @@ use tauri_plugin_shell::ShellExt;
 
 // ── IPC types (must mirror the Go structs) ────────────────────────────────────
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct FolderSettings {
+    #[serde(default)]
+    pub sync_hidden_files: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Folder {
     #[serde(rename = "Name")]
@@ -19,6 +25,9 @@ pub struct Folder {
     /// An empty list means "sync the entire space".
     #[serde(rename = "Folders", default)]
     pub folders: Vec<String>,
+    /// Per-folder sync settings.
+    #[serde(rename = "Settings", default)]
+    pub settings: FolderSettings,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -189,7 +198,7 @@ fn ipc_list() -> Result<Vec<Folder>, String> {
 }
 
 #[tauri::command]
-fn ipc_add(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>) -> Result<(), String> {
+fn ipc_add(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "add".into(),
         folder: Some(Folder {
@@ -197,6 +206,9 @@ fn ipc_add(name: String, local_root: String, remote_base: String, folders: Optio
             local_root,
             remote_base,
             folders: folders.unwrap_or_default(),
+            settings: FolderSettings {
+                sync_hidden_files: sync_hidden_files.unwrap_or(false),
+            },
         }),
         name: None,
         settings: None,
@@ -246,7 +258,7 @@ fn ipc_remove(name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn ipc_update(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>) -> Result<(), String> {
+fn ipc_update(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "update".into(),
         folder: Some(Folder {
@@ -254,6 +266,9 @@ fn ipc_update(name: String, local_root: String, remote_base: String, folders: Op
             local_root,
             remote_base,
             folders: folders.unwrap_or_default(),
+            settings: FolderSettings {
+                sync_hidden_files: sync_hidden_files.unwrap_or(false),
+            },
         }),
         name: None,
         settings: None,

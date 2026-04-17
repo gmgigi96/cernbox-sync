@@ -39,6 +39,13 @@ const (
 	KeyAccountPassword = "account_password"
 )
 
+// FolderSettings holds per-folder sync preferences.
+type FolderSettings struct {
+	// SyncHiddenFiles controls whether files and directories whose names begin
+	// with a dot are included in the sync. Defaults to false.
+	SyncHiddenFiles bool `json:"sync_hidden_files"`
+}
+
 // Folder represents one registered sync pair.
 type Folder struct {
 	Name       string
@@ -47,6 +54,8 @@ type Folder struct {
 	// Folders is the list of sub-folder names (relative to RemoteBase) to
 	// synchronize. An empty slice means "sync the entire space".
 	Folders []string
+	// Settings holds per-folder sync preferences.
+	Settings FolderSettings
 }
 
 // DB is the global application configuration store.
@@ -84,6 +93,8 @@ func Open(path string) (*DB, error) {
 	}
 	// Migration: add folders column if it does not exist yet (added in v2).
 	_, _ = conn.Exec(`ALTER TABLE sync_folders ADD COLUMN folders TEXT NOT NULL DEFAULT '[]'`)
+	// Migration: add folder_settings column if it does not exist yet (added in v3).
+	_, _ = conn.Exec(`ALTER TABLE sync_folders ADD COLUMN folder_settings TEXT NOT NULL DEFAULT '{}'`)
 	return &DB{conn: conn}, nil
 }
 
@@ -99,9 +110,13 @@ func (d *DB) Add(f Folder) error {
 	if f.Folders == nil {
 		foldersJSON = []byte("[]")
 	}
+	settingsJSON, err := json.Marshal(f.Settings)
+	if err != nil {
+		return fmt.Errorf("marshal settings for %q: %w", f.Name, err)
+	}
 	_, err = d.conn.Exec(
-		`INSERT INTO sync_folders (name, local_root, remote_base, folders) VALUES (?, ?, ?, ?)`,
-		f.Name, f.LocalRoot, f.RemoteBase, string(foldersJSON),
+		`INSERT INTO sync_folders (name, local_root, remote_base, folders, folder_settings) VALUES (?, ?, ?, ?, ?)`,
+		f.Name, f.LocalRoot, f.RemoteBase, string(foldersJSON), string(settingsJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("add folder %q: %w", f.Name, err)
@@ -112,11 +127,11 @@ func (d *DB) Add(f Folder) error {
 // Get returns the folder with the given name, or (nil, nil) if not found.
 func (d *DB) Get(name string) (*Folder, error) {
 	row := d.conn.QueryRow(
-		`SELECT name, local_root, remote_base, folders FROM sync_folders WHERE name = ?`, name,
+		`SELECT name, local_root, remote_base, folders, folder_settings FROM sync_folders WHERE name = ?`, name,
 	)
 	var f Folder
-	var foldersJSON string
-	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON); err == sql.ErrNoRows {
+	var foldersJSON, settingsJSON string
+	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON, &settingsJSON); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("get folder %q: %w", name, err)
@@ -124,13 +139,18 @@ func (d *DB) Get(name string) (*Folder, error) {
 	if err := json.Unmarshal([]byte(foldersJSON), &f.Folders); err != nil {
 		return nil, fmt.Errorf("unmarshal folders for %q: %w", name, err)
 	}
+	if settingsJSON != "" {
+		if err := json.Unmarshal([]byte(settingsJSON), &f.Settings); err != nil {
+			return nil, fmt.Errorf("unmarshal settings for %q: %w", name, err)
+		}
+	}
 	return &f, nil
 }
 
 // All returns every registered folder.
 func (d *DB) All() ([]Folder, error) {
 	rows, err := d.conn.Query(
-		`SELECT name, local_root, remote_base, folders FROM sync_folders ORDER BY name`,
+		`SELECT name, local_root, remote_base, folders, folder_settings FROM sync_folders ORDER BY name`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list folders: %w", err)
@@ -140,12 +160,17 @@ func (d *DB) All() ([]Folder, error) {
 	var result []Folder
 	for rows.Next() {
 		var f Folder
-		var foldersJSON string
-		if err := rows.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON); err != nil {
+		var foldersJSON, settingsJSON string
+		if err := rows.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON, &settingsJSON); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(foldersJSON), &f.Folders); err != nil {
 			return nil, fmt.Errorf("unmarshal folders for %q: %w", f.Name, err)
+		}
+		if settingsJSON != "" {
+			if err := json.Unmarshal([]byte(settingsJSON), &f.Settings); err != nil {
+				return nil, fmt.Errorf("unmarshal settings for %q: %w", f.Name, err)
+			}
 		}
 		result = append(result, f)
 	}
@@ -156,17 +181,22 @@ func (d *DB) All() ([]Folder, error) {
 // or (nil, nil) if none is found.
 func (d *DB) GetByRemoteBase(remoteBase string) (*Folder, error) {
 	row := d.conn.QueryRow(
-		`SELECT name, local_root, remote_base, folders FROM sync_folders WHERE remote_base = ?`, remoteBase,
+		`SELECT name, local_root, remote_base, folders, folder_settings FROM sync_folders WHERE remote_base = ?`, remoteBase,
 	)
 	var f Folder
-	var foldersJSON string
-	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON); err == sql.ErrNoRows {
+	var foldersJSON, settingsJSON string
+	if err := row.Scan(&f.Name, &f.LocalRoot, &f.RemoteBase, &foldersJSON, &settingsJSON); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("get folder by remote_base %q: %w", remoteBase, err)
 	}
 	if err := json.Unmarshal([]byte(foldersJSON), &f.Folders); err != nil {
 		return nil, fmt.Errorf("unmarshal folders for remote_base %q: %w", remoteBase, err)
+	}
+	if settingsJSON != "" {
+		if err := json.Unmarshal([]byte(settingsJSON), &f.Settings); err != nil {
+			return nil, fmt.Errorf("unmarshal settings for remote_base %q: %w", remoteBase, err)
+		}
 	}
 	return &f, nil
 }
@@ -181,9 +211,13 @@ func (d *DB) Update(f Folder) error {
 	if f.Folders == nil {
 		foldersJSON = []byte("[]")
 	}
+	settingsJSON, err := json.Marshal(f.Settings)
+	if err != nil {
+		return fmt.Errorf("marshal settings for %q: %w", f.Name, err)
+	}
 	res, err := d.conn.Exec(
-		`UPDATE sync_folders SET local_root = ?, remote_base = ?, folders = ? WHERE name = ?`,
-		f.LocalRoot, f.RemoteBase, string(foldersJSON), f.Name,
+		`UPDATE sync_folders SET local_root = ?, remote_base = ?, folders = ?, folder_settings = ? WHERE name = ?`,
+		f.LocalRoot, f.RemoteBase, string(foldersJSON), string(settingsJSON), f.Name,
 	)
 	if err != nil {
 		return fmt.Errorf("update folder %q: %w", f.Name, err)
