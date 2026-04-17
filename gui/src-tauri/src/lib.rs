@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::ShellExt;
 
@@ -73,7 +73,7 @@ struct IpcResponse {
     account: Option<AccountPayload>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct FileCounts {
     files: i64,
     dirs: i64,
@@ -81,8 +81,8 @@ struct FileCounts {
     size: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct StatusPayload {
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatusPayload {
     syncing: Vec<String>,
     last_sync: HashMap<String, String>,
     #[serde(default)]
@@ -435,6 +435,163 @@ fn ipc_set_settings(log_rotate_max_age: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
+// ── Push event types (mirror Go ipc.Event / ipc.SubscribeResponse) ────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncProgressPayload {
+    pub done: i32,
+    pub total: i32,
+    #[serde(default)]
+    pub current: String,
+}
+
+/// A single push event emitted by the daemon over the subscribe connection.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DaemonEvent {
+    #[serde(rename = "type")]
+    pub type_: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder_data: Option<Folder>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<SyncProgressPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sync: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counts: Option<FileCounts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Full state snapshot sent as the first response to a subscribe command.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DaemonSnapshot {
+    pub ok: bool,
+    #[serde(default)]
+    pub folders: Vec<Folder>,
+    #[serde(default)]
+    pub status: Option<StatusPayload>,
+}
+
+// ── Background event subscriber ────────────────────────────────────────────────
+
+/// Starts a background thread that maintains a long-lived subscribe connection
+/// to the daemon and forwards each received event as a Tauri event.
+///
+/// - `"daemon-snapshot"` — fired once on (re)connect with the full state
+/// - `"daemon-event"`    — fired for every incremental update
+/// - `"daemon-offline"`  — fired when the connection is lost (retrying)
+fn start_event_subscriber(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        match run_subscriber(&app) {
+            Ok(()) => {}
+            Err(e) => {
+                let _ = app.emit(
+                    "daemon-offline",
+                    DaemonEvent {
+                        type_: "daemon_offline".into(),
+                        folder: None,
+                        folder_data: None,
+                        progress: None,
+                        last_sync: None,
+                        counts: None,
+                        error: Some(e),
+                    },
+                );
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    });
+}
+
+fn run_subscriber(app: &AppHandle) -> Result<(), String> {
+    let path = socket_path();
+
+    #[cfg(unix)]
+    let stream = {
+        use std::os::unix::net::UnixStream;
+        UnixStream::connect(&path)
+            .map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?
+    };
+
+    #[cfg(windows)]
+    let stream = {
+        use std::os::windows::net::UnixStream;
+        UnixStream::connect(&path)
+            .map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?
+    };
+
+    // Send the subscribe command.
+    {
+        let mut writer = &stream;
+        writer
+            .write_all(b"{\"cmd\":\"subscribe\"}\n")
+            .map_err(|e| format!("Send subscribe: {e}"))?;
+    }
+
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+
+    // Read the initial snapshot.
+    reader
+        .read_line(&mut line)
+        .map_err(|e| format!("Read snapshot: {e}"))?;
+    if line.is_empty() {
+        return Err("Connection closed before snapshot".into());
+    }
+    let snapshot: DaemonSnapshot =
+        serde_json::from_str(&line).map_err(|e| format!("Parse snapshot: {e}"))?;
+    if !snapshot.ok {
+        return Err("Daemon rejected subscribe".into());
+    }
+    app.emit("daemon-snapshot", &snapshot)
+        .map_err(|e| format!("Emit snapshot: {e}"))?;
+
+    // Stream incremental events until EOF or error.
+    loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Read event: {e}"))?;
+        if n == 0 {
+            return Err("Connection closed by daemon".into());
+        }
+        let event: DaemonEvent =
+            serde_json::from_str(&line).map_err(|e| format!("Parse event: {e}"))?;
+        app.emit("daemon-event", &event)
+            .map_err(|e| format!("Emit event: {e}"))?;
+    }
+}
+
+/// Returns the current daemon state snapshot as a direct command result.
+/// The React app calls this once on mount (after setting up event listeners)
+/// to populate the initial UI state, avoiding the race condition where the
+/// background subscriber emits the snapshot before JS listeners are registered.
+#[tauri::command]
+fn ipc_get_snapshot() -> Result<DaemonSnapshot, String> {
+    let folders_resp = ipc_send(&IpcRequest {
+        cmd: "list".into(),
+        folder: None,
+        name: None,
+        settings: None,
+        account: None,
+    })?;
+    let status_resp = ipc_send(&IpcRequest {
+        cmd: "status".into(),
+        folder: None,
+        name: None,
+        settings: None,
+        account: None,
+    })?;
+    let s = status_resp.status.ok_or("No status in response")?;
+    Ok(DaemonSnapshot {
+        ok: true,
+        folders: folders_resp.folders,
+        status: Some(s),
+    })
+}
+
 // ── App entry point ────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -454,6 +611,8 @@ pub fn run() {
                     eprintln!("Warning: could not start cernbox-syncd sidecar: {e}");
                 }
             }
+            // Start the background event subscriber (all platforms).
+            start_event_subscriber(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -468,6 +627,7 @@ pub fn run() {
             ipc_set_settings,
             ipc_get_account,
             ipc_set_account,
+            ipc_get_snapshot,
             list_local_dir,
             create_local_dir,
             read_text_file,

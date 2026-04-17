@@ -2,6 +2,7 @@ import { RefreshCw, Trash2, MoreVertical, FolderOpen, CheckCircle2, AlertCircle,
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import type { DaemonState } from "../hooks/useDaemon";
+import type { SyncProgress } from "../store/syncStore";
 import type { Folder } from "../types";
 
 interface FoldersProps {
@@ -23,7 +24,7 @@ function formatRelative(iso: string): string {
 
 
 export function Folders({ daemon, onAddFolder, onOpenFolder }: FoldersProps) {
-  const { folders, status, daemonOnline, syncFolder, removeFolder } = daemon;
+  const { folders, status, progress, daemonOnline, syncFolder, removeFolder } = daemon;
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
@@ -61,6 +62,7 @@ export function Folders({ daemon, onAddFolder, onOpenFolder }: FoldersProps) {
                 key={folder.Name}
                 folder={folder}
                 syncing={syncing}
+                syncProgress={progress[folder.Name]}
                 lastSyncTs={lastSyncTs}
                 daemonOnline={daemonOnline}
                 menuOpen={menuOpen === folder.Name}
@@ -92,6 +94,7 @@ export function Folders({ daemon, onAddFolder, onOpenFolder }: FoldersProps) {
 interface FolderCardProps {
   folder: Folder;
   syncing: boolean;
+  syncProgress?: SyncProgress;
   lastSyncTs?: string;
   daemonOnline: boolean;
   menuOpen: boolean;
@@ -105,6 +108,7 @@ interface FolderCardProps {
 function FolderCard({
   folder,
   syncing,
+  syncProgress,
   lastSyncTs,
   daemonOnline,
   menuOpen,
@@ -118,8 +122,11 @@ function FolderCard({
     ? <span className="chip chip-syncing"><RefreshCw size={9} strokeWidth={2} style={{ animation: "spin 1.5s linear infinite" }} />Syncing</span>
     : <span className="chip chip-success"><CheckCircle2 size={9} strokeWidth={2} />Up to date</span>;
 
-  // fake progress percentage for visual interest (100% when done, partial when syncing)
-  const progress = syncing ? 45 : 100;
+  const progressPct = syncing
+    ? syncProgress && syncProgress.total > 0
+      ? Math.round((syncProgress.done / syncProgress.total) * 100)
+      : 0
+    : 100;
 
   return (
     <div
@@ -159,13 +166,13 @@ function FolderCard({
         <div style={styles.progressMeta}>
           {statusChip}
           <span className="label-sm" style={{ marginLeft: "auto", visibility: syncing ? "visible" : "hidden" }}>
-            {progress}%
+            {progressPct}%
           </span>
         </div>
         <div className="progress-track" style={{ marginTop: "0.5rem", visibility: syncing ? "visible" : "hidden" }}>
           <div
             className="progress-fill"
-            style={{ width: `${progress}%`, background: "var(--gradient-primary)" }}
+            style={{ width: `${progressPct}%`, background: "var(--gradient-primary)" }}
           />
         </div>
       </div>

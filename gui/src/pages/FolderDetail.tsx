@@ -248,6 +248,9 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
   const [activityItems, setActivityItems] = useState<ActivityData[]>([]);
   const [conflictCount, setConflictCount] = useState<number | null>(null);
 
+  const lastSyncTs = status?.last_sync?.[folder.Name];
+
+  // Re-read the log every time a sync completes (lastSyncTs changes) or on first open.
   useEffect(() => {
     ipc.readTextFile(`${folder.LocalRoot}/.sync.log`).then((content) => {
       if (!content) return;
@@ -258,10 +261,9 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
       const items = collapsed.map((s, i) => sessionToActivity(s, i === 0));
       setActivityItems(items);
     }).catch(() => {/* log file unreadable — leave empty */});
-  }, [folder.LocalRoot]);
+  }, [folder.LocalRoot, lastSyncTs]);
 
   const syncing = status?.syncing?.includes(folder.Name) ?? false;
-  const lastSyncTs = status?.last_sync?.[folder.Name];
   const counts = status?.counts?.[folder.Name] ?? null;
 
   function handleSync() {

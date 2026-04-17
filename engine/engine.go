@@ -53,6 +53,10 @@ type Config struct {
 	// SyncHiddenFiles controls whether files and directories whose names begin
 	// with a dot are included in the sync. Defaults to false.
 	SyncHiddenFiles bool
+	// OnProgress is called before each action is executed. done is the number
+	// of actions completed so far, total is the total action count, current is
+	// the relative path being processed. May be nil.
+	OnProgress func(done, total int, current string)
 }
 
 // action classifies what needs to happen to a path.
@@ -129,7 +133,7 @@ func Run(cfg Config) error {
 	logf(cfg.FolderLog, "[sync] actions: %d", len(actions))
 
 	// ── 5. Execute ───────────────────────────────────────────────────────────
-	if err := execute(cfg.LocalRoot, cfg.FolderLog, wdc, state, actions); err != nil {
+	if err := execute(cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress); err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}
 
@@ -425,12 +429,20 @@ func execute(
 	wdc *webdav.Client,
 	state *db.DB,
 	actions []action,
+	onProgress func(done, total int, current string),
 ) error {
-	for _, a := range actions {
+	total := len(actions)
+	for i, a := range actions {
+		if onProgress != nil {
+			onProgress(i, total, a.path)
+		}
 		if err := execOne(localRoot, fl, wdc, state, a); err != nil {
 			// Log and continue — partial sync is better than aborting entirely.
 			logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
 		}
+	}
+	if onProgress != nil {
+		onProgress(total, total, "")
 	}
 	return nil
 }

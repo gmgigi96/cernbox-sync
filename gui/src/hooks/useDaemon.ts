@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback } from "react";
 import { ipc } from "../ipc";
+import { useSyncStore, type SyncProgress } from "../store/syncStore";
 import type { Folder, SyncStatus } from "../types";
 
 export interface DaemonState {
   folders: Folder[];
-  status: SyncStatus | null;
+  status: SyncStatus;
+  /** Real-time progress per folder name — only present while a sync is running. */
+  progress: Record<string, SyncProgress>;
   daemonOnline: boolean;
   loading: boolean;
   error: string | null;
@@ -16,64 +19,60 @@ export interface DaemonState {
 }
 
 export function useDaemon(): DaemonState {
-  const [folders, setFolders] = useState<Folder[]>([]);
-  const [status, setStatus] = useState<SyncStatus | null>(null);
-  const [daemonOnline, setDaemonOnline] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { folders, status, progress, daemonOnline, loading, error } = useSyncStore();
 
+  // Manual refresh — re-fetches full state from the daemon directly.
+  // Useful as a fallback when reconnecting after a missed event.
   const refresh = useCallback(async () => {
     try {
       const [f, s] = await Promise.all([ipc.list(), ipc.status()]);
-      setFolders(f);
-      setStatus(s);
-      setDaemonOnline(true);
-      setError(null);
+      useSyncStore.getState()._applySnapshot(f, s);
     } catch (e) {
-      setDaemonOnline(false);
-      setError(String(e));
-    } finally {
-      setLoading(false);
+      useSyncStore.getState()._setDaemonOffline(String(e));
     }
   }, []);
-
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 5000);
-    return () => clearInterval(id);
-  }, [refresh]);
 
   const addFolder = useCallback(
     async (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase" | "Folders">) => {
       await ipc.add(f.Name, f.LocalRoot, f.RemoteBase, f.Folders.length > 0 ? f.Folders : undefined);
-      await refresh();
+      // State is updated automatically via the folder_added event from the daemon.
     },
-    [refresh],
+    [],
   );
 
-  const updateFolder = useCallback(
-    async (f: Folder) => {
-      await ipc.update(f.Name, f.LocalRoot, f.RemoteBase, f.Folders.length > 0 ? f.Folders : undefined, f.Settings.sync_hidden_files, f.Settings.auto_sync_on_change);
-      await refresh();
-    },
-    [refresh],
-  );
+  const updateFolder = useCallback(async (f: Folder) => {
+    await ipc.update(
+      f.Name,
+      f.LocalRoot,
+      f.RemoteBase,
+      f.Folders.length > 0 ? f.Folders : undefined,
+      f.Settings.sync_hidden_files,
+      f.Settings.auto_sync_on_change,
+    );
+    // State is updated automatically via the folder_updated event from the daemon.
+  }, []);
 
-  const removeFolder = useCallback(
-    async (name: string) => {
-      await ipc.remove(name);
-      await refresh();
-    },
-    [refresh],
-  );
+  const removeFolder = useCallback(async (name: string) => {
+    await ipc.remove(name);
+    // State is updated automatically via the folder_removed event from the daemon.
+  }, []);
 
-  const syncFolder = useCallback(
-    async (name?: string) => {
-      await ipc.sync(name);
-      await refresh();
-    },
-    [refresh],
-  );
+  const syncFolder = useCallback(async (name?: string) => {
+    await ipc.sync(name);
+    // State is updated automatically via sync_started / sync_completed events.
+  }, []);
 
-  return { folders, status, daemonOnline, loading, error, refresh, addFolder, updateFolder, removeFolder, syncFolder };
+  return {
+    folders,
+    status,
+    progress,
+    daemonOnline,
+    loading,
+    error,
+    refresh,
+    addFolder,
+    updateFolder,
+    removeFolder,
+    syncFolder,
+  };
 }

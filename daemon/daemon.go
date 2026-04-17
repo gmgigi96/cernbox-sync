@@ -39,6 +39,8 @@ type Daemon struct {
 	lastSync map[string]time.Time      // time of last successful sync per folder
 	counts   map[string]ipc.FileCounts // local file/dir counts after last sync
 
+	bus *eventBus // push-event broadcaster
+
 	logRotateMaxAge time.Duration // 0 means no rotation; loaded from settings at startup
 	accountUsername string        // loaded from settings at startup; updated by set-account
 	accountPassword string
@@ -69,6 +71,7 @@ func New(cfgDB *config.DB, interval time.Duration, log *logger.Logger) *Daemon {
 		watchedRoots:     make(map[string]config.Folder),
 		debounceTimers:   make(map[string]*time.Timer),
 		debounceDuration: 2 * time.Second,
+		bus:              newEventBus(),
 	}
 }
 
@@ -116,7 +119,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 				}
 				return
 			}
-			go d.handleConn(conn)
+			go d.handleConn(ctx, conn)
 		}
 	}()
 
@@ -169,15 +172,28 @@ func (d *Daemon) syncFolder(f config.Folder) {
 
 	start := time.Now()
 	d.log.Infof("[daemon] sync start: %q (local=%s remote=%s)", f.Name, f.LocalRoot, f.RemoteBase)
+	d.bus.publish(ipc.Event{Type: ipc.EventSyncStarted, Folder: f.Name})
 
+	var syncErr error
 	defer func() {
 		c := countLocalEntries(f.LocalRoot)
+		now := time.Now()
 		d.mu.Lock()
 		delete(d.syncing, f.Name)
-		d.lastSync[f.Name] = time.Now()
+		d.lastSync[f.Name] = now
 		d.counts[f.Name] = c
 		d.mu.Unlock()
 		d.log.Infof("[daemon] sync done: %q (elapsed=%s files=%d dirs=%d)", f.Name, time.Since(start).Round(time.Millisecond), c.Files, c.Dirs)
+		if syncErr != nil {
+			d.bus.publish(ipc.Event{Type: ipc.EventSyncFailed, Folder: f.Name, Error: syncErr.Error()})
+		} else {
+			d.bus.publish(ipc.Event{
+				Type:     ipc.EventSyncCompleted,
+				Folder:   f.Name,
+				LastSync: now.Format(time.RFC3339),
+				Counts:   &c,
+			})
+		}
 	}()
 
 	// Open per-folder log; rotate stale entries before the new cycle.
@@ -205,9 +221,21 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		DBPath:          filepath.Join(f.LocalRoot, ".sync.db"),
 		FolderLog:       fl,
 		SyncHiddenFiles: f.Settings.SyncHiddenFiles,
+		OnProgress: func(done, total int, current string) {
+			d.bus.publish(ipc.Event{
+				Type:   ipc.EventSyncProgress,
+				Folder: f.Name,
+				Progress: &ipc.SyncProgressPayload{
+					Done:    done,
+					Total:   total,
+					Current: current,
+				},
+			})
+		},
 	}
 	d.log.Debugf("[daemon] running engine for %q", f.Name)
 	if err := engine.Run(cfg); err != nil {
+		syncErr = err
 		d.log.Errorf("[daemon] sync %q: %v", f.Name, err)
 		if fl != nil {
 			fl.Printf("[sync] ERROR: %v", err)
@@ -219,7 +247,7 @@ func (d *Daemon) syncFolder(f config.Folder) {
 
 // ── IPC handling ──────────────────────────────────────────────────────────────
 
-func (d *Daemon) handleConn(conn net.Conn) {
+func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	var req ipc.Request
@@ -231,6 +259,12 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	// Log raw command at trace; summary at debug.
 	d.log.Tracef("[daemon] received command %q payload=%+v", req.Cmd, req)
 	d.log.Debugf("[daemon] received command %q", req.Cmd)
+
+	// Subscribe keeps the connection open and streams events — handle separately.
+	if req.Cmd == ipc.CmdSubscribe {
+		d.handleSubscribe(ctx, conn)
+		return
+	}
 
 	resp := d.dispatch(req)
 
@@ -248,6 +282,64 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	// Trigger stop after the response has been flushed.
 	if req.Cmd == ipc.CmdStop && resp.OK {
 		d.cancel()
+	}
+}
+
+// handleSubscribe sends a full state snapshot and then streams events until
+// the client disconnects or the daemon shuts down.
+func (d *Daemon) handleSubscribe(ctx context.Context, conn net.Conn) {
+	d.log.Debugf("[daemon] subscribe: new subscriber")
+
+	// Build initial snapshot.
+	folders, err := d.cfgDB.All()
+	if err != nil {
+		_ = json.NewEncoder(conn).Encode(ipc.SubscribeResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	d.mu.Lock()
+	syncing := make([]string, 0, len(d.syncing))
+	for name := range d.syncing {
+		syncing = append(syncing, name)
+	}
+	last := make(map[string]string, len(d.lastSync))
+	for name, t := range d.lastSync {
+		last[name] = t.Format(time.RFC3339)
+	}
+	counts := make(map[string]ipc.FileCounts, len(d.counts))
+	maps.Copy(counts, d.counts)
+	d.mu.Unlock()
+
+	snapshot := ipc.SubscribeResponse{
+		OK:      true,
+		Folders: folders,
+		Status: &ipc.Status{
+			Syncing:  syncing,
+			LastSync: last,
+			Counts:   counts,
+		},
+	}
+	if err := json.NewEncoder(conn).Encode(snapshot); err != nil {
+		return
+	}
+
+	// Stream events until connection drops or daemon shuts down.
+	ch := d.bus.subscribe()
+	defer d.bus.unsubscribe(ch)
+
+	enc := json.NewEncoder(conn)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := enc.Encode(event); err != nil {
+				return
+			}
+		}
 	}
 }
 
@@ -276,6 +368,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		d.log.Infof("[daemon] add: registered folder %q", req.Folder.Name)
 		d.updateFolderWatch(req.Folder)
+		d.bus.publish(ipc.Event{Type: ipc.EventFolderAdded, FolderData: &req.Folder})
 		return ok()
 
 	case ipc.CmdList:
@@ -299,6 +392,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			d.removeFolderWatch(f.Name, f.LocalRoot)
 		}
 		d.log.Infof("[daemon] remove: removed folder %q", req.Name)
+		d.bus.publish(ipc.Event{Type: ipc.EventFolderRemoved, Folder: req.Name})
 		return ok()
 
 	case ipc.CmdUpdate:
@@ -322,6 +416,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		d.updateFolderWatch(req.Folder)
 		d.log.Infof("[daemon] update: updated folder %q (selected=%v settings=%+v)", req.Folder.Name, req.Folder.Folders, req.Folder.Settings)
+		d.bus.publish(ipc.Event{Type: ipc.EventFolderUpdated, FolderData: &req.Folder})
 		return ok()
 
 	case ipc.CmdSync:

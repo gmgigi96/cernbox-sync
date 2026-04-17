@@ -28,7 +28,48 @@ const (
 	CmdGetSettings = "get-settings"
 	CmdGetAccount  = "get-account"
 	CmdSetAccount  = "set-account"
+	// CmdSubscribe keeps the connection open and streams push events.
+	CmdSubscribe = "subscribe"
 )
+
+// Event type names pushed by the daemon to subscribed clients.
+const (
+	EventSyncStarted   = "sync_started"
+	EventSyncProgress  = "sync_progress"
+	EventSyncCompleted = "sync_completed"
+	EventSyncFailed    = "sync_failed"
+	EventFolderAdded   = "folder_added"
+	EventFolderRemoved = "folder_removed"
+	EventFolderUpdated = "folder_updated"
+)
+
+// SyncProgressPayload describes how far a running sync has progressed.
+type SyncProgressPayload struct {
+	Done    int    `json:"done"`
+	Total   int    `json:"total"`
+	Current string `json:"current,omitempty"` // relative path of the item being processed
+}
+
+// Event is pushed by the daemon to subscribed clients as newline-delimited JSON.
+type Event struct {
+	Type       string               `json:"type"`
+	Folder     string               `json:"folder,omitempty"`
+	FolderData *config.Folder       `json:"folder_data,omitempty"`
+	Progress   *SyncProgressPayload `json:"progress,omitempty"`
+	LastSync   string               `json:"last_sync,omitempty"`
+	Counts     *FileCounts          `json:"counts,omitempty"`
+	Error      string               `json:"error,omitempty"`
+}
+
+// SubscribeResponse is the first message sent by the daemon after a subscribe
+// command. It carries a full state snapshot so the client needs no separate
+// list/status call.
+type SubscribeResponse struct {
+	OK      bool            `json:"ok"`
+	Error   string          `json:"error,omitempty"`
+	Folders []config.Folder `json:"folders,omitempty"`
+	Status  *Status         `json:"status,omitempty"`
+}
 
 // SettingsPayload carries daemon settings over IPC.
 // Duration values are represented as Go duration strings (e.g. "168h", "720h").

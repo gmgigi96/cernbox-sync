@@ -1,4 +1,7 @@
 import { useState, useEffect } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { useSyncStore, type DaemonSnapshot, type DaemonEvent } from "./store/syncStore";
 import { Layout } from "./components/Layout";
 import { Dashboard } from "./pages/Dashboard";
 import { Folders } from "./pages/Folders";
@@ -23,6 +26,50 @@ type FlowStep =
 export function App() {
   const daemon = useDaemon();
   const [page, setPage] = useState<NavPage>("dashboard");
+
+  // ── Subscribe to daemon push events ─────────────────────────────────────────
+  useEffect(() => {
+    const store = useSyncStore.getState();
+    const unlisteners: Array<() => void> = [];
+
+    const setup = async () => {
+      // Register incremental-event listener BEFORE fetching the snapshot so
+      // no event is missed between the two steps.
+      unlisteners.push(
+        await listen<DaemonEvent>("daemon-event", (e) => {
+          store._handleEvent(e.payload);
+        }),
+      );
+
+      // Daemon went offline — background subscriber will retry automatically.
+      unlisteners.push(
+        await listen<DaemonEvent>("daemon-offline", () => {
+          store._setDaemonOffline("Daemon offline — reconnecting…");
+        }),
+      );
+
+      // Re-snapshot on reconnect (background subscriber still emits this).
+      unlisteners.push(
+        await listen<DaemonSnapshot>("daemon-snapshot", (e) => {
+          const { folders, status } = e.payload;
+          store._applySnapshot(folders, status ?? { syncing: [], last_sync: {}, counts: {} });
+        }),
+      );
+
+      // Pull the initial state via a direct command call — avoids the race
+      // where the background subscriber emits the snapshot before the JS
+      // listener above is registered.
+      try {
+        const snap = await invoke<DaemonSnapshot>("ipc_get_snapshot");
+        store._applySnapshot(snap.folders, snap.status ?? { syncing: [], last_sync: {}, counts: {} });
+      } catch {
+        store._setDaemonOffline("Daemon offline — reconnecting…");
+      }
+    };
+
+    setup();
+    return () => { unlisteners.forEach((u) => u()); };
+  }, []);
   const [flow, setFlow] = useState<FlowStep>({ step: "none" });
   const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
   // null = still checking, false = no account, Account = loaded
