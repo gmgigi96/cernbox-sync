@@ -9,9 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,8 +34,9 @@ type Daemon struct {
 	cancel context.CancelFunc
 
 	mu       sync.Mutex
-	syncing  map[string]bool      // folders currently being synced
-	lastSync map[string]time.Time // time of last successful sync per folder
+	syncing  map[string]bool           // folders currently being synced
+	lastSync map[string]time.Time      // time of last successful sync per folder
+	counts   map[string]ipc.FileCounts // local file/dir counts after last sync
 
 	logRotateMaxAge time.Duration // 0 means no rotation; loaded from settings at startup
 	accountUsername string        // loaded from settings at startup; updated by set-account
@@ -53,6 +56,7 @@ func New(cfgDB *config.DB, interval time.Duration, log *logger.Logger) *Daemon {
 		log:      log,
 		syncing:  make(map[string]bool),
 		lastSync: make(map[string]time.Time),
+		counts:   make(map[string]ipc.FileCounts),
 	}
 }
 
@@ -152,11 +156,13 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	d.log.Infof("[daemon] sync start: %q (local=%s remote=%s)", f.Name, f.LocalRoot, f.RemoteBase)
 
 	defer func() {
+		c := countLocalEntries(f.LocalRoot)
 		d.mu.Lock()
 		delete(d.syncing, f.Name)
 		d.lastSync[f.Name] = time.Now()
+		d.counts[f.Name] = c
 		d.mu.Unlock()
-		d.log.Infof("[daemon] sync done: %q (elapsed=%s)", f.Name, time.Since(start).Round(time.Millisecond))
+		d.log.Infof("[daemon] sync done: %q (elapsed=%s files=%d dirs=%d)", f.Name, time.Since(start).Round(time.Millisecond), c.Files, c.Dirs)
 	}()
 
 	// Open per-folder log; rotate stale entries before the new cycle.
@@ -284,7 +290,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err := d.cfgDB.Update(req.Folder); err != nil {
 			return fail(err.Error())
 		}
-		d.log.Infof("[daemon] update: updated folder %q", req.Folder.Name)
+		d.log.Infof("[daemon] update: updated folder %q (selected=%v)", req.Folder.Name, req.Folder.Folders)
 		return ok()
 
 	case ipc.CmdSync:
@@ -326,11 +332,14 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		for name, t := range d.lastSync {
 			last[name] = t.Format(time.RFC3339)
 		}
+		counts := make(map[string]ipc.FileCounts, len(d.counts))
+		maps.Copy(counts, d.counts)
 		d.mu.Unlock()
 		d.log.Debugf("[daemon] status: syncing=%v last=%v", syncing, last)
 		return ipc.Response{OK: true, Status: &ipc.Status{
 			Syncing:  syncing,
 			LastSync: last,
+			Counts:   counts,
 		}}
 
 	case ipc.CmdStop:
@@ -409,3 +418,30 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 
 func ok() ipc.Response             { return ipc.Response{OK: true} }
 func fail(msg string) ipc.Response { return ipc.Response{OK: false, Error: msg} }
+
+// countLocalEntries walks localRoot and counts files and directories,
+// skipping hidden entries (those starting with ".").
+func countLocalEntries(localRoot string) ipc.FileCounts {
+	var c ipc.FileCounts
+	filepath.WalkDir(localRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if path == localRoot {
+			return nil // skip root itself
+		}
+		if d.IsDir() {
+			c.Dirs++
+		} else {
+			c.Files++
+		}
+		return nil
+	})
+	return c
+}

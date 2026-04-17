@@ -2,29 +2,29 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ArrowLeft,
   Folder,
-  File,
-  ChevronRight,
-  ChevronDown,
   HardDrive,
   RefreshCw,
   AlertCircle,
-  Check,
-  Minus,
   ArrowRight,
 } from "lucide-react";
 import { listRemoteResources } from "../graph";
-import type { Space, RemoteResource } from "../types";
-
-// ── Types ──────────────────────────────────────────────────────────────────────
-
-interface TreeNode {
-  resource: RemoteResource;
-  children: TreeNode[] | null; // null = not yet loaded
-  loading: boolean;
-  error: string | null;
-}
-
-type SelectionState = "none" | "partial" | "all";
+import type { Space } from "../types";
+import {
+  type TreeNode,
+  sortChildren,
+  collectHrefs,
+  collectSelectedUrls,
+  collectSelectedNodes,
+  nodeSelectionState,
+  displaySelectionState,
+  pruneEmptyAncestors,
+  expandSelectionExcluding,
+  findNode,
+  updateInTree,
+  subtreeSize,
+  formatBytes,
+  TreeRow,
+} from "../components/FolderTree";
 
 interface FolderPickerProps {
   space: Space;
@@ -35,115 +35,6 @@ interface FolderPickerProps {
   onBack: () => void;
   /** Called when the user confirms; receives the list of selected resource URLs */
   onConfirm: (selectedUrls: string[]) => void;
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let v = bytes;
-  let u = 0;
-  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
-}
-
-/** Sort tree nodes so directories appear before files, both groups alphabetically. */
-function sortChildren(nodes: TreeNode[]): TreeNode[] {
-  return [...nodes].sort((a, b) => {
-    if (a.resource.isCollection !== b.resource.isCollection) {
-      return a.resource.isCollection ? -1 : 1;
-    }
-    return a.resource.name.localeCompare(b.resource.name);
-  });
-}
-
-/** Collect all collection hrefs in a subtree (including the root node itself). Files are excluded since sync operates at folder granularity. */
-function collectHrefs(node: TreeNode): string[] {
-  if (!node.resource.isCollection) return [];
-  const hrefs = [node.resource.href];
-  if (node.children) {
-    for (const child of node.children) hrefs.push(...collectHrefs(child));
-  }
-  return hrefs;
-}
-
-/** Return the size of a node's subtree.
- *  - Files: use resource.size directly.
- *  - Collections with a server-provided oc:size (resource.size > 0): use it directly.
- *  - Collections without a server size (synthetic root): sum loaded children. */
-function subtreeSize(node: TreeNode): number {
-  if (!node.resource.isCollection) return node.resource.size;
-  if (node.resource.size > 0) return node.resource.size;
-  return (node.children ?? []).reduce((acc, c) => acc + subtreeSize(c), 0);
-}
-
-/**
- * Recursively collect the minimal set of URLs that represents the selection.
- * - Fully selected node: emit its own href (no need to recurse into children).
- * - Partially selected node: recurse into children to find the selected subtrees.
- * - Unselected node: emit nothing.
- */
-function collectSelectedUrls(node: TreeNode, selected: Set<string>): string[] {
-  const state = nodeSelectionState(node, selected);
-  if (state === "none") return [];
-  if (state === "all") return [node.resource.href];
-  // partial — recurse into children
-  const urls: string[] = [];
-  for (const child of node.children ?? []) {
-    urls.push(...collectSelectedUrls(child, selected));
-  }
-  return urls;
-}
-
-/**
- * Remove from `selected` any folder href whose subtree has become fully
- * deselected. Mutates `selected` in place.
- * Returns true if this node or any of its descendants is still selected.
- */
-function pruneEmptyAncestors(node: TreeNode, selected: Set<string>): boolean {
-  if (!node.resource.isCollection) return false;
-  const anyChildSelected = (node.children ?? []).some((c) => pruneEmptyAncestors(c, selected));
-  if (!anyChildSelected && selected.has(node.resource.href)) {
-    // No descendants are selected — only keep this href if its children haven't
-    // been loaded yet (null means unloaded; we treat it as a valid leaf selection).
-    if (node.children !== null) {
-      selected.delete(node.resource.href);
-      return false;
-    }
-  }
-  return anyChildSelected || selected.has(node.resource.href);
-}
-
-/** Recursively collect the fully-selected nodes (for sidebar display and size). */
-function collectSelectedNodes(node: TreeNode, selected: Set<string>): TreeNode[] {
-  const state = nodeSelectionState(node, selected);
-  if (state === "none") return [];
-  if (state === "all") return [node];
-  // partial — recurse into children
-  const nodes: TreeNode[] = [];
-  for (const child of node.children ?? []) {
-    nodes.push(...collectSelectedNodes(child, selected));
-  }
-  return nodes;
-}
-
-/** Compute selection state for a node given the selected set. */
-function nodeSelectionState(node: TreeNode, selected: Set<string>): SelectionState {
-  if (!node.resource.isCollection) return "none";
-  // If the node itself is in selected, the whole subtree is selected (minimal-URL invariant).
-  if (selected.has(node.resource.href)) return "all";
-  // If any ancestor is in selected, this node is fully covered.
-  const href = node.resource.href;
-  for (const s of selected) {
-    if (href.startsWith(s) && href !== s) return "all";
-  }
-  // Otherwise count how many descendant hrefs are selected.
-  const hrefs = collectHrefs(node);
-  const selectedCount = hrefs.filter((h) => selected.has(h)).length;
-  if (selectedCount === 0) return "none";
-  if (selectedCount === hrefs.length) return "all";
-  return "partial";
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -257,16 +148,32 @@ export function FolderPicker({ space, username, password, initialUrls, onBack, o
   // ── Selection logic ──────────────────────────────────────────────────────────
 
   function toggleSelect(node: TreeNode) {
-    const hrefs = collectHrefs(node);
-    const state = nodeSelectionState(node, selected);
     setSelected((prev) => {
+      const state = displaySelectionState(node, prev);
       const next = new Set(prev);
       if (state === "all") {
-        hrefs.forEach((h) => next.delete(h));
+        if (next.has(node.resource.href)) {
+          // Directly selected — remove the whole subtree.
+          collectHrefs(node).forEach((h) => next.delete(h));
+        } else {
+          // Check if covered by an ancestor.
+          let coveredByAncestor = false;
+          for (const href of next) {
+            if (node.resource.href.startsWith(href) && node.resource.href !== href) {
+              const ancestor = findNode(rootNodeRef.current, href);
+              if (ancestor) expandSelectionExcluding(ancestor, node.resource.href, next);
+              coveredByAncestor = true;
+              break;
+            }
+          }
+          if (!coveredByAncestor) {
+            // All descendants are individually selected — remove them all.
+            collectHrefs(node).forEach((h) => next.delete(h));
+          }
+        }
       } else {
-        hrefs.forEach((h) => next.add(h));
+        collectHrefs(node).forEach((h) => next.add(h));
       }
-      // Clean up ancestor hrefs that no longer have any selected descendants
       pruneEmptyAncestors(rootNodeRef.current, next);
       return next;
     });
@@ -413,159 +320,6 @@ export function FolderPicker({ space, username, password, initialUrls, onBack, o
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
-}
-
-// ── TreeRow ────────────────────────────────────────────────────────────────────
-
-interface TreeRowProps {
-  node: TreeNode;
-  depth: number;
-  expanded: Set<string>;
-  selected: Set<string>;
-  onToggleExpand: (node: TreeNode) => void;
-  onToggleSelect: (node: TreeNode) => void;
-}
-
-function TreeRow({ node, depth, expanded, selected, onToggleExpand, onToggleSelect }: TreeRowProps) {
-  const [hovered, setHovered] = useState(false);
-  const { resource } = node;
-  const isOpen = expanded.has(resource.href);
-  const isFile = !resource.isCollection;
-  const selState = nodeSelectionState(node, selected);
-
-  return (
-    <>
-      <div
-        style={{
-          ...s.treeRow,
-          paddingLeft: `${0.75 + depth * 1.25}rem`,
-          background: !isFile && hovered ? "var(--surface-container-high)" : "transparent",
-          opacity: isFile ? 0.45 : 1,
-          cursor: isFile ? "default" : "pointer",
-        }}
-        onMouseEnter={() => { if (!isFile) setHovered(true); }}
-        onMouseLeave={() => setHovered(false)}
-      >
-        {/* Checkbox — folders only */}
-        {resource.isCollection ? (
-          <button
-            style={s.checkbox}
-            onClick={() => onToggleSelect(node)}
-            title={selState === "all" ? "Deselect" : "Select"}
-          >
-            <CheckboxIcon state={selState} />
-          </button>
-        ) : (
-          <span style={{ ...s.checkbox, width: 15, flexShrink: 0 }} />
-        )}
-
-        {/* Expand toggle (collections only) */}
-        {resource.isCollection ? (
-          <button
-            style={s.expandBtn}
-            onClick={() => onToggleExpand(node)}
-          >
-            {node.loading ? (
-              <div style={{ ...s.spinner, width: 12, height: 12, borderWidth: 1.5, margin: 0 }} />
-            ) : isOpen ? (
-              <ChevronDown size={13} strokeWidth={1.5} />
-            ) : (
-              <ChevronRight size={13} strokeWidth={1.5} />
-            )}
-          </button>
-        ) : (
-          <span style={s.expandPlaceholder} />
-        )}
-
-        {/* Icon */}
-        {resource.isCollection ? (
-          <Folder size={14} strokeWidth={1.5} style={{ color: "var(--primary)", flexShrink: 0 }} />
-        ) : (
-          <File size={14} strokeWidth={1.5} style={{ color: "var(--outline)", flexShrink: 0 }} />
-        )}
-
-        {/* Name */}
-        <span style={s.rowName}>{resource.name}</span>
-
-        {/* Size */}
-        <span style={s.rowSize}>
-          {formatBytes(subtreeSize(node))}
-        </span>
-
-        {/* Status badge — folders only */}
-        <span style={s.rowStatus}>
-          {resource.isCollection && selState === "all" && <span className="chip chip-success">SELECTED</span>}
-          {resource.isCollection && selState === "partial" && <span className="chip chip-warning">PARTIAL</span>}
-        </span>
-      </div>
-
-      {/* Children */}
-      {isOpen && node.children && node.children.map((child) => (
-        <TreeRow
-          key={child.resource.href}
-          node={child}
-          depth={depth + 1}
-          expanded={expanded}
-          selected={selected}
-          onToggleExpand={onToggleExpand}
-          onToggleSelect={onToggleSelect}
-        />
-      ))}
-
-      {isOpen && node.error && (
-        <div style={{ paddingLeft: `${1.5 + (depth + 1) * 1.25}rem`, padding: "0.375rem 0.75rem", color: "var(--error)", fontSize: "0.75rem" }}>
-          {node.error}
-        </div>
-      )}
-    </>
-  );
-}
-
-// ── CheckboxIcon ───────────────────────────────────────────────────────────────
-
-function CheckboxIcon({ state }: { state: SelectionState }) {
-  const base: React.CSSProperties = {
-    width: 15,
-    height: 15,
-    borderRadius: 3,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-    transition: "all var(--transition-fast)",
-  };
-
-  if (state === "all") {
-    return (
-      <span style={{ ...base, background: "var(--primary-container)", border: "none" }}>
-        <Check size={10} strokeWidth={3} style={{ color: "#fff" }} />
-      </span>
-    );
-  }
-  if (state === "partial") {
-    return (
-      <span style={{ ...base, background: "rgba(180,197,255,0.15)", border: "1.5px solid var(--primary)" }}>
-        <Minus size={10} strokeWidth={3} style={{ color: "var(--primary)" }} />
-      </span>
-    );
-  }
-  return (
-    <span style={{ ...base, background: "transparent", border: "1.5px solid var(--outline-variant)" }} />
-  );
-}
-
-// ── Tree update helper ─────────────────────────────────────────────────────────
-
-/** Immutably update a single node anywhere in the tree rooted at `root`. */
-function updateInTree(root: TreeNode, href: string, fn: (n: TreeNode) => TreeNode): TreeNode {
-  if (root.resource.href === href) return fn(root);
-  if (root.children) {
-    return {
-      ...root,
-      children: root.children.map((n) => updateInTree(n, href, fn)),
-    };
-  }
-  return root;
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────────

@@ -62,9 +62,17 @@ struct IpcResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct FileCounts {
+    files: i64,
+    dirs: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct StatusPayload {
     syncing: Vec<String>,
     last_sync: HashMap<String, String>,
+    #[serde(default)]
+    counts: HashMap<String, FileCounts>,
 }
 
 // ── Tauri-facing status type ──────────────────────────────────────────────────
@@ -73,6 +81,7 @@ struct StatusPayload {
 pub struct SyncStatus {
     pub syncing: Vec<String>,
     pub last_sync: HashMap<String, String>,
+    pub counts: HashMap<String, FileCounts>,
 }
 
 // ── Daemon sidecar state (Windows only) ───────────────────────────────────────
@@ -281,6 +290,7 @@ fn ipc_status() -> Result<SyncStatus, String> {
     Ok(SyncStatus {
         syncing: s.syncing,
         last_sync: s.last_sync,
+        counts: s.counts,
     })
 }
 

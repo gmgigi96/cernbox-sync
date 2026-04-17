@@ -6,6 +6,7 @@ import type { Folder } from "../types";
 interface FoldersProps {
   daemon: DaemonState;
   onAddFolder: () => void;
+  onOpenFolder: (folder: Folder) => void;
 }
 
 function formatRelative(iso: string): string {
@@ -24,7 +25,7 @@ function truncatePath(p: string, max = 30): string {
   return "…" + p.slice(-(max - 1));
 }
 
-export function Folders({ daemon, onAddFolder }: FoldersProps) {
+export function Folders({ daemon, onAddFolder, onOpenFolder }: FoldersProps) {
   const { folders, status, daemonOnline, syncFolder, removeFolder } = daemon;
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -73,6 +74,7 @@ export function Folders({ daemon, onAddFolder }: FoldersProps) {
                 onMenuClose={() => setMenuOpen(null)}
                 onSync={() => { setMenuOpen(null); syncFolder(folder.Name); }}
                 onRemove={() => { setMenuOpen(null); setConfirmRemove(folder.Name); }}
+                onViewDetails={() => onOpenFolder(folder)}
               />
             );
           })}
@@ -119,6 +121,7 @@ interface FolderCardProps {
   onMenuClose: () => void;
   onSync: () => void;
   onRemove: () => void;
+  onViewDetails: () => void;
 }
 
 function FolderCard({
@@ -131,6 +134,7 @@ function FolderCard({
   onMenuClose,
   onSync,
   onRemove,
+  onViewDetails,
 }: FolderCardProps) {
   const statusChip = syncing
     ? <span className="chip chip-syncing"><RefreshCw size={9} strokeWidth={2} style={{ animation: "spin 1.5s linear infinite" }} />Syncing</span>
@@ -140,7 +144,10 @@ function FolderCard({
   const progress = syncing ? 45 : 100;
 
   return (
-    <div style={styles.card} onClick={menuOpen ? onMenuClose : undefined}>
+    <div
+      style={{ ...styles.card, cursor: "pointer" }}
+      onClick={menuOpen ? onMenuClose : onViewDetails}
+    >
       {/* Card header */}
       <div style={styles.cardHeader}>
         <div style={styles.folderIcon}>
@@ -192,8 +199,7 @@ function FolderCard({
         <button
           className="btn-ghost"
           style={{ fontSize: "0.75rem", padding: "0.25rem 0.5rem", gap: "0.25rem" }}
-          onClick={(e) => { e.stopPropagation(); onSync(); }}
-          disabled={!daemonOnline}
+          onClick={(e) => { e.stopPropagation(); onViewDetails(); }}
         >
           View Details
         </button>

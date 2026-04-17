@@ -63,12 +63,20 @@ type Response struct {
 	Account  *AccountPayload  `json:"account,omitempty"`  // CmdGetAccount
 }
 
+// FileCounts holds the number of files and directories synced for a folder.
+type FileCounts struct {
+	Files int `json:"files"`
+	Dirs  int `json:"dirs"`
+}
+
 // Status holds a snapshot of the daemon's sync state.
 type Status struct {
 	// Syncing is the list of folder names currently being synced.
 	Syncing []string `json:"syncing"`
 	// LastSync maps folder name → RFC 3339 timestamp of the last completed sync.
 	LastSync map[string]string `json:"last_sync"`
+	// Counts maps folder name → local file/dir counts after the last sync.
+	Counts map[string]FileCounts `json:"counts,omitempty"`
 }
 
 // SocketPath returns the platform-appropriate Unix socket path for the daemon.

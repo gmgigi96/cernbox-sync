@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Layout } from "./components/Layout";
 import { Dashboard } from "./pages/Dashboard";
 import { Folders } from "./pages/Folders";
+import { FolderDetail } from "./pages/FolderDetail";
 import { Settings } from "./pages/Settings";
 import { AccountSetup } from "./pages/AccountSetup";
 import { SpacePicker } from "./pages/SpacePicker";
@@ -23,6 +24,7 @@ export function App() {
   const daemon = useDaemon();
   const [page, setPage] = useState<NavPage>("dashboard");
   const [flow, setFlow] = useState<FlowStep>({ step: "none" });
+  const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
   // null = still checking, false = no account, Account = loaded
   const [account, setAccount] = useState<Account | null | false>(null);
 
@@ -99,13 +101,35 @@ export function App() {
     );
   }
 
+  function navigate(p: NavPage) {
+    if (p !== "folderDetail") setSelectedFolder(null);
+    setPage(p);
+  }
+
+  // Map folderDetail → folders so sidebar highlights "Syncing Folders"
+  const sidebarPage: NavPage = page === "folderDetail" ? "folders" : page;
+
   return (
-    <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
+    <Layout page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
       {page === "dashboard" && (
-        <Dashboard daemon={daemon} onNavigate={(p) => setPage(p)} />
+        <Dashboard daemon={daemon} onNavigate={(p) => navigate(p)} />
       )}
       {page === "folders" && (
-        <Folders daemon={daemon} onAddFolder={openAddFolder} />
+        <Folders
+          daemon={daemon}
+          onAddFolder={openAddFolder}
+          onOpenFolder={(folder) => { setSelectedFolder(folder); setPage("folderDetail"); }}
+        />
+      )}
+      {page === "folderDetail" && selectedFolder && (
+        <FolderDetail
+          folder={selectedFolder}
+          daemon={daemon}
+          account={account}
+          onBack={() => { setSelectedFolder(null); setPage("folders"); }}
+          onFolderUpdated={(f) => setSelectedFolder(f)}
+          onRemove={() => { daemon.removeFolder(selectedFolder.Name); setSelectedFolder(null); setPage("folders"); }}
+        />
       )}
       {page === "settings" && <Settings />}
     </Layout>

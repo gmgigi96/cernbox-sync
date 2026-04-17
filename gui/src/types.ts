@@ -11,9 +11,15 @@ export interface Account {
   password: string;
 }
 
+export interface FileCounts {
+  files: number;
+  dirs: number;
+}
+
 export interface SyncStatus {
   syncing: string[];
   last_sync: Record<string, string>; // folder name → RFC 3339 timestamp
+  counts: Record<string, FileCounts>; // folder name → local file/dir counts after last sync
 }
 
 export interface Space {
@@ -24,7 +30,7 @@ export interface Space {
   description: string;
 }
 
-export type NavPage = "dashboard" | "folders" | "settings";
+export type NavPage = "dashboard" | "folders" | "settings" | "folderDetail";
 
 export interface RemoteResource {
   href: string;           // full WebDAV href

@@ -41,6 +41,7 @@ export const ipc = {
   createLocalDir(parent: string, name: string): Promise<string> {
     return invoke<string>("create_local_dir", { parent, name });
   },
+
 };
 
 export interface LocalEntry {
