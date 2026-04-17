@@ -405,6 +405,15 @@ fn create_local_dir(parent: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_text_file(path: String) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Ok(Some(content)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
 fn open_log_file(app: AppHandle, path: String) -> Result<(), String> {
     app.opener()
         .open_path(path, None::<&str>)
@@ -459,6 +468,7 @@ pub fn run() {
             ipc_set_account,
             list_local_dir,
             create_local_dir,
+            read_text_file,
             open_log_file,
         ])
         .run(tauri::generate_context!())

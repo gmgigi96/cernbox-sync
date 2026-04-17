@@ -10,6 +10,9 @@ import {
   Settings,
   AlertCircle,
   Save,
+  Download,
+  Upload,
+  AlertTriangle,
 } from "lucide-react";
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { DaemonState } from "../hooks/useDaemon";
@@ -50,11 +53,202 @@ function formatRelative(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+// ── Log parsing ────────────────────────────────────────────────────────────────
+
+const MAX_SESSIONS = 20;
+
+interface SyncSession {
+  startTime: Date;
+  idleNewest?: Date;     // set by collapseSessions for collapsed idle runs
+  downloads: string[];   // file downloads
+  mkdirLocals: string[]; // folder creations locally (remote → local)
+  uploads: string[];     // file uploads
+  mkcolRemotes: string[];// folder creations remotely (local → remote)
+  deleteLocals: string[];
+  deleteRemotes: string[];
+  conflicts: string[];
+  errors: string[];
+}
+
+function extractQuotedPath(msg: string): string {
+  const m = msg.match(/"([^"]+)"/);
+  return m ? m[1] : "";
+}
+
+function parseSyncLog(content: string): SyncSession[] {
+  const sessions: SyncSession[] = [];
+  let current: SyncSession | null = null;
+
+  for (const line of content.split("\n")) {
+    const spaceIdx = line.indexOf(" ");
+    if (spaceIdx < 0) continue;
+    const ts = line.slice(0, spaceIdx);
+    const msg = line.slice(spaceIdx + 1);
+    const time = new Date(ts);
+    if (isNaN(time.getTime())) continue;
+
+    if (msg.startsWith("[sync] starting")) {
+      current = { startTime: time, downloads: [], mkdirLocals: [], uploads: [], mkcolRemotes: [], deleteLocals: [], deleteRemotes: [], conflicts: [], errors: [] };
+      sessions.push(current);
+    } else if (!current) {
+      continue;
+    } else if (msg.startsWith("[sync] download ")) {
+      current.downloads.push(extractQuotedPath(msg));
+    } else if (msg.startsWith("[sync] mkdir local ")) {
+      current.mkdirLocals.push(extractQuotedPath(msg));
+    } else if (msg.startsWith("[sync] upload ")) {
+      current.uploads.push(extractQuotedPath(msg));
+    } else if (msg.startsWith("[sync] mkcol remote ")) {
+      current.mkcolRemotes.push(extractQuotedPath(msg));
+    } else if (msg.startsWith("[sync] delete local ")) {
+      current.deleteLocals.push(extractQuotedPath(msg));
+    } else if (msg.startsWith("[sync] delete remote ")) {
+      current.deleteRemotes.push(extractQuotedPath(msg));
+    } else if (msg.startsWith("[sync] conflict ")) {
+      current.conflicts.push(extractQuotedPath(msg));
+    } else if (msg.startsWith("[sync] ERROR")) {
+      current.errors.push(msg.replace("[sync] ERROR ", ""));
+    }
+  }
+
+  return sessions;
+}
+
+interface ActivityData {
+  icon: React.ReactNode;
+  iconBg: string;
+  iconColor: string;
+  title: string;
+  description: string;
+  time: string;
+}
+
+function isIdleSession(s: SyncSession): boolean {
+  return s.downloads.length === 0 && s.uploads.length === 0 &&
+    s.mkdirLocals.length === 0 && s.mkcolRemotes.length === 0 &&
+    s.deleteLocals.length === 0 && s.deleteRemotes.length === 0 &&
+    s.conflicts.length === 0 && s.errors.length === 0;
+}
+
+// Collapse consecutive idle sessions (newest-first order) into one.
+// idleNewest tracks the newest time of the run; startTime becomes the oldest.
+function collapseSessions(sessions: SyncSession[]): SyncSession[] {
+  const result: SyncSession[] = [];
+  for (const s of sessions) {
+    const prev = result[result.length - 1];
+    if (isIdleSession(s) && prev && isIdleSession(prev)) {
+      if (!prev.idleNewest) prev.idleNewest = prev.startTime; // save newest on first merge
+      prev.startTime = s.startTime;                           // extend to older time
+    } else {
+      result.push({ ...s });
+    }
+  }
+  return result;
+}
+
+function formatDuration(ms: number): string {
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+function n(count: number, singular: string, plural = singular + "s") {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function sessionToActivity(s: SyncSession, isLeading: boolean): ActivityData {
+  const foldersCreated = s.mkdirLocals.length + s.mkcolRemotes.length;
+  const deleted = s.deleteLocals.length + s.deleteRemotes.length;
+  const total = s.downloads.length + s.uploads.length + foldersCreated + deleted + s.conflicts.length;
+  const time = formatRelative(s.startTime.toISOString());
+
+  if (s.errors.length > 0 && total === 0) {
+    return {
+      icon: <AlertCircle size={13} strokeWidth={1.5} />,
+      iconBg: "rgba(255,107,107,0.15)",
+      iconColor: "var(--error)",
+      title: `${n(s.errors.length, "error")} during sync`,
+      description: s.errors[0],
+      time,
+    };
+  }
+
+  if (total === 0) {
+    const idleTitle = isLeading
+      ? `Nothing changed since ${time}`
+      : s.idleNewest
+        ? `Nothing changed for ${formatDuration(s.idleNewest.getTime() - s.startTime.getTime())}`
+        : `Nothing changed since ${time}`;
+    return {
+      icon: <CheckCircle2 size={13} strokeWidth={1.5} />,
+      iconBg: "rgba(107,217,160,0.15)",
+      iconColor: "var(--success)",
+      title: idleTitle,
+      description: "All files already up to date.",
+      time,
+    };
+  }
+
+  const parts: string[] = [];
+  if (s.downloads.length) parts.push(`${n(s.downloads.length, "file")} downloaded`);
+  if (s.uploads.length) parts.push(`${n(s.uploads.length, "file")} uploaded`);
+  if (foldersCreated) parts.push(`${n(foldersCreated, "folder")} created`);
+  if (deleted) parts.push(`${n(deleted, "item")} deleted`);
+  if (s.conflicts.length) parts.push(`${n(s.conflicts.length, "conflict")}`);
+  if (s.errors.length) parts.push(`${n(s.errors.length, "error")}`);
+
+  const allPaths = [...s.downloads, ...s.uploads, ...s.mkdirLocals, ...s.mkcolRemotes, ...s.deleteLocals, ...s.deleteRemotes, ...s.conflicts]
+    .map((p) => p.split("/").pop() ?? p)
+    .filter(Boolean);
+  const preview = allPaths.slice(0, 2).join(", ") + (allPaths.length > 2 ? ` +${allPaths.length - 2} more` : "");
+
+  const hasConflictsOrErrors = s.conflicts.length > 0 || s.errors.length > 0;
+  const onlyUploads = s.uploads.length + s.mkcolRemotes.length > 0 && s.downloads.length === 0 && s.mkdirLocals.length === 0 && deleted === 0 && s.conflicts.length === 0;
+  const onlyDownloads = s.downloads.length + s.mkdirLocals.length > 0 && s.uploads.length === 0 && s.mkcolRemotes.length === 0 && deleted === 0 && s.conflicts.length === 0;
+
+  let icon: React.ReactNode;
+  let iconBg: string;
+  let iconColor: string;
+
+  if (hasConflictsOrErrors) {
+    icon = <AlertTriangle size={13} strokeWidth={1.5} />;
+    iconBg = "rgba(255,181,150,0.15)";
+    iconColor = "var(--tertiary)";
+  } else if (onlyDownloads) {
+    icon = <Download size={13} strokeWidth={1.5} />;
+    iconBg = "rgba(180,197,255,0.15)";
+    iconColor = "var(--primary)";
+  } else if (onlyUploads) {
+    icon = <Upload size={13} strokeWidth={1.5} />;
+    iconBg = "rgba(107,217,160,0.15)";
+    iconColor = "var(--success)";
+  } else {
+    icon = <RefreshCw size={13} strokeWidth={1.5} />;
+    iconBg = "rgba(180,197,255,0.15)";
+    iconColor = "var(--primary)";
+  }
+
+  return { icon, iconBg, iconColor, title: parts.join(" · "), description: preview, time };
+}
+
 
 export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFolderUpdated }: FolderDetailProps) {
   const { status, daemonOnline, syncFolder } = daemon;
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [activityItems, setActivityItems] = useState<ActivityData[]>([]);
+
+  useEffect(() => {
+    ipc.readTextFile(`${folder.LocalRoot}/.sync.log`).then((content) => {
+      if (!content) return;
+      const sessions = parseSyncLog(content);
+      const collapsed = collapseSessions(sessions.slice(-MAX_SESSIONS).reverse());
+      const items = collapsed.map((s, i) => sessionToActivity(s, i === 0));
+      setActivityItems(items);
+    }).catch(() => {/* log file unreadable — leave empty */});
+  }, [folder.LocalRoot]);
 
   const syncing = status?.syncing?.includes(folder.Name) ?? false;
   const lastSyncTs = status?.last_sync?.[folder.Name];
@@ -202,22 +396,13 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
                 </button>
               </div>
               <div style={s.activityList}>
-                <ActivityItem
-                  icon={<CheckCircle2 size={13} strokeWidth={1.5} />}
-                  iconBg="rgba(107,217,160,0.15)"
-                  iconColor="var(--success)"
-                  title="Uploaded 12 research papers"
-                  description="System successfully pushed new entries to cloud storage at high priority."
-                  time="2 minutes ago"
-                />
-                <ActivityItem
-                  icon={<RefreshCw size={13} strokeWidth={1.5} />}
-                  iconBg="rgba(255,181,150,0.15)"
-                  iconColor="var(--tertiary)"
-                  title="Modified 'thesis_outline_v4.docx'"
-                  description="Detected local change. Conflict resolution bypassed as cloud was older."
-                  time="1 hour ago"
-                />
+                {activityItems.length === 0 ? (
+                  <p style={{ fontSize: "0.8125rem", color: "var(--on-surface-variant)" }}>No sync activity yet.</p>
+                ) : (
+                  activityItems.map((item, i) => (
+                    <ActivityItem key={i} {...item} isLast={i === activityItems.length - 1} />
+                  ))
+                )}
               </div>
             </div>
 
@@ -408,15 +593,21 @@ interface ActivityItemProps {
   title: string;
   description: string;
   time: string;
+  isLast?: boolean;
 }
 
-function ActivityItem({ icon, iconBg, iconColor, title, description, time }: ActivityItemProps) {
+function ActivityItem({ icon, iconBg, iconColor, title, description, time, isLast }: ActivityItemProps) {
   return (
-    <div style={s.activityItem}>
-      <div style={{ ...s.activityIconWrap, background: iconBg, color: iconColor }}>
-        {icon}
+    <div style={{ ...s.activityItem, alignItems: "stretch" }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+        <div style={{ ...s.activityIconWrap, background: iconBg, color: iconColor }}>
+          {icon}
+        </div>
+        {!isLast && (
+          <div style={{ flex: 1, width: 1.5, background: "rgba(108,112,134,0.2)", marginTop: "0.375rem", borderRadius: 1 }} />
+        )}
       </div>
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, paddingBottom: isLast ? 0 : "1.25rem" }}>
         <p style={s.activityItemTitle}>{title}</p>
         <p style={s.activityDesc}>{description}</p>
         <p style={s.activityTime}>{time}</p>
@@ -998,7 +1189,6 @@ const s: Record<string, React.CSSProperties> = {
   activityList: {
     display: "flex",
     flexDirection: "column" as const,
-    gap: "1.25rem",
     overflowY: "auto" as const,
     minHeight: 0,
   },

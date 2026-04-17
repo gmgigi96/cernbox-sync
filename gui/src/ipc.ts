@@ -41,6 +41,9 @@ export const ipc = {
   createLocalDir(parent: string, name: string): Promise<string> {
     return invoke<string>("create_local_dir", { parent, name });
   },
+  readTextFile(path: string): Promise<string | null> {
+    return invoke<string | null>("read_text_file", { path });
+  },
   openLogFile(path: string): Promise<void> {
     return invoke("open_log_file", { path });
   },
