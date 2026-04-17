@@ -609,6 +609,153 @@ func TestSync_FirstRun_LocalWins(t *testing.T) {
 	}
 }
 
+// ─── hidden file tests ────────────────────────────────────────────────────────
+
+// Remote has a hidden file (.dotfile); SyncHiddenFiles is false (default).
+// Expected: file is NOT downloaded; DB remains empty.
+func TestSync_HiddenFiles_RemoteHiddenFile_Skipped(t *testing.T) {
+	env := setup(t)
+	env.dav.addFile(".hidden", "secret", "etag-hidden", time.Now())
+	env.cfg.SyncHiddenFiles = false
+
+	env.run()
+
+	if env.localExists(".hidden") {
+		t.Fatal(".hidden should not have been downloaded when SyncHiddenFiles=false")
+	}
+	if env.dbGet(".hidden") != nil {
+		t.Fatal("DB should have no entry for .hidden")
+	}
+}
+
+// Remote has a hidden directory (.cache) with a file inside; SyncHiddenFiles is false.
+// Expected: neither the directory nor its contents are downloaded.
+func TestSync_HiddenFiles_RemoteHiddenDir_Skipped(t *testing.T) {
+	env := setup(t)
+	env.dav.addDir(".cache", "etag-cache")
+	env.dav.addFile(".cache/data.bin", "cached", "etag-data", time.Now())
+	env.cfg.SyncHiddenFiles = false
+
+	env.run()
+
+	if env.localExists(".cache") {
+		t.Fatal(".cache/ should not have been created when SyncHiddenFiles=false")
+	}
+	if env.localExists(".cache/data.bin") {
+		t.Fatal(".cache/data.bin should not have been downloaded")
+	}
+}
+
+// Local has a hidden file (.dotfile); SyncHiddenFiles is false (default).
+// Expected: file is NOT uploaded; remote remains unchanged.
+func TestSync_HiddenFiles_LocalHiddenFile_Skipped(t *testing.T) {
+	env := setup(t)
+	env.writeLocal(".dotfile", "local secret")
+	env.cfg.SyncHiddenFiles = false
+
+	env.run()
+
+	if contains(env.dav.puts, ".dotfile") {
+		t.Fatalf(".dotfile should not have been uploaded when SyncHiddenFiles=false; puts=%v", env.dav.puts)
+	}
+	if env.dbGet(".dotfile") != nil {
+		t.Fatal("DB should have no entry for .dotfile")
+	}
+}
+
+// Local has a hidden directory (.git) with a file inside; SyncHiddenFiles is false.
+// Expected: neither the directory nor its contents are uploaded.
+func TestSync_HiddenFiles_LocalHiddenDir_Skipped(t *testing.T) {
+	env := setup(t)
+	env.mkdirLocal(".git")
+	env.writeLocal(".git/config", "git config content")
+	env.cfg.SyncHiddenFiles = false
+
+	env.run()
+
+	if contains(env.dav.mkcols, ".git") {
+		t.Fatalf(".git/ should not have been MKCOL'd; mkcols=%v", env.dav.mkcols)
+	}
+	if contains(env.dav.puts, ".git/config") {
+		t.Fatalf(".git/config should not have been uploaded; puts=%v", env.dav.puts)
+	}
+}
+
+// Remote has a hidden file (.dotfile); SyncHiddenFiles is true.
+// Expected: file IS downloaded; DB entry created.
+func TestSync_HiddenFiles_RemoteHiddenFile_Synced(t *testing.T) {
+	env := setup(t)
+	modTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	env.dav.addFile(".dotfile", "dot content", "etag-dot", modTime)
+	env.cfg.SyncHiddenFiles = true
+
+	env.run()
+
+	if !env.localExists(".dotfile") {
+		t.Fatal(".dotfile should have been downloaded when SyncHiddenFiles=true")
+	}
+	if got := env.readLocal(".dotfile"); got != "dot content" {
+		t.Fatalf("content: got %q, want %q", got, "dot content")
+	}
+	if env.dbGet(".dotfile") == nil {
+		t.Fatal("DB entry for .dotfile should exist")
+	}
+}
+
+// Local has a hidden file (.dotfile); SyncHiddenFiles is true.
+// Expected: file IS uploaded; DB entry created.
+func TestSync_HiddenFiles_LocalHiddenFile_Synced(t *testing.T) {
+	env := setup(t)
+	env.writeLocal(".dotfile", "dot content")
+	env.cfg.SyncHiddenFiles = true
+
+	env.run()
+
+	if !contains(env.dav.puts, ".dotfile") {
+		t.Fatalf(".dotfile should have been uploaded when SyncHiddenFiles=true; puts=%v", env.dav.puts)
+	}
+	if env.dbGet(".dotfile") == nil {
+		t.Fatal("DB entry for .dotfile should exist after upload")
+	}
+}
+
+// Mixed: remote has one regular file and one hidden file; SyncHiddenFiles is false.
+// Expected: only the regular file is downloaded.
+func TestSync_HiddenFiles_MixedRemote_OnlyRegularSynced(t *testing.T) {
+	env := setup(t)
+	modTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	env.dav.addFile("visible.txt", "visible", "etag-vis", modTime)
+	env.dav.addFile(".hidden", "hidden", "etag-hid", modTime)
+	env.cfg.SyncHiddenFiles = false
+
+	env.run()
+
+	if !env.localExists("visible.txt") {
+		t.Fatal("visible.txt should have been downloaded")
+	}
+	if env.localExists(".hidden") {
+		t.Fatal(".hidden should not have been downloaded when SyncHiddenFiles=false")
+	}
+}
+
+// Mixed: local has one regular file and one hidden file; SyncHiddenFiles is false.
+// Expected: only the regular file is uploaded.
+func TestSync_HiddenFiles_MixedLocal_OnlyRegularSynced(t *testing.T) {
+	env := setup(t)
+	env.writeLocal("visible.txt", "visible")
+	env.writeLocal(".hidden", "hidden")
+	env.cfg.SyncHiddenFiles = false
+
+	env.run()
+
+	if !contains(env.dav.puts, "visible.txt") {
+		t.Fatalf("visible.txt should have been uploaded; puts=%v", env.dav.puts)
+	}
+	if contains(env.dav.puts, ".hidden") {
+		t.Fatalf(".hidden should not have been uploaded when SyncHiddenFiles=false; puts=%v", env.dav.puts)
+	}
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 func contains(ss []string, s string) bool {

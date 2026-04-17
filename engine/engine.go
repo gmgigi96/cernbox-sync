@@ -104,14 +104,14 @@ func Run(cfg Config) error {
 	defer state.Close()
 
 	// ── 1. Remote scan ───────────────────────────────────────────────────────
-	remoteMap, err := scanRemote(wdc, cfg.Folders)
+	remoteMap, err := scanRemote(wdc, cfg.Folders, cfg.SyncHiddenFiles)
 	if err != nil {
 		return fmt.Errorf("remote scan: %w", err)
 	}
 	logf(cfg.FolderLog, "[sync] remote resources: %d", len(remoteMap))
 
 	// ── 2. Local scan ────────────────────────────────────────────────────────
-	localMap, err := scanLocal(cfg.LocalRoot)
+	localMap, err := scanLocal(cfg.LocalRoot, cfg.SyncHiddenFiles)
 	if err != nil {
 		return fmt.Errorf("local scan: %w", err)
 	}
@@ -146,7 +146,7 @@ func Run(cfg Config) error {
 // If folders is non-empty only those top-level sub-directories (and their
 // descendants) are visited; the root entry is still included so the engine
 // can track the anchor point.
-func scanRemote(wdc *webdav.Client, folders []string) (map[string]*webdav.Resource, error) {
+func scanRemote(wdc *webdav.Client, folders []string, syncHiddenFiles bool) (map[string]*webdav.Resource, error) {
 	result := make(map[string]*webdav.Resource)
 
 	// Seed the BFS queue.
@@ -192,6 +192,18 @@ func scanRemote(wdc *webdav.Client, folders []string) (map[string]*webdav.Resour
 			if _, seen := result[rel]; seen {
 				continue
 			}
+
+			// Skip hidden entries unless enabled.
+			if !syncHiddenFiles {
+				name := rel
+				if idx := strings.LastIndex(rel, "/"); idx >= 0 {
+					name = rel[idx+1:]
+				}
+				if isHidden(name, "") {
+					continue
+				}
+			}
+
 			result[rel] = e
 
 			// Recurse into subdirectories (but not the entry we just came from).
@@ -206,7 +218,7 @@ func scanRemote(wdc *webdav.Client, folders []string) (map[string]*webdav.Resour
 
 // ─── local scan ──────────────────────────────────────────────────────────────
 
-func scanLocal(root string) (map[string]*localInfo, error) {
+func scanLocal(root string, syncHiddenFiles bool) (map[string]*localInfo, error) {
 	result := make(map[string]*localInfo)
 	err := filepath.WalkDir(root, func(absPath string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -225,6 +237,14 @@ func scanLocal(root string) (map[string]*localInfo, error) {
 		// Skip internal files — they live inside the local root but must
 		// never be uploaded or treated as sync-able files.
 		if rel == ".sync.db" || rel == ".sync.log" {
+			return nil
+		}
+
+		// Skip hidden entries unless enabled.
+		if !syncHiddenFiles && isHidden(d.Name(), absPath) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
