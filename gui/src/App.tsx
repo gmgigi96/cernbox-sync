@@ -50,10 +50,15 @@ export function App() {
     setFlow({ step: "spacePicker" });
   }
 
+  function cancelFlow(p: NavPage) {
+    setFlow({ step: "none" });
+    setPage(p);
+  }
+
   // Space picker replaces the main content area.
   if (flow.step === "spacePicker") {
     return (
-      <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
+      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <SpacePicker
           serverUrl={SERVER_URL}
           username={account.username}
@@ -71,7 +76,7 @@ export function App() {
   if (flow.step === "folderPicker") {
     const { space, existingFolder } = flow;
     return (
-      <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
+      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <FolderPicker
           space={space}
           username={account.username}
@@ -88,7 +93,7 @@ export function App() {
   if (flow.step === "localPath") {
     const { space, remoteUrls, existingFolder } = flow;
     return (
-      <Layout page={page} onNavigate={setPage} onAddFolder={openAddFolder}>
+      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <LocalFolderPicker
           space={space}
           remoteUrls={remoteUrls}
