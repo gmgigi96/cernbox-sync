@@ -1,4 +1,5 @@
 import { RefreshCw, Trash2, MoreVertical, FolderOpen, CheckCircle2, AlertCircle, Clock, Filter, SlidersHorizontal } from "lucide-react";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import type { DaemonState } from "../hooks/useDaemon";
 import type { Folder } from "../types";
@@ -20,10 +21,6 @@ function formatRelative(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function truncatePath(p: string, max = 30): string {
-  if (p.length <= max) return p;
-  return "…" + p.slice(-(max - 1));
-}
 
 export function Folders({ daemon, onAddFolder, onOpenFolder }: FoldersProps) {
   const { folders, status, daemonOnline, syncFolder, removeFolder } = daemon;
@@ -156,9 +153,14 @@ function FolderCard({
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={styles.folderName}>{folder.Name}</div>
           <div style={styles.folderMeta}>
-            <span className="label-sm">{truncatePath(folder.LocalRoot)}</span>
-            <span style={{ color: "var(--outline-variant)", margin: "0 0.25rem" }}>→</span>
-            <span className="label-sm">{truncatePath(folder.RemoteBase)}</span>
+            <span
+              className="label-sm"
+              style={{ cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}
+              onClick={(e) => { e.stopPropagation(); openPath(folder.LocalRoot); }}
+              title="Open folder"
+            >
+              {folder.LocalRoot}
+            </span>
           </div>
         </div>
         <div style={{ position: "relative" as const }}>
@@ -171,18 +173,18 @@ function FolderCard({
         </div>
       </div>
 
-      {/* Progress bar */}
+      {/* Progress section */}
       <div style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>
         <div style={styles.progressMeta}>
           {statusChip}
-          <span className="label-sm" style={{ marginLeft: "auto" }}>
-            {syncing ? `${progress}%` : "100%"}
+          <span className="label-sm" style={{ marginLeft: "auto", visibility: syncing ? "visible" : "hidden" }}>
+            {progress}%
           </span>
         </div>
-        <div className="progress-track" style={{ marginTop: "0.5rem" }}>
+        <div className="progress-track" style={{ marginTop: "0.5rem", visibility: syncing ? "visible" : "hidden" }}>
           <div
             className="progress-fill"
-            style={{ width: `${progress}%`, ...(syncing ? { background: "var(--gradient-primary)" } : {}) }}
+            style={{ width: `${progress}%`, background: "var(--gradient-primary)" }}
           />
         </div>
       </div>
