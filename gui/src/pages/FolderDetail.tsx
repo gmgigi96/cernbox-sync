@@ -246,11 +246,14 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activityItems, setActivityItems] = useState<ActivityData[]>([]);
+  const [conflictCount, setConflictCount] = useState<number | null>(null);
 
   useEffect(() => {
     ipc.readTextFile(`${folder.LocalRoot}/.sync.log`).then((content) => {
       if (!content) return;
       const sessions = parseSyncLog(content);
+      const totalConflicts = sessions.reduce((sum, s) => sum + s.conflicts.length, 0);
+      setConflictCount(totalConflicts);
       const collapsed = collapseSessions(sessions.slice(-MAX_SESSIONS).reverse());
       const items = collapsed.map((s, i) => sessionToActivity(s, i === 0));
       setActivityItems(items);
@@ -347,12 +350,16 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
           </div>
 
           <div style={s.statCard}>
-            <p style={s.statLabel}>SYNCED ITEMS</p>
-            <p style={s.statValue}>{counts ? (counts.files + counts.dirs).toLocaleString() : "—"}</p>
+            <p style={s.statLabel}>CONFLICTS</p>
+            <p style={{ ...s.statValue, color: conflictCount ? "var(--tertiary)" : undefined }}>
+              {conflictCount == null ? "—" : conflictCount.toLocaleString()}
+            </p>
             <p style={s.statMeta}>
-              {counts
-                ? `${counts.files} file${counts.files !== 1 ? "s" : ""} · ${counts.dirs} dir${counts.dirs !== 1 ? "s" : ""}`
-                : "No data yet"}
+              {conflictCount == null
+                ? "No data yet"
+                : conflictCount === 0
+                  ? "No conflicts"
+                  : `${conflictCount} file${conflictCount !== 1 ? "s" : ""} renamed`}
             </p>
           </div>
 
