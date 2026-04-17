@@ -15,6 +15,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { DaemonState } from "../hooks/useDaemon";
 import type { Account, Folder as FolderType } from "../types";
 import { listRemoteResources } from "../graph";
+import { ipc } from "../ipc";
 import {
   type TreeNode,
   sortChildren,
@@ -196,7 +197,7 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
                   <RefreshCw size={15} strokeWidth={1.5} style={{ color: "var(--on-surface-variant)" }} />
                   <span style={s.activityTitle}>Recent Activity</span>
                 </div>
-                <button className="btn-ghost" style={s.viewLogsBtn}>
+                <button className="btn-ghost" style={s.viewLogsBtn} onClick={() => ipc.openLogFile(`${folder.LocalRoot}/.sync.log`)}>
                   VIEW ALL LOGS <ArrowUpRight size={11} strokeWidth={2} />
                 </button>
               </div>

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::ShellExt;
 
 // ── IPC types (must mirror the Go structs) ────────────────────────────────────
@@ -400,6 +401,13 @@ fn create_local_dir(parent: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn open_log_file(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e: tauri_plugin_opener::Error| e.to_string())
+}
+
+#[tauri::command]
 fn ipc_set_settings(log_rotate_max_age: Option<String>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "set-settings".into(),
@@ -447,6 +455,7 @@ pub fn run() {
             ipc_set_account,
             list_local_dir,
             create_local_dir,
+            open_log_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
