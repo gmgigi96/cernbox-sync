@@ -115,6 +115,7 @@ func (c *Client) Put(remotePath string, content io.Reader, size int64) error {
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Content-Type", "application/octet-stream")
 	if size >= 0 {
 		req.ContentLength = size
 	}

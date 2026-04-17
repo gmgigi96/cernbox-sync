@@ -241,8 +241,11 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
                 <SettingRow
                   label="Auto-sync on change"
                   description="Real-time backup of local edits"
-                  enabled={true}
-                  todo
+                  enabled={folder.Settings?.auto_sync_on_change ?? false}
+                  onChange={(val) => {
+                    const updated: FolderType = { ...folder, Settings: { ...folder.Settings, auto_sync_on_change: val } };
+                    daemon.updateFolder(updated).then(() => onFolderUpdated(updated));
+                  }}
                 />
                 <SyncModeRow />
               </div>
@@ -966,8 +969,8 @@ const s: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column" as const,
     gap: "1rem",
-    overflow: "hidden auto",
     minHeight: 0,
+    overflow: "hidden",
   },
   activityHeader: {
     display: "flex",
@@ -996,6 +999,8 @@ const s: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column" as const,
     gap: "1.25rem",
+    overflowY: "auto" as const,
+    minHeight: 0,
   },
   activityItem: {
     display: "flex",

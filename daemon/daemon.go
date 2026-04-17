@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/gmgigi96/cernbox-sync/config"
 	"github.com/gmgigi96/cernbox-sync/engine"
 	"github.com/gmgigi96/cernbox-sync/ipc"
@@ -41,6 +42,14 @@ type Daemon struct {
 	logRotateMaxAge time.Duration // 0 means no rotation; loaded from settings at startup
 	accountUsername string        // loaded from settings at startup; updated by set-account
 	accountPassword string
+
+	// filesystem watcher (auto-sync on change)
+	watcher          *fsnotify.Watcher
+	watchedRoots     map[string]config.Folder // localRoot → Folder
+	watchMu          sync.Mutex
+	debounceTimers   map[string]*time.Timer // folderName → pending debounce timer
+	debounceMu       sync.Mutex
+	debounceDuration time.Duration // how long to wait after the last event before syncing
 }
 
 // New creates a new Daemon. interval controls how often all registered folders
@@ -51,12 +60,15 @@ func New(cfgDB *config.DB, interval time.Duration, log *logger.Logger) *Daemon {
 		log = logger.GetDefault()
 	}
 	return &Daemon{
-		cfgDB:    cfgDB,
-		interval: interval,
-		log:      log,
-		syncing:  make(map[string]bool),
-		lastSync: make(map[string]time.Time),
-		counts:   make(map[string]ipc.FileCounts),
+		cfgDB:            cfgDB,
+		interval:         interval,
+		log:              log,
+		syncing:          make(map[string]bool),
+		lastSync:         make(map[string]time.Time),
+		counts:           make(map[string]ipc.FileCounts),
+		watchedRoots:     make(map[string]config.Folder),
+		debounceTimers:   make(map[string]*time.Timer),
+		debounceDuration: 2 * time.Second,
 	}
 }
 
@@ -84,6 +96,9 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	d.log.Infof("[daemon] listening on %s", sockPath)
 	d.log.Infof("[daemon] sync interval: %s", d.interval)
 	d.log.Debugf("[daemon] log level: %s", d.log.Level())
+
+	// Filesystem watcher for auto-sync on change.
+	d.startWatcher(ctx)
 
 	// Periodic sync loop.
 	go d.syncLoop(ctx)
@@ -260,6 +275,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			return fail(err.Error())
 		}
 		d.log.Infof("[daemon] add: registered folder %q", req.Folder.Name)
+		d.updateFolderWatch(req.Folder)
 		return ok()
 
 	case ipc.CmdList:
@@ -272,8 +288,15 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 
 	case ipc.CmdRemove:
 		d.log.Debugf("[daemon] remove: name=%q", req.Name)
+		f, err := d.cfgDB.Get(req.Name)
+		if err != nil {
+			return fail(err.Error())
+		}
 		if err := d.cfgDB.Remove(req.Name); err != nil {
 			return fail(err.Error())
+		}
+		if f != nil {
+			d.removeFolderWatch(f.Name, f.LocalRoot)
 		}
 		d.log.Infof("[daemon] remove: removed folder %q", req.Name)
 		return ok()
@@ -288,9 +311,16 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			return fail("cannot create local dir: " + err.Error())
 		}
 		req.Folder.LocalRoot = abs
+		// Fetch current config before updating so we can clean up the old watch
+		// (LocalRoot may have changed).
+		oldFolder, _ := d.cfgDB.Get(req.Folder.Name)
 		if err := d.cfgDB.Update(req.Folder); err != nil {
 			return fail(err.Error())
 		}
+		if oldFolder != nil {
+			d.removeFolderWatch(oldFolder.Name, oldFolder.LocalRoot)
+		}
+		d.updateFolderWatch(req.Folder)
 		d.log.Infof("[daemon] update: updated folder %q (selected=%v settings=%+v)", req.Folder.Name, req.Folder.Folders, req.Folder.Settings)
 		return ok()
 

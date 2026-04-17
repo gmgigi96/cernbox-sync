@@ -44,6 +44,9 @@ type FolderSettings struct {
 	// SyncHiddenFiles controls whether files and directories whose names begin
 	// with a dot are included in the sync. Defaults to false.
 	SyncHiddenFiles bool `json:"sync_hidden_files"`
+	// AutoSyncOnChange triggers an immediate sync whenever a filesystem change
+	// is detected inside the local root. Defaults to false.
+	AutoSyncOnChange bool `json:"auto_sync_on_change"`
 }
 
 // Folder represents one registered sync pair.

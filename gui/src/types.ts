@@ -1,6 +1,8 @@
 export interface FolderSettings {
   /** Include dotfiles and system items whose names begin with a dot. */
   sync_hidden_files: boolean;
+  /** Trigger an immediate sync whenever a local filesystem change is detected. */
+  auto_sync_on_change: boolean;
 }
 
 export interface Folder {

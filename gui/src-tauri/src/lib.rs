@@ -12,6 +12,8 @@ use tauri_plugin_shell::ShellExt;
 pub struct FolderSettings {
     #[serde(default)]
     pub sync_hidden_files: bool,
+    #[serde(default)]
+    pub auto_sync_on_change: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -199,7 +201,7 @@ fn ipc_list() -> Result<Vec<Folder>, String> {
 }
 
 #[tauri::command]
-fn ipc_add(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>) -> Result<(), String> {
+fn ipc_add(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>, auto_sync_on_change: Option<bool>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "add".into(),
         folder: Some(Folder {
@@ -209,6 +211,7 @@ fn ipc_add(name: String, local_root: String, remote_base: String, folders: Optio
             folders: folders.unwrap_or_default(),
             settings: FolderSettings {
                 sync_hidden_files: sync_hidden_files.unwrap_or(false),
+                auto_sync_on_change: auto_sync_on_change.unwrap_or(false),
             },
         }),
         name: None,
@@ -259,7 +262,7 @@ fn ipc_remove(name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn ipc_update(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>) -> Result<(), String> {
+fn ipc_update(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>, auto_sync_on_change: Option<bool>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "update".into(),
         folder: Some(Folder {
@@ -269,6 +272,7 @@ fn ipc_update(name: String, local_root: String, remote_base: String, folders: Op
             folders: folders.unwrap_or_default(),
             settings: FolderSettings {
                 sync_hidden_files: sync_hidden_files.unwrap_or(false),
+                auto_sync_on_change: auto_sync_on_change.unwrap_or(false),
             },
         }),
         name: None,
