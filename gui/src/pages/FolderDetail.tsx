@@ -241,7 +241,9 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
                   label="Auto-sync on change"
                   description="Real-time backup of local edits"
                   enabled={true}
+                  todo
                 />
+                <SyncModeRow />
               </div>
 
 
@@ -271,7 +273,7 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
 
 // ── SettingRow ─────────────────────────────────────────────────────────────────
 
-function SettingRow({ label, description, enabled, onChange }: { label: string; description: string; enabled: boolean; onChange?: (val: boolean) => void }) {
+function SettingRow({ label, description, enabled, onChange, todo }: { label: string; description: string; enabled: boolean; onChange?: (val: boolean) => void; todo?: boolean }) {
   const [on, setOn] = useState(enabled);
   function toggle() {
     const next = !on;
@@ -281,7 +283,14 @@ function SettingRow({ label, description, enabled, onChange }: { label: string; 
   return (
     <div style={sr.row}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={sr.label}>{label}</p>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.125rem" }}>
+          <p style={{ ...sr.label, marginBottom: 0 }}>{label}</p>
+          {todo && (
+            <span style={{ fontSize: "0.5625rem", fontWeight: 700, letterSpacing: "0.06em", color: "var(--tertiary)", background: "rgba(255,181,150,0.15)", padding: "0.1rem 0.375rem", borderRadius: "var(--radius-full)" }}>
+              SOON
+            </span>
+          )}
+        </div>
         <p style={sr.desc}>{description}</p>
       </div>
       <button
@@ -333,6 +342,56 @@ const sr: Record<string, React.CSSProperties> = {
     background: "#fff",
     transition: "transform var(--transition-base)",
     boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+  },
+};
+
+// ── SyncModeRow ────────────────────────────────────────────────────────────────
+
+function SyncModeRow() {
+  return (
+    <div style={sr.row}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.125rem" }}>
+          <p style={{ ...sr.label, marginBottom: 0 }}>Sync mode</p>
+          <span style={{ fontSize: "0.5625rem", fontWeight: 700, letterSpacing: "0.06em", color: "var(--tertiary)", background: "rgba(255,181,150,0.15)", padding: "0.1rem 0.375rem", borderRadius: "var(--radius-full)" }}>
+            SOON
+          </span>
+        </div>
+        <p style={sr.desc}>Choose how files are kept locally</p>
+      </div>
+      <div style={smr.segmented}>
+        <div style={{ ...smr.option, ...smr.optionActive }}>Mirror</div>
+        <div style={{ ...smr.option, ...smr.optionDisabled }}>On-demand</div>
+      </div>
+    </div>
+  );
+}
+
+const smr: Record<string, React.CSSProperties> = {
+  segmented: {
+    display: "flex",
+    background: "var(--surface-container-highest)",
+    borderRadius: "var(--radius-full)",
+    padding: "0.1875rem",
+    gap: "0.125rem",
+    flexShrink: 0,
+  },
+  option: {
+    fontSize: "0.6875rem",
+    fontWeight: 500,
+    color: "var(--on-surface-variant)",
+    padding: "0.25rem 0.625rem",
+    borderRadius: "var(--radius-full)",
+    cursor: "not-allowed",
+    whiteSpace: "nowrap" as const,
+  },
+  optionActive: {
+    background: "var(--primary-container)",
+    color: "var(--on-surface)",
+    fontWeight: 600,
+  },
+  optionDisabled: {
+    opacity: 0.45,
   },
 };
 
@@ -902,9 +961,12 @@ const s: Record<string, React.CSSProperties> = {
 
   // Activity
   activitySection: {
+    flex: 1,
     display: "flex",
     flexDirection: "column" as const,
     gap: "1rem",
+    overflow: "hidden auto",
+    minHeight: 0,
   },
   activityHeader: {
     display: "flex",
@@ -932,7 +994,7 @@ const s: Record<string, React.CSSProperties> = {
   activityList: {
     display: "flex",
     flexDirection: "column" as const,
-    gap: "0.875rem",
+    gap: "1.25rem",
   },
   activityItem: {
     display: "flex",
