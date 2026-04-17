@@ -1,4 +1,4 @@
-import { RefreshCw, Trash2, MoreVertical, FolderOpen, CheckCircle2, AlertCircle, Clock, Filter, SlidersHorizontal } from "lucide-react";
+import { RefreshCw, Trash2, MoreVertical, FolderOpen, CheckCircle2, AlertCircle, Clock, Filter } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import type { DaemonState } from "../hooks/useDaemon";
@@ -44,9 +44,6 @@ export function Folders({ daemon, onAddFolder, onOpenFolder }: FoldersProps) {
         <div style={styles.headerActions}>
           <button className="btn-ghost" style={styles.actionBtn}>
             <Filter size={14} strokeWidth={1.5} /> Filter
-          </button>
-          <button className="btn-ghost" style={styles.actionBtn}>
-            <SlidersHorizontal size={14} strokeWidth={1.5} /> Sync Logs
           </button>
         </div>
       </div>
