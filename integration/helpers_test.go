@@ -200,13 +200,22 @@ func setup(t *testing.T) *testEnv {
 
 	env.waitDaemonReady()
 
+	// Set the account credentials before registering the sync pair.
+	if _, err := ipc.Send(sockPath, ipc.Request{
+		Cmd: ipc.CmdSetAccount,
+		Account: &ipc.AccountPayload{
+			Username: webdavUser,
+			Password: webdavPass,
+		},
+	}); err != nil {
+		t.Fatalf("set-account: %v", err)
+	}
+
 	// Register the sync pair via the CLI binary.
 	env.cli("add",
 		"-name", folderName,
 		"-local", localDir,
 		"-remote", webdavBase+"/"+remoteID,
-		"-user", webdavUser,
-		"-pass", webdavPass,
 	)
 
 	return env
