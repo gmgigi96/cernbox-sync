@@ -21,7 +21,7 @@ package engine
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -87,9 +87,9 @@ type localInfo struct {
 	isDir   bool
 }
 
-// logf writes to both the global logger and, when set, the per-folder logger.
+// logf writes to both the slog default logger and, when set, the per-folder logger.
 func logf(fl *synclog.Logger, format string, args ...any) {
-	log.Printf(format, args...)
+	slog.Info(fmt.Sprintf(format, args...))
 	if fl != nil {
 		fl.Printf(format, args...)
 	}

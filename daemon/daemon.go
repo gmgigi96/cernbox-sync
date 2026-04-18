@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net"
 	"os"
@@ -29,7 +30,7 @@ import (
 type Daemon struct {
 	cfgDB    *config.DB
 	interval time.Duration
-	log      *logger.Logger
+	log      *slog.Logger
 
 	// cancel is set by Run; calling it shuts the daemon down.
 	cancel context.CancelFunc
@@ -55,11 +56,11 @@ type Daemon struct {
 }
 
 // New creates a new Daemon. interval controls how often all registered folders
-// are synced automatically. log is the levelled logger to use; if nil the
-// package-level default logger is used.
-func New(cfgDB *config.DB, interval time.Duration, log *logger.Logger) *Daemon {
+// are synced automatically. log is the slog logger to use; if nil the
+// package-level slog default is used.
+func New(cfgDB *config.DB, interval time.Duration, log *slog.Logger) *Daemon {
 	if log == nil {
-		log = logger.GetDefault()
+		log = slog.Default()
 	}
 	return &Daemon{
 		cfgDB:            cfgDB,
@@ -82,7 +83,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 
 	// Load settings (best-effort; non-fatal if table is missing on old DBs).
 	if s, err := d.cfgDB.GetSettings(); err != nil {
-		d.log.Errorf("[daemon] load settings: %v", err)
+		d.log.Error("[daemon] load settings", "err", err)
 	} else {
 		d.logRotateMaxAge = s.LogRotateMaxAge
 		d.accountUsername = s.AccountUsername
@@ -96,9 +97,9 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 		return fmt.Errorf("listen on %s: %w", sockPath, err)
 	}
 
-	d.log.Infof("[daemon] listening on %s", sockPath)
-	d.log.Infof("[daemon] sync interval: %s", d.interval)
-	d.log.Debugf("[daemon] log level: %s", d.log.Level())
+	d.log.Info("[daemon] listening", "socket", sockPath)
+	d.log.Info("[daemon] sync interval", "interval", d.interval)
+	d.log.Debug("[daemon] log level", "level", d.log.Handler())
 
 	// Filesystem watcher for auto-sync on change.
 	d.startWatcher(ctx)
@@ -115,7 +116,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 				case <-ctx.Done():
 					// Listener was closed intentionally — exit silently.
 				default:
-					d.log.Errorf("[daemon] accept: %v", err)
+					d.log.Error("[daemon] accept", "err", err)
 				}
 				return
 			}
@@ -126,7 +127,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	<-ctx.Done()
 	ln.Close()
 	os.Remove(sockPath)
-	d.log.Infof("[daemon] stopped")
+	d.log.Info("[daemon] stopped")
 	return nil
 }
 
@@ -150,28 +151,28 @@ func (d *Daemon) syncLoop(ctx context.Context) {
 func (d *Daemon) syncAll() {
 	folders, err := d.cfgDB.All()
 	if err != nil {
-		d.log.Errorf("[daemon] list folders: %v", err)
+		d.log.Error("[daemon] list folders", "err", err)
 		return
 	}
-	d.log.Infof("[daemon] starting sync cycle for %d folder(s)", len(folders))
+	d.log.Info("[daemon] starting sync cycle", "folders", len(folders))
 	for _, f := range folders {
 		d.syncFolder(f)
 	}
-	d.log.Infof("[daemon] sync cycle complete")
+	d.log.Info("[daemon] sync cycle complete")
 }
 
 func (d *Daemon) syncFolder(f config.Folder) {
 	d.mu.Lock()
 	if d.syncing[f.Name] {
 		d.mu.Unlock()
-		d.log.Debugf("[daemon] %q already syncing, skipping", f.Name)
+		d.log.Debug("[daemon] already syncing, skipping", "folder", f.Name)
 		return
 	}
 	d.syncing[f.Name] = true
 	d.mu.Unlock()
 
 	start := time.Now()
-	d.log.Infof("[daemon] sync start: %q (local=%s remote=%s)", f.Name, f.LocalRoot, f.RemoteBase)
+	d.log.Info("[daemon] sync start", "folder", f.Name, "local", f.LocalRoot, "remote", f.RemoteBase)
 	d.bus.publish(ipc.Event{Type: ipc.EventSyncStarted, Folder: f.Name})
 
 	var syncErr error
@@ -183,7 +184,7 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		d.lastSync[f.Name] = now
 		d.counts[f.Name] = c
 		d.mu.Unlock()
-		d.log.Infof("[daemon] sync done: %q (elapsed=%s files=%d dirs=%d)", f.Name, time.Since(start).Round(time.Millisecond), c.Files, c.Dirs)
+		d.log.Info("[daemon] sync done", "folder", f.Name, "elapsed", time.Since(start).Round(time.Millisecond), "files", c.Files, "dirs", c.Dirs)
 		if syncErr != nil {
 			d.bus.publish(ipc.Event{Type: ipc.EventSyncFailed, Folder: f.Name, Error: syncErr.Error()})
 		} else {
@@ -199,10 +200,10 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	// Open per-folder log; rotate stale entries before the new cycle.
 	fl, err := synclog.Open(f.LocalRoot, d.logRotateMaxAge)
 	if err != nil {
-		d.log.Errorf("[daemon] open folder log for %q: %v", f.Name, err)
+		d.log.Error("[daemon] open folder log", "folder", f.Name, "err", err)
 	} else {
 		if err := fl.Rotate(); err != nil {
-			d.log.Errorf("[daemon] rotate folder log for %q: %v", f.Name, err)
+			d.log.Error("[daemon] rotate folder log", "folder", f.Name, "err", err)
 		}
 		defer fl.Close()
 	}
@@ -233,15 +234,15 @@ func (d *Daemon) syncFolder(f config.Folder) {
 			})
 		},
 	}
-	d.log.Debugf("[daemon] running engine for %q", f.Name)
+	d.log.Debug("[daemon] running engine", "folder", f.Name)
 	if err := engine.Run(cfg); err != nil {
 		syncErr = err
-		d.log.Errorf("[daemon] sync %q: %v", f.Name, err)
+		d.log.Error("[daemon] sync failed", "folder", f.Name, "err", err)
 		if fl != nil {
 			fl.Printf("[sync] ERROR: %v", err)
 		}
 	} else {
-		d.log.Infof("[daemon] sync %q: OK", f.Name)
+		d.log.Info("[daemon] sync OK", "folder", f.Name)
 	}
 }
 
@@ -252,13 +253,13 @@ func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
 
 	var req ipc.Request
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
-		d.log.Errorf("[daemon] decode request: %v", err)
+		d.log.Error("[daemon] decode request", "err", err)
 		return
 	}
 
 	// Log raw command at trace; summary at debug.
-	d.log.Tracef("[daemon] received command %q payload=%+v", req.Cmd, req)
-	d.log.Debugf("[daemon] received command %q", req.Cmd)
+	d.log.Log(ctx, logger.LevelTrace, "[daemon] received command (trace)", "cmd", req.Cmd, "payload", fmt.Sprintf("%+v", req))
+	d.log.Debug("[daemon] received command", "cmd", req.Cmd)
 
 	// Subscribe keeps the connection open and streams events — handle separately.
 	if req.Cmd == ipc.CmdSubscribe {
@@ -269,13 +270,13 @@ func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
 	resp := d.dispatch(req)
 
 	if resp.OK {
-		d.log.Debugf("[daemon] command %q: OK", req.Cmd)
+		d.log.Debug("[daemon] command OK", "cmd", req.Cmd)
 	} else {
-		d.log.Errorf("[daemon] command %q: FAILED: %s", req.Cmd, resp.Error)
+		d.log.Error("[daemon] command failed", "cmd", req.Cmd, "error", resp.Error)
 	}
 
 	if err := json.NewEncoder(conn).Encode(resp); err != nil {
-		d.log.Errorf("[daemon] encode response: %v", err)
+		d.log.Error("[daemon] encode response", "err", err)
 		return
 	}
 
@@ -288,7 +289,7 @@ func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
 // handleSubscribe sends a full state snapshot and then streams events until
 // the client disconnects or the daemon shuts down.
 func (d *Daemon) handleSubscribe(ctx context.Context, conn net.Conn) {
-	d.log.Debugf("[daemon] subscribe: new subscriber")
+	d.log.Debug("[daemon] subscribe: new subscriber")
 
 	// Build initial snapshot.
 	folders, err := d.cfgDB.All()
@@ -347,7 +348,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 	switch req.Cmd {
 
 	case ipc.CmdAdd:
-		d.log.Debugf("[daemon] add: name=%q local=%q remote=%q", req.Folder.Name, req.Folder.LocalRoot, req.Folder.RemoteBase)
+		d.log.Debug("[daemon] add", "name", req.Folder.Name, "local", req.Folder.LocalRoot, "remote", req.Folder.RemoteBase)
 		abs, err := filepath.Abs(req.Folder.LocalRoot)
 		if err != nil {
 			return fail("invalid local path: " + err.Error())
@@ -366,7 +367,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err := d.cfgDB.Add(req.Folder); err != nil {
 			return fail(err.Error())
 		}
-		d.log.Infof("[daemon] add: registered folder %q", req.Folder.Name)
+		d.log.Info("[daemon] add: registered folder", "folder", req.Folder.Name)
 		d.updateFolderWatch(req.Folder)
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderAdded, FolderData: &req.Folder})
 		return ok()
@@ -376,11 +377,11 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err != nil {
 			return fail(err.Error())
 		}
-		d.log.Debugf("[daemon] list: returning %d folder(s)", len(folders))
+		d.log.Debug("[daemon] list", "count", len(folders))
 		return ipc.Response{OK: true, Folders: folders}
 
 	case ipc.CmdRemove:
-		d.log.Debugf("[daemon] remove: name=%q", req.Name)
+		d.log.Debug("[daemon] remove", "name", req.Name)
 		f, err := d.cfgDB.Get(req.Name)
 		if err != nil {
 			return fail(err.Error())
@@ -391,12 +392,12 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if f != nil {
 			d.removeFolderWatch(f.Name, f.LocalRoot)
 		}
-		d.log.Infof("[daemon] remove: removed folder %q", req.Name)
+		d.log.Info("[daemon] remove: removed folder", "folder", req.Name)
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderRemoved, Folder: req.Name})
 		return ok()
 
 	case ipc.CmdUpdate:
-		d.log.Debugf("[daemon] update: name=%q local=%q remote=%q", req.Folder.Name, req.Folder.LocalRoot, req.Folder.RemoteBase)
+		d.log.Debug("[daemon] update", "name", req.Folder.Name, "local", req.Folder.LocalRoot, "remote", req.Folder.RemoteBase)
 		abs, err := filepath.Abs(req.Folder.LocalRoot)
 		if err != nil {
 			return fail("invalid local path: " + err.Error())
@@ -415,14 +416,14 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			d.removeFolderWatch(oldFolder.Name, oldFolder.LocalRoot)
 		}
 		d.updateFolderWatch(req.Folder)
-		d.log.Infof("[daemon] update: updated folder %q (selected=%v settings=%+v)", req.Folder.Name, req.Folder.Folders, req.Folder.Settings)
+		d.log.Info("[daemon] update: updated folder", "folder", req.Folder.Name, "selected", req.Folder.Folders, "settings", fmt.Sprintf("%+v", req.Folder.Settings))
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderUpdated, FolderData: &req.Folder})
 		return ok()
 
 	case ipc.CmdSync:
 		var folders []config.Folder
 		if req.Name != "" {
-			d.log.Debugf("[daemon] sync: requested for folder %q", req.Name)
+			d.log.Debug("[daemon] sync: requested for folder", "folder", req.Name)
 			f, err := d.cfgDB.Get(req.Name)
 			if err != nil {
 				return fail(err.Error())
@@ -432,7 +433,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			}
 			folders = []config.Folder{*f}
 		} else {
-			d.log.Debugf("[daemon] sync: requested for all folders")
+			d.log.Debug("[daemon] sync: requested for all folders")
 			var err error
 			folders, err = d.cfgDB.All()
 			if err != nil {
@@ -442,7 +443,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 				return fail("no sync folders registered; use 'cernbox-sync add' to add one")
 			}
 		}
-		d.log.Debugf("[daemon] sync: dispatching %d folder(s)", len(folders))
+		d.log.Debug("[daemon] sync: dispatching", "count", len(folders))
 		for _, f := range folders {
 			go d.syncFolder(f)
 		}
@@ -461,7 +462,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		counts := make(map[string]ipc.FileCounts, len(d.counts))
 		maps.Copy(counts, d.counts)
 		d.mu.Unlock()
-		d.log.Debugf("[daemon] status: syncing=%v last=%v", syncing, last)
+		d.log.Debug("[daemon] status", "syncing", syncing, "last", last)
 		return ipc.Response{OK: true, Status: &ipc.Status{
 			Syncing:  syncing,
 			LastSync: last,
@@ -469,12 +470,12 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}}
 
 	case ipc.CmdStop:
-		d.log.Infof("[daemon] stop: shutdown requested")
+		d.log.Info("[daemon] stop: shutdown requested")
 		// cancel() is called in handleConn after the response is sent.
 		return ok()
 
 	case ipc.CmdSetSettings:
-		d.log.Debugf("[daemon] set-settings: log_rotate_max_age=%q", req.Settings.LogRotateMaxAge)
+		d.log.Debug("[daemon] set-settings", "log_rotate_max_age", req.Settings.LogRotateMaxAge)
 		s := config.Settings{}
 		if req.Settings.LogRotateMaxAge != "" {
 			dur, err := time.ParseDuration(req.Settings.LogRotateMaxAge)
@@ -489,7 +490,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		d.mu.Lock()
 		d.logRotateMaxAge = s.LogRotateMaxAge
 		d.mu.Unlock()
-		d.log.Infof("[daemon] set-settings: applied log_rotate_max_age=%s", s.LogRotateMaxAge)
+		d.log.Info("[daemon] set-settings: applied", "log_rotate_max_age", s.LogRotateMaxAge)
 		return ok()
 
 	case ipc.CmdGetSettings:
@@ -501,7 +502,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if s.LogRotateMaxAge > 0 {
 			payload.LogRotateMaxAge = s.LogRotateMaxAge.String()
 		}
-		d.log.Debugf("[daemon] get-settings: log_rotate_max_age=%s", payload.LogRotateMaxAge)
+		d.log.Debug("[daemon] get-settings", "log_rotate_max_age", payload.LogRotateMaxAge)
 		return ipc.Response{OK: true, Settings: &payload}
 
 	case ipc.CmdGetAccount:
@@ -509,7 +510,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err != nil {
 			return fail(err.Error())
 		}
-		d.log.Debugf("[daemon] get-account: username=%q", s.AccountUsername)
+		d.log.Debug("[daemon] get-account", "username", s.AccountUsername)
 		return ipc.Response{OK: true, Account: &ipc.AccountPayload{
 			Username: s.AccountUsername,
 			Password: s.AccountPassword,
@@ -519,7 +520,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if req.Account == nil {
 			return fail("missing account payload")
 		}
-		d.log.Debugf("[daemon] set-account: username=%q", req.Account.Username)
+		d.log.Debug("[daemon] set-account", "username", req.Account.Username)
 		s, err := d.cfgDB.GetSettings()
 		if err != nil {
 			return fail(err.Error())
@@ -533,11 +534,11 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		d.accountUsername = req.Account.Username
 		d.accountPassword = req.Account.Password
 		d.mu.Unlock()
-		d.log.Infof("[daemon] set-account: account updated for username=%q", req.Account.Username)
+		d.log.Info("[daemon] set-account: account updated", "username", req.Account.Username)
 		return ok()
 
 	default:
-		d.log.Errorf("[daemon] unknown command %q", req.Cmd)
+		d.log.Error("[daemon] unknown command", "cmd", req.Cmd)
 		return fail(fmt.Sprintf("unknown command %q", req.Cmd))
 	}
 }

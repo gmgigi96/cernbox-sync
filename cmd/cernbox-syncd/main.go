@@ -12,6 +12,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,9 +25,6 @@ import (
 )
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmsgprefix)
-	log.SetPrefix("")
-
 	interval := flag.Duration("interval", 5*time.Minute, "How often to sync all registered folders automatically")
 	sockPath := flag.String("socket", "", "Unix socket path (default: platform-specific, see ipc.SocketPath)")
 	logLevel := flag.String("log-level", "info", "Log verbosity: off, error, info, debug, trace")
@@ -37,7 +35,7 @@ func main() {
 		log.Fatalf("log-level: %v", err)
 	}
 
-	l := logger.New(os.Stderr, level, log.Ldate|log.Ltime)
+	l := logger.New(os.Stderr, level)
 	logger.SetDefault(l)
 
 	if *sockPath == "" {
@@ -68,7 +66,7 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		s := <-sig
-		l.Infof("[daemon] received %s, shutting down…", s)
+		slog.Info("[daemon] received signal, shutting down…", "signal", s)
 		cancel()
 	}()
 

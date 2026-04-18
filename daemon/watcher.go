@@ -17,7 +17,7 @@ import (
 func (d *Daemon) startWatcher(ctx context.Context) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
-		d.log.Errorf("[watcher] create watcher: %v", err)
+		d.log.Error("[watcher] create watcher", "err", err)
 		return
 	}
 	d.watcher = w
@@ -26,7 +26,7 @@ func (d *Daemon) startWatcher(ctx context.Context) {
 
 	folders, err := d.cfgDB.All()
 	if err != nil {
-		d.log.Errorf("[watcher] list folders: %v", err)
+		d.log.Error("[watcher] list folders", "err", err)
 		return
 	}
 	for _, f := range folders {
@@ -87,14 +87,14 @@ func (d *Daemon) processWatchEvents(ctx context.Context) {
 			if matched == nil {
 				continue
 			}
-			d.log.Debugf("[watcher] event %v on %q → debouncing sync for %q", event.Op, event.Name, matched.Name)
+			d.log.Debug("[watcher] event → debouncing sync", "op", event.Op, "path", event.Name, "folder", matched.Name)
 			d.triggerDebouncedSync(*matched)
 
 		case err, ok := <-d.watcher.Errors:
 			if !ok {
 				return
 			}
-			d.log.Errorf("[watcher] error: %v", err)
+			d.log.Error("[watcher] error", "err", err)
 		}
 	}
 }
@@ -113,7 +113,7 @@ func (d *Daemon) addFolderWatch(f config.Folder) {
 		}
 		if de.IsDir() {
 			if err := d.watcher.Add(path); err != nil {
-				d.log.Errorf("[watcher] watch %q: %v", path, err)
+				d.log.Error("[watcher] watch", "path", path, "err", err)
 			} else {
 				addedAny = true
 			}
@@ -121,7 +121,7 @@ func (d *Daemon) addFolderWatch(f config.Folder) {
 		return nil
 	})
 	if err != nil {
-		d.log.Errorf("[watcher] walk %q: %v", f.LocalRoot, err)
+		d.log.Error("[watcher] walk", "root", f.LocalRoot, "err", err)
 		return
 	}
 	if !addedAny {
@@ -130,7 +130,7 @@ func (d *Daemon) addFolderWatch(f config.Folder) {
 	d.watchMu.Lock()
 	d.watchedRoots[f.LocalRoot] = f
 	d.watchMu.Unlock()
-	d.log.Infof("[watcher] watching %q for changes", f.LocalRoot)
+	d.log.Info("[watcher] watching for changes", "root", f.LocalRoot)
 }
 
 // removeFolderWatch removes all watches associated with localRoot and cancels
@@ -155,7 +155,7 @@ func (d *Daemon) removeFolderWatch(folderName, localRoot string) {
 			}
 			return nil
 		})
-		d.log.Infof("[watcher] stopped watching %q", localRoot)
+		d.log.Info("[watcher] stopped watching", "root", localRoot)
 	}
 
 	// Cancel any pending debounce so a stale sync is not triggered after removal.
@@ -207,7 +207,7 @@ func (d *Daemon) triggerDebouncedSync(f config.Folder) {
 		if err != nil || fresh == nil {
 			return
 		}
-		d.log.Infof("[watcher] triggering sync for %q after filesystem change", f.Name)
+		d.log.Info("[watcher] triggering sync after filesystem change", "folder", f.Name)
 		d.syncFolder(*fresh)
 	})
 }
