@@ -24,7 +24,18 @@ import (
 	"github.com/gmgigi96/cernbox-sync/ipc"
 	"github.com/gmgigi96/cernbox-sync/logger"
 	"github.com/gmgigi96/cernbox-sync/synclog"
+	"golang.org/x/time/rate"
 )
+
+// newLimiter returns a rate.Limiter for the given bandwidth in bytes/sec,
+// or nil when bytesPerSec is 0 (unlimited).
+func newLimiter(bytesPerSec int64) *rate.Limiter {
+	if bytesPerSec <= 0 {
+		return nil
+	}
+	burst := max(int(bytesPerSec/10), 1)
+	return rate.NewLimiter(rate.Limit(bytesPerSec), burst)
+}
 
 // Daemon runs sync cycles on a schedule and serves IPC requests.
 type Daemon struct {
@@ -45,6 +56,11 @@ type Daemon struct {
 	logRotateMaxAge time.Duration // 0 means no rotation; loaded from settings at startup
 	accountUsername string        // loaded from settings at startup; updated by set-account
 	accountPassword string
+
+	// Global bandwidth limiters shared across all concurrent syncs.
+	// nil means unlimited.
+	uploadLimiter   *rate.Limiter
+	downloadLimiter *rate.Limiter
 
 	// syncTicker is the periodic sync ticker; reset when the interval changes.
 	syncTicker     *time.Ticker
@@ -96,6 +112,8 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 		if s.SyncInterval > 0 {
 			d.interval = s.SyncInterval
 		}
+		d.uploadLimiter = newLimiter(s.UploadBandwidth)
+		d.downloadLimiter = newLimiter(s.DownloadBandwidth)
 	}
 
 	// Remove stale socket from a previous (crashed) run.
@@ -223,6 +241,8 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	d.mu.Lock()
 	username := d.accountUsername
 	password := d.accountPassword
+	uploadLimiter := d.uploadLimiter
+	downloadLimiter := d.downloadLimiter
 	d.mu.Unlock()
 
 	cfg := engine.Config{
@@ -234,6 +254,8 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		DBPath:          filepath.Join(f.LocalRoot, ".sync.db"),
 		FolderLog:       fl,
 		SyncHiddenFiles: f.Settings.SyncHiddenFiles,
+		UploadLimiter:   uploadLimiter,
+		DownloadLimiter: downloadLimiter,
 		OnProgress: func(done, total int, current string) {
 			d.bus.publish(ipc.Event{
 				Type:   ipc.EventSyncProgress,
@@ -487,7 +509,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		return ok()
 
 	case ipc.CmdSetSettings:
-		d.log.Debug("[daemon] set-settings", "log_rotate_max_age", req.Settings.LogRotateMaxAge, "sync_interval", req.Settings.SyncInterval)
+		d.log.Debug("[daemon] set-settings", "log_rotate_max_age", req.Settings.LogRotateMaxAge, "sync_interval", req.Settings.SyncInterval, "upload_bw", req.Settings.UploadBandwidth, "download_bw", req.Settings.DownloadBandwidth)
 		// Read current settings so fields not included in this request are preserved.
 		s, err := d.cfgDB.GetSettings()
 		if err != nil {
@@ -516,6 +538,12 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		} else {
 			s.SyncInterval = 0
 		}
+		if req.Settings.UploadBandwidth >= 0 {
+			s.UploadBandwidth = req.Settings.UploadBandwidth
+		}
+		if req.Settings.DownloadBandwidth >= 0 {
+			s.DownloadBandwidth = req.Settings.DownloadBandwidth
+		}
 		if err := d.cfgDB.SetSettings(s); err != nil {
 			return fail(err.Error())
 		}
@@ -524,6 +552,8 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if newSyncInterval > 0 {
 			d.interval = newSyncInterval
 		}
+		d.uploadLimiter = newLimiter(s.UploadBandwidth)
+		d.downloadLimiter = newLimiter(s.DownloadBandwidth)
 		d.mu.Unlock()
 		if newSyncInterval > 0 {
 			select {
@@ -551,7 +581,9 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		} else {
 			payload.SyncInterval = interval.String()
 		}
-		d.log.Debug("[daemon] get-settings", "log_rotate_max_age", payload.LogRotateMaxAge, "sync_interval", payload.SyncInterval)
+		payload.UploadBandwidth = s.UploadBandwidth
+		payload.DownloadBandwidth = s.DownloadBandwidth
+		d.log.Debug("[daemon] get-settings", "log_rotate_max_age", payload.LogRotateMaxAge, "sync_interval", payload.SyncInterval, "upload_bw", payload.UploadBandwidth, "download_bw", payload.DownloadBandwidth)
 		return ipc.Response{OK: true, Settings: &payload}
 
 	case ipc.CmdGetAccount:

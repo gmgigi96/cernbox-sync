@@ -19,6 +19,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,7 +32,38 @@ import (
 	"github.com/gmgigi96/cernbox-sync/db"
 	"github.com/gmgigi96/cernbox-sync/synclog"
 	"github.com/gmgigi96/cernbox-sync/webdav"
+	"golang.org/x/time/rate"
 )
+
+// rateLimitedReader wraps an io.Reader and throttles reads using a token-bucket
+// limiter. burstSize is the maximum number of bytes consumed per single WaitN
+// call; using a fixed burst avoids having to split very large reads.
+type rateLimitedReader struct {
+	r         io.Reader
+	lim       *rate.Limiter
+	burstSize int
+}
+
+func newRateLimitedReader(r io.Reader, lim *rate.Limiter) io.Reader {
+	if lim == nil {
+		return r
+	}
+	return &rateLimitedReader{r: r, lim: lim, burstSize: lim.Burst()}
+}
+
+func (rl *rateLimitedReader) Read(p []byte) (int, error) {
+	// Cap the read to the burst size so WaitN never exceeds the limiter's burst.
+	if len(p) > rl.burstSize {
+		p = p[:rl.burstSize]
+	}
+	n, err := rl.r.Read(p)
+	if n > 0 {
+		if waitErr := rl.lim.WaitN(context.Background(), n); waitErr != nil {
+			return n, waitErr
+		}
+	}
+	return n, err
+}
 
 // Config holds the parameters for a sync session.
 type Config struct {
@@ -53,6 +85,10 @@ type Config struct {
 	// SyncHiddenFiles controls whether files and directories whose names begin
 	// with a dot are included in the sync. Defaults to false.
 	SyncHiddenFiles bool
+	// UploadLimiter is the global rate limiter for uploads. nil means unlimited.
+	UploadLimiter *rate.Limiter
+	// DownloadLimiter is the global rate limiter for downloads. nil means unlimited.
+	DownloadLimiter *rate.Limiter
 	// OnProgress is called before each action is executed. done is the number
 	// of actions completed so far, total is the total action count, current is
 	// the relative path being processed. May be nil.
@@ -133,7 +169,7 @@ func Run(cfg Config) error {
 	logf(cfg.FolderLog, "[sync] actions: %d", len(actions))
 
 	// ── 5. Execute ───────────────────────────────────────────────────────────
-	if err := execute(cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress); err != nil {
+	if err := execute(cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter); err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}
 
@@ -430,13 +466,14 @@ func execute(
 	state *db.DB,
 	actions []action,
 	onProgress func(done, total int, current string),
+	uploadLimiter, downloadLimiter *rate.Limiter,
 ) error {
 	total := len(actions)
 	for i, a := range actions {
 		if onProgress != nil {
 			onProgress(i, total, a.path)
 		}
-		if err := execOne(localRoot, fl, wdc, state, a); err != nil {
+		if err := execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter); err != nil {
 			// Log and continue — partial sync is better than aborting entirely.
 			logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
 		}
@@ -453,6 +490,7 @@ func execOne(
 	wdc *webdav.Client,
 	state *db.DB,
 	a action,
+	uploadLimiter, downloadLimiter *rate.Limiter,
 ) error {
 	localAbs := filepath.Join(localRoot, filepath.FromSlash(a.path))
 
@@ -486,7 +524,7 @@ func execOne(
 			return err
 		}
 		tmpPath := f.Name()
-		if _, err := io.Copy(f, rc); err != nil {
+		if _, err := io.Copy(f, newRateLimitedReader(rc, downloadLimiter)); err != nil {
 			f.Close()
 			os.Remove(tmpPath)
 			return err
@@ -535,7 +573,7 @@ func execOne(
 			return err
 		}
 		defer f.Close()
-		if err := wdc.Put(a.path, f, a.local.size); err != nil {
+		if err := wdc.Put(a.path, newRateLimitedReader(f, uploadLimiter), a.local.size); err != nil {
 			return err
 		}
 		// Re-fetch etag so DB matches server.
@@ -587,7 +625,7 @@ func execOne(
 		}
 		// Now download the server version as if it were a fresh download.
 		a.kind = download
-		return execOne(localRoot, fl, wdc, state, a)
+		return execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter)
 	}
 
 	return nil

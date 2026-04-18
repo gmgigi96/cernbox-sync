@@ -266,3 +266,10 @@ input:focus, select:focus {
 .list-group > * + * {
   margin-top: 0.75rem;
 }
+
+/* ── Hide number input spinners ─────────────────────────────────────────────── */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

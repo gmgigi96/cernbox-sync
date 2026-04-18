@@ -40,6 +40,12 @@ const (
 	// KeySyncInterval holds the interval between automatic sync cycles as a
 	// Go duration string (e.g. "5m", "1h"). Empty string means use the default.
 	KeySyncInterval = "sync_interval"
+	// KeyUploadBandwidth holds the maximum upload bandwidth in bytes/sec.
+	// 0 means unlimited.
+	KeyUploadBandwidth = "upload_bandwidth"
+	// KeyDownloadBandwidth holds the maximum download bandwidth in bytes/sec.
+	// 0 means unlimited.
+	KeyDownloadBandwidth = "download_bandwidth"
 )
 
 // FolderSettings holds per-folder sync preferences.
@@ -263,6 +269,12 @@ type Settings struct {
 	// SyncInterval is the interval between automatic sync cycles.
 	// Zero means use the daemon default (5 minutes).
 	SyncInterval time.Duration
+	// UploadBandwidth is the maximum upload bandwidth in bytes/sec.
+	// Zero means unlimited.
+	UploadBandwidth int64
+	// DownloadBandwidth is the maximum download bandwidth in bytes/sec.
+	// Zero means unlimited.
+	DownloadBandwidth int64
 }
 
 // GetSettings reads the current settings from the DB, returning defaults for
@@ -301,6 +313,22 @@ func (d *DB) GetSettings() (Settings, error) {
 				}
 				s.SyncInterval = d
 			}
+		case KeyUploadBandwidth:
+			if value != "" {
+				var v int64
+				if _, err := fmt.Sscan(value, &v); err != nil {
+					return Settings{}, fmt.Errorf("invalid %s %q: %w", KeyUploadBandwidth, value, err)
+				}
+				s.UploadBandwidth = v
+			}
+		case KeyDownloadBandwidth:
+			if value != "" {
+				var v int64
+				if _, err := fmt.Sscan(value, &v); err != nil {
+					return Settings{}, fmt.Errorf("invalid %s %q: %w", KeyDownloadBandwidth, value, err)
+				}
+				s.DownloadBandwidth = v
+			}
 		}
 	}
 	return s, rows.Err()
@@ -317,11 +345,21 @@ func (d *DB) SetSettings(s Settings) error {
 	if s.SyncInterval > 0 {
 		syncInterval = s.SyncInterval.String()
 	}
+	uploadBW := ""
+	if s.UploadBandwidth > 0 {
+		uploadBW = fmt.Sprintf("%d", s.UploadBandwidth)
+	}
+	downloadBW := ""
+	if s.DownloadBandwidth > 0 {
+		downloadBW = fmt.Sprintf("%d", s.DownloadBandwidth)
+	}
 	pairs := []struct{ k, v string }{
 		{KeyLogRotateMaxAge, maxAge},
 		{KeyAccountUsername, s.AccountUsername},
 		{KeyAccountPassword, s.AccountPassword},
 		{KeySyncInterval, syncInterval},
+		{KeyUploadBandwidth, uploadBW},
+		{KeyDownloadBandwidth, downloadBW},
 	}
 	for _, p := range pairs {
 		if _, err := d.conn.Exec(

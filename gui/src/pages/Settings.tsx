@@ -2,10 +2,128 @@ import { useState, useEffect } from "react";
 import { Save, X, RotateCcw, AlertCircle, CheckCircle2, Settings as SettingsIcon } from "lucide-react";
 import { ipc } from "../ipc";
 
+// ── Bandwidth helpers ─────────────────────────────────────────────────────────
+
+const BW_UNITS = [
+  { label: "KB/s", multiplier: 1_024 },
+  { label: "MB/s", multiplier: 1_024 * 1_024 },
+  { label: "GB/s", multiplier: 1_024 * 1_024 * 1_024 },
+] as const;
+
+type BwUnit = typeof BW_UNITS[number]["label"];
+
+/** Split bytes/sec into a (value, unit) pair using the largest whole unit. */
+function bytesToDisplay(bytes: number): { value: number; unit: BwUnit } {
+  if (bytes <= 0) return { value: 0, unit: "MB/s" };
+  for (let i = BW_UNITS.length - 1; i >= 0; i--) {
+    const { multiplier, label } = BW_UNITS[i];
+    if (bytes % multiplier === 0) return { value: bytes / multiplier, unit: label };
+  }
+  return { value: bytes / BW_UNITS[0].multiplier, unit: BW_UNITS[0].label };
+}
+
+function displayToBytes(value: number, unit: BwUnit): number {
+  if (value <= 0) return 0;
+  return value * (BW_UNITS.find((u) => u.label === unit)!.multiplier);
+}
+
+// ── BandwidthInput component ──────────────────────────────────────────────────
+
+function BandwidthInput({
+  bytes,
+  onChange,
+  disabled,
+}: {
+  bytes: number;
+  onChange: (bytes: number) => void;
+  disabled?: boolean;
+}) {
+  const init = bytesToDisplay(bytes);
+  const [value, setValue] = useState(init.value);
+  const [unit, setUnit] = useState<BwUnit>(init.unit);
+
+  // Sync inward when the parent resets/loads the value.
+  useEffect(() => {
+    const d = bytesToDisplay(bytes);
+    setValue(d.value);
+    setUnit(d.unit);
+  }, [bytes]);
+
+  function handleValue(raw: string) {
+    const n = Math.max(0, parseInt(raw) || 0);
+    setValue(n);
+    onChange(displayToBytes(n, unit));
+  }
+
+  function handleUnit(u: BwUnit) {
+    setUnit(u);
+    onChange(displayToBytes(value, u));
+  }
+
+  return (
+    <div style={{
+      display: "flex",
+      background: "var(--surface-container-lowest)",
+      border: "1px solid rgba(68,71,90,0.10)",
+      borderRadius: "var(--radius-md)",
+      overflow: "hidden",
+    }}>
+      <input
+        style={{
+          flex: 1,
+          background: "transparent",
+          color: "var(--on-surface)",
+          border: "none",
+          borderRight: "1px solid rgba(68,71,90,0.10)",
+          padding: "0.5rem 0.75rem",
+          fontSize: "0.875rem",
+          outline: "none",
+          fontFamily: "var(--font-family)",
+          minWidth: 0,
+          MozAppearance: "textfield",
+        }}
+        type="number"
+        min={0}
+        placeholder="0 — unlimited"
+        value={value === 0 ? "" : value}
+        onChange={(e) => handleValue(e.target.value)}
+        disabled={disabled}
+      />
+      <select
+        style={{
+          background: "var(--surface-container-high)",
+          color: "var(--on-surface-variant)",
+          border: "none",
+          borderLeft: "1px solid rgba(68,71,90,0.10)",
+          padding: "0 0.5rem",
+          fontSize: "0.75rem",
+          outline: "none",
+          fontFamily: "var(--font-family)",
+          cursor: "pointer",
+          flexShrink: 0,
+          width: "5.5rem",
+          appearance: "none",
+          WebkitAppearance: "none",
+          textAlign: "center",
+        }}
+        value={unit}
+        onChange={(e) => handleUnit(e.target.value as BwUnit)}
+        disabled={disabled}
+      >
+        {BW_UNITS.map((u) => (
+          <option key={u.label} value={u.label} style={{ background: "var(--surface-container-high)" }}>{u.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 // Default values committed when Reset is clicked.
 const DEFAULTS = {
   logRotateMaxAge: "",
   syncInterval: "5m",
+  uploadBandwidth: 0,
+  downloadBandwidth: 0,
 };
 
 export function Settings() {
@@ -13,6 +131,8 @@ export function Settings() {
   const [committed, setCommitted] = useState(DEFAULTS);
   const [logRotateMaxAge, setLogRotateMaxAge] = useState("");
   const [syncInterval, setSyncInterval] = useState("");
+  const [uploadBandwidth, setUploadBandwidth] = useState(0);
+  const [downloadBandwidth, setDownloadBandwidth] = useState(0);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -22,9 +142,13 @@ export function Settings() {
       .then((v) => {
         const lrma = v.logRotateMaxAge ?? "";
         const si = v.syncInterval ?? "5m";
-        setCommitted({ logRotateMaxAge: lrma, syncInterval: si });
+        const ubw = v.uploadBandwidth ?? 0;
+        const dbw = v.downloadBandwidth ?? 0;
+        setCommitted({ logRotateMaxAge: lrma, syncInterval: si, uploadBandwidth: ubw, downloadBandwidth: dbw });
         setLogRotateMaxAge(lrma);
         setSyncInterval(si);
+        setUploadBandwidth(ubw);
+        setDownloadBandwidth(dbw);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -32,11 +156,15 @@ export function Settings() {
 
   const dirty =
     logRotateMaxAge !== committed.logRotateMaxAge ||
-    syncInterval !== committed.syncInterval;
+    syncInterval !== committed.syncInterval ||
+    uploadBandwidth !== committed.uploadBandwidth ||
+    downloadBandwidth !== committed.downloadBandwidth;
 
   function cancel() {
     setLogRotateMaxAge(committed.logRotateMaxAge);
     setSyncInterval(committed.syncInterval);
+    setUploadBandwidth(committed.uploadBandwidth);
+    setDownloadBandwidth(committed.downloadBandwidth);
     setError(null);
   }
 
@@ -46,10 +174,14 @@ export function Settings() {
       await ipc.setSettings(
         DEFAULTS.logRotateMaxAge || null,
         DEFAULTS.syncInterval || null,
+        DEFAULTS.uploadBandwidth,
+        DEFAULTS.downloadBandwidth,
       );
       setCommitted(DEFAULTS);
       setLogRotateMaxAge(DEFAULTS.logRotateMaxAge);
       setSyncInterval(DEFAULTS.syncInterval);
+      setUploadBandwidth(DEFAULTS.uploadBandwidth);
+      setDownloadBandwidth(DEFAULTS.downloadBandwidth);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (e) {
@@ -60,8 +192,8 @@ export function Settings() {
   async function save() {
     setError(null);
     try {
-      await ipc.setSettings(logRotateMaxAge.trim() || null, syncInterval.trim() || null);
-      const next = { logRotateMaxAge: logRotateMaxAge.trim(), syncInterval: syncInterval.trim() };
+      await ipc.setSettings(logRotateMaxAge.trim() || null, syncInterval.trim() || null, uploadBandwidth, downloadBandwidth);
+      const next = { logRotateMaxAge: logRotateMaxAge.trim(), syncInterval: syncInterval.trim(), uploadBandwidth, downloadBandwidth };
       setCommitted(next);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -157,6 +289,32 @@ export function Settings() {
               onChange={(e) => setLogRotateMaxAge(e.target.value)}
               disabled={loading}
             />
+          </div>
+        </div>
+
+        <div style={styles.section}>
+          <div style={styles.sectionHeader}>
+            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <span style={styles.sectionTitle}>Upload Bandwidth</span>
+          </div>
+          <div style={styles.field}>
+            <p style={styles.hint}>
+              Maximum upload speed shared across all syncs. Leave at <code style={styles.code}>0</code> for unlimited.
+            </p>
+            <BandwidthInput bytes={uploadBandwidth} onChange={setUploadBandwidth} disabled={loading} />
+          </div>
+        </div>
+
+        <div style={styles.section}>
+          <div style={styles.sectionHeader}>
+            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <span style={styles.sectionTitle}>Download Bandwidth</span>
+          </div>
+          <div style={styles.field}>
+            <p style={styles.hint}>
+              Maximum download speed shared across all syncs. Leave at <code style={styles.code}>0</code> for unlimited.
+            </p>
+            <BandwidthInput bytes={downloadBandwidth} onChange={setDownloadBandwidth} disabled={loading} />
           </div>
         </div>
       </div>

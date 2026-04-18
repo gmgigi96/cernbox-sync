@@ -80,6 +80,12 @@ type SettingsPayload struct {
 	// SyncInterval is the interval between automatic sync cycles.
 	// Empty string means use the daemon default (5 minutes).
 	SyncInterval string `json:"sync_interval,omitempty"`
+	// UploadBandwidth is the maximum upload bandwidth in bytes/sec.
+	// 0 means unlimited.
+	UploadBandwidth int64 `json:"upload_bandwidth"`
+	// DownloadBandwidth is the maximum download bandwidth in bytes/sec.
+	// 0 means unlimited.
+	DownloadBandwidth int64 `json:"download_bandwidth"`
 }
 
 // AccountPayload carries account credentials over IPC.

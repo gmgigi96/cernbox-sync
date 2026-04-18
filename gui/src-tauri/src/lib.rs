@@ -39,6 +39,10 @@ struct SettingsPayload {
     log_rotate_max_age: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sync_interval: Option<String>,
+    #[serde(default)]
+    upload_bandwidth: i64,
+    #[serde(default)]
+    download_bandwidth: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -336,6 +340,8 @@ fn ipc_stop() -> Result<(), String> {
 pub struct SettingsResult {
     pub log_rotate_max_age: Option<String>,
     pub sync_interval: Option<String>,
+    pub upload_bandwidth: i64,
+    pub download_bandwidth: i64,
 }
 
 #[tauri::command]
@@ -348,10 +354,12 @@ fn ipc_get_settings() -> Result<SettingsResult, String> {
         account: None,
     };
     let resp = ipc_send(&req)?;
-    let s = resp.settings.unwrap_or(SettingsPayload { log_rotate_max_age: None, sync_interval: None });
+    let s = resp.settings.unwrap_or(SettingsPayload { log_rotate_max_age: None, sync_interval: None, upload_bandwidth: 0, download_bandwidth: 0 });
     Ok(SettingsResult {
         log_rotate_max_age: s.log_rotate_max_age,
         sync_interval: s.sync_interval,
+        upload_bandwidth: s.upload_bandwidth,
+        download_bandwidth: s.download_bandwidth,
     })
 }
 
@@ -434,12 +442,12 @@ fn open_log_file(app: AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn ipc_set_settings(log_rotate_max_age: Option<String>, sync_interval: Option<String>) -> Result<(), String> {
+fn ipc_set_settings(log_rotate_max_age: Option<String>, sync_interval: Option<String>, upload_bandwidth: i64, download_bandwidth: i64) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "set-settings".into(),
         folder: None,
         name: None,
-        settings: Some(SettingsPayload { log_rotate_max_age, sync_interval }),
+        settings: Some(SettingsPayload { log_rotate_max_age, sync_interval, upload_bandwidth, download_bandwidth }),
         account: None,
     };
     ipc_send(&req)?;
