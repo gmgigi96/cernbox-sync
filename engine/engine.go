@@ -513,9 +513,7 @@ func execute(
 		close(work)
 		var wg sync.WaitGroup
 		for range n {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				for a := range work {
 					if onProgress != nil {
 						doneMu.Lock()
@@ -528,7 +526,7 @@ func execute(
 					}
 					reportDone(a.path)
 				}
-			}()
+			})
 		}
 		wg.Wait()
 	}
