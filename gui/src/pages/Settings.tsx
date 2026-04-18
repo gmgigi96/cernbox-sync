@@ -123,10 +123,9 @@ export function Settings() {
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
             <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
-            <span style={styles.sectionTitle}>Sync Schedule</span>
+            <span style={styles.sectionTitle}>Sync Interval</span>
           </div>
           <div style={styles.field}>
-            <label style={styles.label}>Sync Interval</label>
             <p style={styles.hint}>
               How often to automatically sync all folders (e.g.{" "}
               <code style={styles.code}>5m</code>, <code style={styles.code}>1h</code>, <code style={styles.code}>30m</code>). Default is <code style={styles.code}>5m</code>.
@@ -144,10 +143,9 @@ export function Settings() {
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
             <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
-            <span style={styles.sectionTitle}>Sync Logs</span>
+            <span style={styles.sectionTitle}>Log Rotation Time</span>
           </div>
           <div style={styles.field}>
-            <label style={styles.label}>Log Rotation Max Age</label>
             <p style={styles.hint}>
               Duration string for how long per-folder log entries are kept (e.g.{" "}
               <code style={styles.code}>168h</code>, <code style={styles.code}>720h</code>). Leave blank to disable rotation.
