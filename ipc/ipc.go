@@ -77,6 +77,9 @@ type SettingsPayload struct {
 	// LogRotateMaxAge is the maximum age of per-folder log entries.
 	// Empty string means no rotation.
 	LogRotateMaxAge string `json:"log_rotate_max_age,omitempty"`
+	// SyncInterval is the interval between automatic sync cycles.
+	// Empty string means use the daemon default (5 minutes).
+	SyncInterval string `json:"sync_interval,omitempty"`
 }
 
 // AccountPayload carries account credentials over IPC.

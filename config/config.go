@@ -37,6 +37,9 @@ const (
 	KeyAccountUsername = "account_username"
 	// KeyAccountPassword holds the CERN account password used for basic auth.
 	KeyAccountPassword = "account_password"
+	// KeySyncInterval holds the interval between automatic sync cycles as a
+	// Go duration string (e.g. "5m", "1h"). Empty string means use the default.
+	KeySyncInterval = "sync_interval"
 )
 
 // FolderSettings holds per-folder sync preferences.
@@ -257,6 +260,9 @@ type Settings struct {
 	AccountUsername string
 	// AccountPassword is the CERN account password used for basic auth.
 	AccountPassword string
+	// SyncInterval is the interval between automatic sync cycles.
+	// Zero means use the daemon default (5 minutes).
+	SyncInterval time.Duration
 }
 
 // GetSettings reads the current settings from the DB, returning defaults for
@@ -287,6 +293,14 @@ func (d *DB) GetSettings() (Settings, error) {
 			s.AccountUsername = value
 		case KeyAccountPassword:
 			s.AccountPassword = value
+		case KeySyncInterval:
+			if value != "" {
+				d, err := time.ParseDuration(value)
+				if err != nil {
+					return Settings{}, fmt.Errorf("invalid %s %q: %w", KeySyncInterval, value, err)
+				}
+				s.SyncInterval = d
+			}
 		}
 	}
 	return s, rows.Err()
@@ -299,10 +313,15 @@ func (d *DB) SetSettings(s Settings) error {
 	if s.LogRotateMaxAge > 0 {
 		maxAge = s.LogRotateMaxAge.String()
 	}
+	syncInterval := ""
+	if s.SyncInterval > 0 {
+		syncInterval = s.SyncInterval.String()
+	}
 	pairs := []struct{ k, v string }{
 		{KeyLogRotateMaxAge, maxAge},
 		{KeyAccountUsername, s.AccountUsername},
 		{KeyAccountPassword, s.AccountPassword},
+		{KeySyncInterval, syncInterval},
 	}
 	for _, p := range pairs {
 		if _, err := d.conn.Exec(

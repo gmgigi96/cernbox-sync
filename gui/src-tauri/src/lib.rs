@@ -37,6 +37,8 @@ pub struct Folder {
 struct SettingsPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     log_rotate_max_age: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_interval: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -329,8 +331,15 @@ fn ipc_stop() -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsResult {
+    pub log_rotate_max_age: Option<String>,
+    pub sync_interval: Option<String>,
+}
+
 #[tauri::command]
-fn ipc_get_settings() -> Result<Option<String>, String> {
+fn ipc_get_settings() -> Result<SettingsResult, String> {
     let req = IpcRequest {
         cmd: "get-settings".into(),
         folder: None,
@@ -339,9 +348,11 @@ fn ipc_get_settings() -> Result<Option<String>, String> {
         account: None,
     };
     let resp = ipc_send(&req)?;
-    Ok(resp
-        .settings
-        .and_then(|s| s.log_rotate_max_age))
+    let s = resp.settings.unwrap_or(SettingsPayload { log_rotate_max_age: None, sync_interval: None });
+    Ok(SettingsResult {
+        log_rotate_max_age: s.log_rotate_max_age,
+        sync_interval: s.sync_interval,
+    })
 }
 
 #[tauri::command]
@@ -423,12 +434,12 @@ fn open_log_file(app: AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn ipc_set_settings(log_rotate_max_age: Option<String>) -> Result<(), String> {
+fn ipc_set_settings(log_rotate_max_age: Option<String>, sync_interval: Option<String>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "set-settings".into(),
         folder: None,
         name: None,
-        settings: Some(SettingsPayload { log_rotate_max_age }),
+        settings: Some(SettingsPayload { log_rotate_max_age, sync_interval }),
         account: None,
     };
     ipc_send(&req)?;

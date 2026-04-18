@@ -29,11 +29,11 @@ export const ipc = {
   stop(): Promise<void> {
     return invoke("ipc_stop");
   },
-  getSettings(): Promise<string | null> {
-    return invoke<string | null>("ipc_get_settings");
+  getSettings(): Promise<{ logRotateMaxAge: string | null; syncInterval: string | null }> {
+    return invoke<{ logRotateMaxAge: string | null; syncInterval: string | null }>("ipc_get_settings");
   },
-  setSettings(logRotateMaxAge: string | null): Promise<void> {
-    return invoke("ipc_set_settings", { logRotateMaxAge });
+  setSettings(logRotateMaxAge: string | null, syncInterval: string | null): Promise<void> {
+    return invoke("ipc_set_settings", { logRotateMaxAge, syncInterval });
   },
   listLocalDir(path?: string): Promise<LocalEntry[]> {
     return invoke<LocalEntry[]>("list_local_dir", { path: path ?? null });

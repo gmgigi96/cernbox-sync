@@ -46,6 +46,10 @@ type Daemon struct {
 	accountUsername string        // loaded from settings at startup; updated by set-account
 	accountPassword string
 
+	// syncTicker is the periodic sync ticker; reset when the interval changes.
+	syncTicker     *time.Ticker
+	syncTickerReset chan time.Duration // send a new duration to reset the ticker
+
 	// filesystem watcher (auto-sync on change)
 	watcher          *fsnotify.Watcher
 	watchedRoots     map[string]config.Folder // localRoot → Folder
@@ -72,6 +76,7 @@ func New(cfgDB *config.DB, interval time.Duration, log *slog.Logger) *Daemon {
 		watchedRoots:     make(map[string]config.Folder),
 		debounceTimers:   make(map[string]*time.Timer),
 		debounceDuration: 2 * time.Second,
+		syncTickerReset:  make(chan time.Duration, 1),
 		bus:              newEventBus(),
 	}
 }
@@ -88,6 +93,9 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 		d.logRotateMaxAge = s.LogRotateMaxAge
 		d.accountUsername = s.AccountUsername
 		d.accountPassword = s.AccountPassword
+		if s.SyncInterval > 0 {
+			d.interval = s.SyncInterval
+		}
 	}
 
 	// Remove stale socket from a previous (crashed) run.
@@ -137,11 +145,15 @@ func (d *Daemon) syncLoop(ctx context.Context) {
 	d.syncAll() // run immediately on startup
 
 	t := time.NewTicker(d.interval)
+	d.syncTicker = t
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case newInterval := <-d.syncTickerReset:
+			t.Reset(newInterval)
+			d.log.Info("[daemon] sync interval updated", "interval", newInterval)
 		case <-t.C:
 			d.syncAll()
 		}
@@ -475,22 +487,51 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		return ok()
 
 	case ipc.CmdSetSettings:
-		d.log.Debug("[daemon] set-settings", "log_rotate_max_age", req.Settings.LogRotateMaxAge)
-		s := config.Settings{}
+		d.log.Debug("[daemon] set-settings", "log_rotate_max_age", req.Settings.LogRotateMaxAge, "sync_interval", req.Settings.SyncInterval)
+		// Read current settings so fields not included in this request are preserved.
+		s, err := d.cfgDB.GetSettings()
+		if err != nil {
+			return fail("read current settings: " + err.Error())
+		}
 		if req.Settings.LogRotateMaxAge != "" {
 			dur, err := time.ParseDuration(req.Settings.LogRotateMaxAge)
 			if err != nil {
 				return fail("invalid log_rotate_max_age: " + err.Error())
 			}
 			s.LogRotateMaxAge = dur
+		} else {
+			s.LogRotateMaxAge = 0
+		}
+		var newSyncInterval time.Duration
+		if req.Settings.SyncInterval != "" {
+			dur, err := time.ParseDuration(req.Settings.SyncInterval)
+			if err != nil {
+				return fail("invalid sync_interval: " + err.Error())
+			}
+			if dur <= 0 {
+				return fail("sync_interval must be positive")
+			}
+			s.SyncInterval = dur
+			newSyncInterval = dur
+		} else {
+			s.SyncInterval = 0
 		}
 		if err := d.cfgDB.SetSettings(s); err != nil {
 			return fail(err.Error())
 		}
 		d.mu.Lock()
 		d.logRotateMaxAge = s.LogRotateMaxAge
+		if newSyncInterval > 0 {
+			d.interval = newSyncInterval
+		}
 		d.mu.Unlock()
-		d.log.Info("[daemon] set-settings: applied", "log_rotate_max_age", s.LogRotateMaxAge)
+		if newSyncInterval > 0 {
+			select {
+			case d.syncTickerReset <- newSyncInterval:
+			default:
+			}
+		}
+		d.log.Info("[daemon] set-settings: applied", "log_rotate_max_age", s.LogRotateMaxAge, "sync_interval", s.SyncInterval)
 		return ok()
 
 	case ipc.CmdGetSettings:
@@ -502,7 +543,15 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if s.LogRotateMaxAge > 0 {
 			payload.LogRotateMaxAge = s.LogRotateMaxAge.String()
 		}
-		d.log.Debug("[daemon] get-settings", "log_rotate_max_age", payload.LogRotateMaxAge)
+		d.mu.Lock()
+		interval := d.interval
+		d.mu.Unlock()
+		if s.SyncInterval > 0 {
+			payload.SyncInterval = s.SyncInterval.String()
+		} else {
+			payload.SyncInterval = interval.String()
+		}
+		d.log.Debug("[daemon] get-settings", "log_rotate_max_age", payload.LogRotateMaxAge, "sync_interval", payload.SyncInterval)
 		return ipc.Response{OK: true, Settings: &payload}
 
 	case ipc.CmdGetAccount:
