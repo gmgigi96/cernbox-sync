@@ -204,6 +204,16 @@ func (f *fakeWebDAV) serveDelete(w http.ResponseWriter, r *http.Request, relPath
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// resetSideEffects clears the recorded side-effect slices so a subsequent
+// run's actions can be inspected in isolation.
+func (f *fakeWebDAV) resetSideEffects() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.puts = nil
+	f.deletes = nil
+	f.mkcols = nil
+}
+
 // ─── test environment ─────────────────────────────────────────────────────────
 
 type testEnv struct {
@@ -248,6 +258,22 @@ func (e *testEnv) run() {
 	e.t.Helper()
 	if err := engine.Run(e.cfg); err != nil {
 		e.t.Fatalf("engine.Run: %v", err)
+	}
+}
+
+// assertNoActions fails the test if any uploads, deletes, or remote mkdir
+// operations were recorded on the fake WebDAV server since the last
+// resetSideEffects call (or since the server was created).
+func (e *testEnv) assertNoActions(label string) {
+	e.t.Helper()
+	if len(e.dav.puts) != 0 {
+		e.t.Errorf("%s: unexpected uploads: %v", label, e.dav.puts)
+	}
+	if len(e.dav.deletes) != 0 {
+		e.t.Errorf("%s: unexpected deletes: %v", label, e.dav.deletes)
+	}
+	if len(e.dav.mkcols) != 0 {
+		e.t.Errorf("%s: unexpected MKCOLs: %v", label, e.dav.mkcols)
 	}
 }
 
@@ -586,11 +612,61 @@ func TestSync_InSync(t *testing.T) {
 
 	env.run()
 
-	if len(env.dav.puts) != 0 {
-		t.Fatalf("no uploads expected; got puts=%v", env.dav.puts)
+	env.assertNoActions("in-sync run")
+}
+
+// After a remote file is downloaded on the first run, a second run with no
+// changes must produce no uploads, downloads, or deletes.
+func TestSync_IdempotentAfterRemoteSync(t *testing.T) {
+	env := setup(t)
+	modTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	env.dav.addFile("data.txt", "hello", "etag1", modTime)
+
+	env.run() // first sync: downloads data.txt
+	if !env.localExists("data.txt") {
+		t.Fatal("data.txt should exist after first sync")
 	}
-	if len(env.dav.deletes) != 0 {
-		t.Fatalf("no deletes expected; got deletes=%v", env.dav.deletes)
+
+	env.dav.resetSideEffects()
+	env.run() // second sync: nothing changed
+
+	env.assertNoActions("second sync")
+}
+
+// After a local file is uploaded on the first run, a second run with no
+// changes must produce no further actions.
+func TestSync_IdempotentAfterLocalSync(t *testing.T) {
+	env := setup(t)
+	env.writeLocal("notes.txt", "my notes")
+
+	env.run() // first sync: uploads notes.txt
+	if !contains(env.dav.puts, "notes.txt") {
+		t.Fatal("notes.txt should have been uploaded in first sync")
+	}
+
+	env.dav.resetSideEffects()
+	env.run() // second sync: nothing changed
+
+	env.assertNoActions("second sync")
+}
+
+// After a multi-level tree is fully synced, running the engine three more
+// times with no changes must produce no actions on any of those runs.
+func TestSync_IdempotentWithTree(t *testing.T) {
+	env := setup(t)
+	modTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	env.dav.addDir("docs", "etag-docs")
+	env.dav.addFile("docs/readme.txt", "readme", "etag-readme", modTime)
+	env.dav.addDir("docs/sub", "etag-sub")
+	env.dav.addFile("docs/sub/guide.txt", "guide", "etag-guide", modTime)
+	env.dav.addFile("top.txt", "top level", "etag-top", modTime)
+
+	env.run() // first sync: downloads full tree
+
+	for i := range 3 {
+		env.dav.resetSideEffects()
+		env.run()
+		env.assertNoActions(fmt.Sprintf("run %d after initial sync", i+2))
 	}
 }
 

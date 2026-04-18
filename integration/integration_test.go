@@ -269,3 +269,36 @@ func TestIntegration_SecondSyncIsNoOp(t *testing.T) {
 		t.Fatalf("stable.txt should be unchanged after second sync; got %q", got)
 	}
 }
+
+// TestIntegration_RepeatedSyncsAreNoOp: after a full tree is synced, running
+// the sync client three more times with no changes must leave both sides
+// identical each time.
+func TestIntegration_RepeatedSyncsAreNoOp(t *testing.T) {
+	env := setup(t)
+
+	// Build a tree: top-level file, a directory with two files, and a nested sub-dir.
+	env.writeRemote("readme.txt", "project readme")
+	env.mkdirRemote("docs")
+	env.writeRemote("docs/intro.txt", "introduction")
+	env.writeRemote("docs/guide.txt", "user guide")
+	env.mkdirRemote("docs/api")
+	env.writeRemote("docs/api/ref.txt", "api reference")
+
+	// First sync establishes the baseline.
+	env.triggerSync()
+	env.assertInSync()
+
+	// Three subsequent syncs must all be no-ops.
+	for i := range 3 {
+		env.triggerSync()
+		env.assertInSync()
+
+		// Spot-check a few files to confirm content is unchanged.
+		if got := env.readLocal("readme.txt"); got != "project readme" {
+			t.Fatalf("run %d: readme.txt changed unexpectedly: %q", i+2, got)
+		}
+		if got := env.readLocal("docs/api/ref.txt"); got != "api reference" {
+			t.Fatalf("run %d: docs/api/ref.txt changed unexpectedly: %q", i+2, got)
+		}
+	}
+}
