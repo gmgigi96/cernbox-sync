@@ -4,7 +4,7 @@ GO     := go
 
 COMPOSE := docker compose -f dev/docker-compose.yaml
 
-.PHONY: all build cli daemon test clean help dev-up dev-down gui gui-dev
+.PHONY: all build cli daemon test test-gui clean help dev-up dev-down gui gui-dev
 
 all: build
 
@@ -22,6 +22,9 @@ daemon: ## Build the background daemon (cernbox-syncd)
 
 test: ## Run all tests
 	$(GO) test ./...
+
+test-gui: ## Run GUI unit tests (Vitest)
+	cd gui && npm install && npm test
 
 test-integration: build ## Run integration tests
 	$(GO) test -v -tags integration -timeout 120s ./integration/
