@@ -124,6 +124,8 @@ const DEFAULTS = {
   syncInterval: "5m",
   uploadBandwidth: 0,
   downloadBandwidth: 0,
+  transferStreams: 1,
+  metadataStreams: 1,
 };
 
 export function Settings() {
@@ -133,6 +135,8 @@ export function Settings() {
   const [syncInterval, setSyncInterval] = useState("");
   const [uploadBandwidth, setUploadBandwidth] = useState(0);
   const [downloadBandwidth, setDownloadBandwidth] = useState(0);
+  const [transferStreams, setTransferStreams] = useState(1);
+  const [metadataStreams, setMetadataStreams] = useState(1);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -144,11 +148,15 @@ export function Settings() {
         const si = v.syncInterval ?? "5m";
         const ubw = v.uploadBandwidth ?? 0;
         const dbw = v.downloadBandwidth ?? 0;
-        setCommitted({ logRotateMaxAge: lrma, syncInterval: si, uploadBandwidth: ubw, downloadBandwidth: dbw });
+        const ts = v.transferStreams > 0 ? v.transferStreams : 1;
+        const ms = v.metadataStreams > 0 ? v.metadataStreams : 1;
+        setCommitted({ logRotateMaxAge: lrma, syncInterval: si, uploadBandwidth: ubw, downloadBandwidth: dbw, transferStreams: ts, metadataStreams: ms });
         setLogRotateMaxAge(lrma);
         setSyncInterval(si);
         setUploadBandwidth(ubw);
         setDownloadBandwidth(dbw);
+        setTransferStreams(ts);
+        setMetadataStreams(ms);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -158,13 +166,17 @@ export function Settings() {
     logRotateMaxAge !== committed.logRotateMaxAge ||
     syncInterval !== committed.syncInterval ||
     uploadBandwidth !== committed.uploadBandwidth ||
-    downloadBandwidth !== committed.downloadBandwidth;
+    downloadBandwidth !== committed.downloadBandwidth ||
+    transferStreams !== committed.transferStreams ||
+    metadataStreams !== committed.metadataStreams;
 
   function cancel() {
     setLogRotateMaxAge(committed.logRotateMaxAge);
     setSyncInterval(committed.syncInterval);
     setUploadBandwidth(committed.uploadBandwidth);
     setDownloadBandwidth(committed.downloadBandwidth);
+    setTransferStreams(committed.transferStreams);
+    setMetadataStreams(committed.metadataStreams);
     setError(null);
   }
 
@@ -176,12 +188,16 @@ export function Settings() {
         DEFAULTS.syncInterval || null,
         DEFAULTS.uploadBandwidth,
         DEFAULTS.downloadBandwidth,
+        DEFAULTS.transferStreams,
+        DEFAULTS.metadataStreams,
       );
       setCommitted(DEFAULTS);
       setLogRotateMaxAge(DEFAULTS.logRotateMaxAge);
       setSyncInterval(DEFAULTS.syncInterval);
       setUploadBandwidth(DEFAULTS.uploadBandwidth);
       setDownloadBandwidth(DEFAULTS.downloadBandwidth);
+      setTransferStreams(DEFAULTS.transferStreams);
+      setMetadataStreams(DEFAULTS.metadataStreams);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (e) {
@@ -192,8 +208,8 @@ export function Settings() {
   async function save() {
     setError(null);
     try {
-      await ipc.setSettings(logRotateMaxAge.trim() || null, syncInterval.trim() || null, uploadBandwidth, downloadBandwidth);
-      const next = { logRotateMaxAge: logRotateMaxAge.trim(), syncInterval: syncInterval.trim(), uploadBandwidth, downloadBandwidth };
+      await ipc.setSettings(logRotateMaxAge.trim() || null, syncInterval.trim() || null, uploadBandwidth, downloadBandwidth, transferStreams, metadataStreams);
+      const next = { logRotateMaxAge: logRotateMaxAge.trim(), syncInterval: syncInterval.trim(), uploadBandwidth, downloadBandwidth, transferStreams, metadataStreams };
       setCommitted(next);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -315,6 +331,54 @@ export function Settings() {
               Maximum download speed shared across all syncs. Leave at <code style={styles.code}>0</code> for unlimited.
             </p>
             <BandwidthInput bytes={downloadBandwidth} onChange={setDownloadBandwidth} disabled={loading} />
+          </div>
+        </div>
+
+        <div style={styles.section}>
+          <div style={styles.sectionHeader}>
+            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <span style={styles.sectionTitle}>Transfer Streams</span>
+          </div>
+          <div style={styles.field}>
+            <p style={styles.hint}>
+              Number of concurrent upload/download connections per sync cycle.{" "}
+              <code style={styles.code}>1</code> means sequential (default).
+              Increase to speed up syncs with many small files.
+            </p>
+            <input
+              style={styles.input}
+              type="number"
+              min={1}
+              max={32}
+              placeholder="1"
+              value={transferStreams}
+              onChange={(e) => setTransferStreams(Math.max(1, parseInt(e.target.value) || 1))}
+              disabled={loading}
+            />
+          </div>
+        </div>
+
+        <div style={styles.section}>
+          <div style={styles.sectionHeader}>
+            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <span style={styles.sectionTitle}>Metadata Streams</span>
+          </div>
+          <div style={styles.field}>
+            <p style={styles.hint}>
+              Number of concurrent metadata operations (directory creates and
+              deletes) per depth tier per sync cycle.{" "}
+              <code style={styles.code}>1</code> means sequential (default).
+            </p>
+            <input
+              style={styles.input}
+              type="number"
+              min={1}
+              max={32}
+              placeholder="1"
+              value={metadataStreams}
+              onChange={(e) => setMetadataStreams(Math.max(1, parseInt(e.target.value) || 1))}
+              disabled={loading}
+            />
           </div>
         </div>
       </div>

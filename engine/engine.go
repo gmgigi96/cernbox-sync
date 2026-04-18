@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gmgigi96/cernbox-sync/db"
@@ -93,6 +94,12 @@ type Config struct {
 	// of actions completed so far, total is the total action count, current is
 	// the relative path being processed. May be nil.
 	OnProgress func(done, total int, current string)
+	// TransferStreams is the number of concurrent upload/download operations.
+	// 0 or 1 means sequential (no concurrency).
+	TransferStreams int
+	// MetadataStreams is the number of concurrent metadata operations
+	// (directory creates and deletes) per depth tier. 0 or 1 means sequential.
+	MetadataStreams int
 }
 
 // action classifies what needs to happen to a path.
@@ -169,7 +176,7 @@ func Run(cfg Config) error {
 	logf(cfg.FolderLog, "[sync] actions: %d", len(actions))
 
 	// ── 5. Execute ───────────────────────────────────────────────────────────
-	if err := execute(cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter); err != nil {
+	if err := execute(cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter, cfg.TransferStreams, cfg.MetadataStreams); err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}
 
@@ -467,17 +474,115 @@ func execute(
 	actions []action,
 	onProgress func(done, total int, current string),
 	uploadLimiter, downloadLimiter *rate.Limiter,
+	transferStreams, metadataStreams int,
 ) error {
+	if transferStreams < 1 {
+		transferStreams = 1
+	}
+	if metadataStreams < 1 {
+		metadataStreams = 1
+	}
 	total := len(actions)
-	for i, a := range actions {
+
+	// Track completed actions for onProgress; protected by a mutex so the
+	// worker goroutines can safely increment it.
+	var (
+		doneMu sync.Mutex
+		done   int
+	)
+	reportDone := func(path string) {
+		doneMu.Lock()
+		done++
+		d := done
+		doneMu.Unlock()
 		if onProgress != nil {
-			onProgress(i, total, a.path)
-		}
-		if err := execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter); err != nil {
-			// Log and continue — partial sync is better than aborting entirely.
-			logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
+			onProgress(d, total, path)
 		}
 	}
+
+	// runPool dispatches a slice of actions to a worker pool of size n.
+	// All actions are independent within the slice (caller guarantees this).
+	runPool := func(items []action, n int) {
+		if len(items) == 0 {
+			return
+		}
+		work := make(chan action, len(items))
+		for _, a := range items {
+			work <- a
+		}
+		close(work)
+		var wg sync.WaitGroup
+		for range n {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for a := range work {
+					if onProgress != nil {
+						doneMu.Lock()
+						d := done
+						doneMu.Unlock()
+						onProgress(d, total, a.path)
+					}
+					if err := execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter); err != nil {
+						logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
+					}
+					reportDone(a.path)
+				}
+			}()
+		}
+		wg.Wait()
+	}
+
+	// runByDepthTier groups an already-depth-sorted slice into tiers of equal
+	// depth and runs each tier through a pool. This preserves the parent-before-
+	// child (or child-before-parent) invariant while parallelising within a tier.
+	runByDepthTier := func(items []action, n int) {
+		i := 0
+		for i < len(items) {
+			d := depth(items[i].path)
+			j := i + 1
+			for j < len(items) && depth(items[j].path) == d {
+				j++
+			}
+			runPool(items[i:j], n)
+			i = j
+		}
+	}
+
+	// Partition actions into three ordered phases:
+	//   1. Dir creates  — mkdirLocal / mkcolRemote  (shallowest-first, then conflicts)
+	//   2. Transfers    — upload / download          (fully independent)
+	//   3. Deletes      — deleteLocal / deleteRemote (deepest-first)
+	var creates, conflicts, transfers, teardown []action
+	for _, a := range actions {
+		switch a.kind {
+		case upload, download:
+			transfers = append(transfers, a)
+		case deleteLocal, deleteRemote:
+			teardown = append(teardown, a)
+		case conflictTake:
+			conflicts = append(conflicts, a)
+		default: // mkdirLocal, mkcolRemote
+			creates = append(creates, a)
+		}
+	}
+
+	if onProgress != nil {
+		onProgress(0, total, "")
+	}
+
+	// Phase 1a — concurrent dir creates, tier by tier (parents before children).
+	runByDepthTier(creates, metadataStreams)
+
+	// Phase 1b — conflicts: rename local then download; independent of each other.
+	runPool(conflicts, transferStreams)
+
+	// Phase 2 — concurrent file transfers.
+	runPool(transfers, transferStreams)
+
+	// Phase 3 — concurrent deletes, tier by tier (children before parents).
+	runByDepthTier(teardown, metadataStreams)
+
 	if onProgress != nil {
 		onProgress(total, total, "")
 	}

@@ -29,11 +29,11 @@ export const ipc = {
   stop(): Promise<void> {
     return invoke("ipc_stop");
   },
-  getSettings(): Promise<{ logRotateMaxAge: string | null; syncInterval: string | null; uploadBandwidth: number; downloadBandwidth: number }> {
-    return invoke<{ logRotateMaxAge: string | null; syncInterval: string | null; uploadBandwidth: number; downloadBandwidth: number }>("ipc_get_settings");
+  getSettings(): Promise<{ logRotateMaxAge: string | null; syncInterval: string | null; uploadBandwidth: number; downloadBandwidth: number; transferStreams: number; metadataStreams: number }> {
+    return invoke<{ logRotateMaxAge: string | null; syncInterval: string | null; uploadBandwidth: number; downloadBandwidth: number; transferStreams: number; metadataStreams: number }>("ipc_get_settings");
   },
-  setSettings(logRotateMaxAge: string | null, syncInterval: string | null, uploadBandwidth: number, downloadBandwidth: number): Promise<void> {
-    return invoke("ipc_set_settings", { logRotateMaxAge, syncInterval, uploadBandwidth, downloadBandwidth });
+  setSettings(logRotateMaxAge: string | null, syncInterval: string | null, uploadBandwidth: number, downloadBandwidth: number, transferStreams: number, metadataStreams: number): Promise<void> {
+    return invoke("ipc_set_settings", { logRotateMaxAge, syncInterval, uploadBandwidth, downloadBandwidth, transferStreams, metadataStreams });
   },
   listLocalDir(path?: string): Promise<LocalEntry[]> {
     return invoke<LocalEntry[]>("list_local_dir", { path: path ?? null });

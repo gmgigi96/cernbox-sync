@@ -62,6 +62,13 @@ type Daemon struct {
 	uploadLimiter   *rate.Limiter
 	downloadLimiter *rate.Limiter
 
+	// transferStreams is the number of concurrent upload/download operations.
+	// 0 or 1 means sequential.
+	transferStreams int
+	// metadataStreams is the number of concurrent metadata operations
+	// (directory creates and deletes) per depth tier. 0 or 1 means sequential.
+	metadataStreams int
+
 	// syncTicker is the periodic sync ticker; reset when the interval changes.
 	syncTicker     *time.Ticker
 	syncTickerReset chan time.Duration // send a new duration to reset the ticker
@@ -114,6 +121,8 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 		}
 		d.uploadLimiter = newLimiter(s.UploadBandwidth)
 		d.downloadLimiter = newLimiter(s.DownloadBandwidth)
+		d.transferStreams = s.TransferStreams
+		d.metadataStreams = s.MetadataStreams
 	}
 
 	// Remove stale socket from a previous (crashed) run.
@@ -243,6 +252,8 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	password := d.accountPassword
 	uploadLimiter := d.uploadLimiter
 	downloadLimiter := d.downloadLimiter
+	transferStreams := d.transferStreams
+	metadataStreams := d.metadataStreams
 	d.mu.Unlock()
 
 	cfg := engine.Config{
@@ -256,6 +267,8 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		SyncHiddenFiles: f.Settings.SyncHiddenFiles,
 		UploadLimiter:   uploadLimiter,
 		DownloadLimiter: downloadLimiter,
+		TransferStreams:  transferStreams,
+		MetadataStreams:  metadataStreams,
 		OnProgress: func(done, total int, current string) {
 			d.bus.publish(ipc.Event{
 				Type:   ipc.EventSyncProgress,
@@ -544,6 +557,12 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if req.Settings.DownloadBandwidth >= 0 {
 			s.DownloadBandwidth = req.Settings.DownloadBandwidth
 		}
+		if req.Settings.TransferStreams >= 0 {
+			s.TransferStreams = req.Settings.TransferStreams
+		}
+		if req.Settings.MetadataStreams >= 0 {
+			s.MetadataStreams = req.Settings.MetadataStreams
+		}
 		if err := d.cfgDB.SetSettings(s); err != nil {
 			return fail(err.Error())
 		}
@@ -554,6 +573,8 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		d.uploadLimiter = newLimiter(s.UploadBandwidth)
 		d.downloadLimiter = newLimiter(s.DownloadBandwidth)
+		d.transferStreams = s.TransferStreams
+		d.metadataStreams = s.MetadataStreams
 		d.mu.Unlock()
 		if newSyncInterval > 0 {
 			select {
@@ -583,7 +604,9 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		payload.UploadBandwidth = s.UploadBandwidth
 		payload.DownloadBandwidth = s.DownloadBandwidth
-		d.log.Debug("[daemon] get-settings", "log_rotate_max_age", payload.LogRotateMaxAge, "sync_interval", payload.SyncInterval, "upload_bw", payload.UploadBandwidth, "download_bw", payload.DownloadBandwidth)
+		payload.TransferStreams = s.TransferStreams
+		payload.MetadataStreams = s.MetadataStreams
+		d.log.Debug("[daemon] get-settings", "log_rotate_max_age", payload.LogRotateMaxAge, "sync_interval", payload.SyncInterval, "upload_bw", payload.UploadBandwidth, "download_bw", payload.DownloadBandwidth, "transfer_streams", payload.TransferStreams, "metadata_streams", payload.MetadataStreams)
 		return ipc.Response{OK: true, Settings: &payload}
 
 	case ipc.CmdGetAccount:

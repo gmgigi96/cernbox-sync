@@ -46,6 +46,12 @@ const (
 	// KeyDownloadBandwidth holds the maximum download bandwidth in bytes/sec.
 	// 0 means unlimited.
 	KeyDownloadBandwidth = "download_bandwidth"
+	// KeyTransferStreams holds the number of concurrent upload/download streams
+	// per sync cycle. 0 or 1 means sequential (no concurrency).
+	KeyTransferStreams = "transfer_streams"
+	// KeyMetadataStreams holds the number of concurrent metadata operations
+	// (directory creates and deletes) per depth tier. 0 or 1 means sequential.
+	KeyMetadataStreams = "metadata_streams"
 )
 
 // FolderSettings holds per-folder sync preferences.
@@ -275,6 +281,12 @@ type Settings struct {
 	// DownloadBandwidth is the maximum download bandwidth in bytes/sec.
 	// Zero means unlimited.
 	DownloadBandwidth int64
+	// TransferStreams is the number of concurrent upload/download operations
+	// per sync cycle. 0 or 1 means sequential.
+	TransferStreams int
+	// MetadataStreams is the number of concurrent metadata operations
+	// (directory creates and deletes) per depth tier. 0 or 1 means sequential.
+	MetadataStreams int
 }
 
 // GetSettings reads the current settings from the DB, returning defaults for
@@ -329,6 +341,22 @@ func (d *DB) GetSettings() (Settings, error) {
 				}
 				s.DownloadBandwidth = v
 			}
+		case KeyTransferStreams:
+			if value != "" {
+				var v int
+				if _, err := fmt.Sscan(value, &v); err != nil {
+					return Settings{}, fmt.Errorf("invalid %s %q: %w", KeyTransferStreams, value, err)
+				}
+				s.TransferStreams = v
+			}
+		case KeyMetadataStreams:
+			if value != "" {
+				var v int
+				if _, err := fmt.Sscan(value, &v); err != nil {
+					return Settings{}, fmt.Errorf("invalid %s %q: %w", KeyMetadataStreams, value, err)
+				}
+				s.MetadataStreams = v
+			}
 		}
 	}
 	return s, rows.Err()
@@ -353,6 +381,14 @@ func (d *DB) SetSettings(s Settings) error {
 	if s.DownloadBandwidth > 0 {
 		downloadBW = fmt.Sprintf("%d", s.DownloadBandwidth)
 	}
+	transferStreams := ""
+	if s.TransferStreams > 0 {
+		transferStreams = fmt.Sprintf("%d", s.TransferStreams)
+	}
+	metadataStreams := ""
+	if s.MetadataStreams > 0 {
+		metadataStreams = fmt.Sprintf("%d", s.MetadataStreams)
+	}
 	pairs := []struct{ k, v string }{
 		{KeyLogRotateMaxAge, maxAge},
 		{KeyAccountUsername, s.AccountUsername},
@@ -360,6 +396,8 @@ func (d *DB) SetSettings(s Settings) error {
 		{KeySyncInterval, syncInterval},
 		{KeyUploadBandwidth, uploadBW},
 		{KeyDownloadBandwidth, downloadBW},
+		{KeyTransferStreams, transferStreams},
+		{KeyMetadataStreams, metadataStreams},
 	}
 	for _, p := range pairs {
 		if _, err := d.conn.Exec(

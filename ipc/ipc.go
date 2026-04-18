@@ -86,6 +86,12 @@ type SettingsPayload struct {
 	// DownloadBandwidth is the maximum download bandwidth in bytes/sec.
 	// 0 means unlimited.
 	DownloadBandwidth int64 `json:"download_bandwidth"`
+	// TransferStreams is the number of concurrent upload/download operations
+	// per sync cycle. 0 or 1 means sequential.
+	TransferStreams int `json:"transfer_streams"`
+	// MetadataStreams is the number of concurrent metadata operations
+	// (directory creates and deletes) per depth tier. 0 or 1 means sequential.
+	MetadataStreams int `json:"metadata_streams"`
 }
 
 // AccountPayload carries account credentials over IPC.
