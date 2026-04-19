@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import {
   RefreshCw, PauseCircle, Wifi, WifiOff, Clock, AlertCircle, CheckCircle2,
   FolderOpen, ArrowUpDown, ArrowUp, ArrowDown, ChevronDown, ChevronRight,
-  Activity, BarChart2, Layers, AlertTriangle, HardDrive,
+  Activity, Layers, AlertTriangle, HardDrive,
 } from "lucide-react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import type { DaemonState } from "../hooks/useDaemon";
@@ -310,15 +310,6 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) 
         <div style={S.errorLogEmpty}>
           <CheckCircle2 size={20} strokeWidth={1} style={{ color: "var(--success)", opacity: 0.5 }} />
           <span style={{ fontSize: "0.8125rem", color: "var(--outline)", marginTop: "0.375rem" }}>No errors recorded</span>
-        </div>
-      </Section>
-
-      <Section title="Pending Changes" defaultOpen={false}>
-        <div style={S.errorLogEmpty}>
-          <BarChart2 size={20} strokeWidth={1} style={{ opacity: 0.3 }} />
-          <span style={{ fontSize: "0.8125rem", color: "var(--outline)", marginTop: "0.375rem" }}>
-            {syncingCount > 0 ? "Sync in progress…" : "Nothing pending — all folders are up to date"}
-          </span>
         </div>
       </Section>
     </div>
