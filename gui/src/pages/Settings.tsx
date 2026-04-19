@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Save, X, RotateCcw, AlertCircle, CheckCircle2, Settings as SettingsIcon } from "lucide-react";
+import { Save, X, RotateCcw, AlertCircle, CheckCircle2, Timer, Upload, Download, ArrowLeftRight, FolderCog } from "lucide-react";
 import { ipc } from "../ipc";
 
 // ── Bandwidth helpers ─────────────────────────────────────────────────────────
@@ -270,7 +270,7 @@ export function Settings() {
       <div style={styles.grid}>
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
-            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <Timer size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Sync Interval</span>
           </div>
           <div style={styles.field}>
@@ -290,7 +290,7 @@ export function Settings() {
 
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
-            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <RotateCcw size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Log Rotation Time</span>
           </div>
           <div style={styles.field}>
@@ -310,7 +310,7 @@ export function Settings() {
 
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
-            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <Upload size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Upload Bandwidth</span>
           </div>
           <div style={styles.field}>
@@ -323,7 +323,7 @@ export function Settings() {
 
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
-            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <Download size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Download Bandwidth</span>
           </div>
           <div style={styles.field}>
@@ -336,7 +336,7 @@ export function Settings() {
 
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
-            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <ArrowLeftRight size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Transfer Streams</span>
           </div>
           <div style={styles.field}>
@@ -360,7 +360,7 @@ export function Settings() {
 
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
-            <SettingsIcon size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <FolderCog size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Metadata Streams</span>
           </div>
           <div style={styles.field}>
