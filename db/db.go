@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +19,12 @@ CREATE TABLE IF NOT EXISTS sync_state (
     last_modified INTEGER NOT NULL DEFAULT 0,
     file_id      TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (path)
+);
+CREATE TABLE IF NOT EXISTS conflicts (
+    path          TEXT    NOT NULL,  -- relative path of the original file
+    conflict_path TEXT    NOT NULL,  -- absolute path of the .conflict-* copy
+    created_at    INTEGER NOT NULL,  -- unix timestamp when the conflict was recorded
+    PRIMARY KEY (conflict_path)
 );
 `
 
@@ -162,6 +169,70 @@ func (d *DB) Delete(path string) error {
 	_, err := d.conn.Exec(`DELETE FROM sync_state WHERE path = ?`, path)
 	if err != nil {
 		return fmt.Errorf("db delete %q: %w", path, err)
+	}
+	return nil
+}
+
+// ConflictEntry represents one row in the conflicts table.
+type ConflictEntry struct {
+	Path         string    // relative path of the original file
+	ConflictPath string    // absolute path of the .conflict-* copy
+	CreatedAt    time.Time // when the conflict was recorded
+}
+
+// AddConflict records a new conflict.
+func (d *DB) AddConflict(path, conflictPath string, ts time.Time) error {
+	_, err := d.conn.Exec(
+		`INSERT OR REPLACE INTO conflicts (path, conflict_path, created_at) VALUES (?, ?, ?)`,
+		path, conflictPath, ts.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("db add conflict %q: %w", path, err)
+	}
+	return nil
+}
+
+// AllConflicts returns all recorded conflicts.
+func (d *DB) AllConflicts() ([]ConflictEntry, error) {
+	rows, err := d.conn.Query(`SELECT path, conflict_path, created_at FROM conflicts`)
+	if err != nil {
+		return nil, fmt.Errorf("db all conflicts: %w", err)
+	}
+	defer rows.Close()
+	var out []ConflictEntry
+	for rows.Next() {
+		var e ConflictEntry
+		var ts int64
+		if err := rows.Scan(&e.Path, &e.ConflictPath, &ts); err != nil {
+			return nil, err
+		}
+		e.CreatedAt = time.Unix(ts, 0)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// DeleteConflict removes a conflict record by its conflict file path.
+func (d *DB) DeleteConflict(conflictPath string) error {
+	_, err := d.conn.Exec(`DELETE FROM conflicts WHERE conflict_path = ?`, conflictPath)
+	if err != nil {
+		return fmt.Errorf("db delete conflict %q: %w", conflictPath, err)
+	}
+	return nil
+}
+
+// SweepConflicts removes conflict records whose conflict file no longer exists on disk.
+func (d *DB) SweepConflicts() error {
+	entries, err := d.AllConflicts()
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if _, statErr := os.Stat(e.ConflictPath); os.IsNotExist(statErr) {
+			if err := d.DeleteConflict(e.ConflictPath); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

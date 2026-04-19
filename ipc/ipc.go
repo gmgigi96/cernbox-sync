@@ -34,6 +34,8 @@ const (
 	CmdPause = "pause"
 	// CmdResume resumes syncing globally (Name=="") or for a specific folder.
 	CmdResume = "resume"
+	// CmdListConflicts returns all unresolved conflicts, optionally filtered by folder name.
+	CmdListConflicts = "list-conflicts"
 )
 
 // Event type names pushed by the daemon to subscribed clients.
@@ -119,14 +121,23 @@ type Request struct {
 	Account  *AccountPayload `json:"account,omitempty"` // used by CmdSetAccount
 }
 
+// ConflictEntry describes a single unresolved conflict.
+type ConflictEntry struct {
+	Folder       string `json:"folder"`        // registered folder name
+	Path         string `json:"path"`          // relative path of the original file
+	ConflictPath string `json:"conflict_path"` // absolute path of the .conflict-* copy
+	CreatedAt    string `json:"created_at"`    // RFC 3339 timestamp
+}
+
 // Response is sent by the daemon back to the CLI.
 type Response struct {
-	OK       bool             `json:"ok"`
-	Error    string           `json:"error,omitempty"`
-	Folders  []config.Folder  `json:"folders,omitempty"`  // CmdList
-	Status   *Status          `json:"status,omitempty"`   // CmdStatus
-	Settings *SettingsPayload `json:"settings,omitempty"` // CmdGetSettings
-	Account  *AccountPayload  `json:"account,omitempty"`  // CmdGetAccount
+	OK        bool             `json:"ok"`
+	Error     string           `json:"error,omitempty"`
+	Folders   []config.Folder  `json:"folders,omitempty"`   // CmdList
+	Status    *Status          `json:"status,omitempty"`    // CmdStatus
+	Settings  *SettingsPayload `json:"settings,omitempty"`  // CmdGetSettings
+	Account   *AccountPayload  `json:"account,omitempty"`   // CmdGetAccount
+	Conflicts []ConflictEntry  `json:"conflicts,omitempty"` // CmdListConflicts
 }
 
 // FileCounts holds the number of files and directories synced for a folder.

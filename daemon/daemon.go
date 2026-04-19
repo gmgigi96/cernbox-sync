@@ -20,6 +20,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gmgigi96/cernbox-sync/config"
+	"github.com/gmgigi96/cernbox-sync/db"
 	"github.com/gmgigi96/cernbox-sync/engine"
 	"github.com/gmgigi96/cernbox-sync/ipc"
 	"github.com/gmgigi96/cernbox-sync/logger"
@@ -780,6 +781,51 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		d.mu.Unlock()
 		d.log.Info("[daemon] set-account: account updated", "username", req.Account.Username)
 		return ok()
+
+	case ipc.CmdListConflicts:
+		folders, err := d.cfgDB.All()
+		if err != nil {
+			return fail(err.Error())
+		}
+		// Filter to a specific folder if requested.
+		if req.Name != "" {
+			var filtered []config.Folder
+			for _, f := range folders {
+				if f.Name == req.Name {
+					filtered = append(filtered, f)
+					break
+				}
+			}
+			if len(filtered) == 0 {
+				return fail(fmt.Sprintf("folder %q not found", req.Name))
+			}
+			folders = filtered
+		}
+		var conflicts []ipc.ConflictEntry
+		for _, f := range folders {
+			dbPath := filepath.Join(f.LocalRoot, ".sync.db")
+			sdb, err := db.Open(dbPath)
+			if err != nil {
+				d.log.Error("[daemon] list-conflicts: open db", "folder", f.Name, "err", err)
+				continue
+			}
+			entries, err := sdb.AllConflicts()
+			sdb.Close()
+			if err != nil {
+				d.log.Error("[daemon] list-conflicts: query", "folder", f.Name, "err", err)
+				continue
+			}
+			for _, e := range entries {
+				conflicts = append(conflicts, ipc.ConflictEntry{
+					Folder:       f.Name,
+					Path:         e.Path,
+					ConflictPath: e.ConflictPath,
+					CreatedAt:    e.CreatedAt.Format(time.RFC3339),
+				})
+			}
+		}
+		d.log.Debug("[daemon] list-conflicts", "count", len(conflicts))
+		return ipc.Response{OK: true, Conflicts: conflicts}
 
 	default:
 		d.log.Error("[daemon] unknown command", "cmd", req.Cmd)

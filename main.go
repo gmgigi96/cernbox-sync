@@ -30,6 +30,7 @@ Commands:
   pause         Pause syncing globally or for a specific folder
   resume        Resume syncing globally or for a specific folder
   status        Show the daemon's current sync status
+  conflicts     List unresolved sync conflicts
   stop          Ask the daemon to shut down
   set-settings  Configure daemon settings (e.g. log rotation)
   get-settings  Show current daemon settings
@@ -64,6 +65,8 @@ func main() {
 		cmdResume(os.Args[2:])
 	case "status":
 		cmdStatus(os.Args[2:])
+	case "conflicts":
+		cmdConflicts(os.Args[2:])
 	case "stop":
 		cmdStop(os.Args[2:])
 	case "set-settings":
@@ -295,4 +298,25 @@ func cmdGetSettings(args []string) {
 	} else {
 		fmt.Printf("log-max-age: %s\n", resp.Settings.LogRotateMaxAge)
 	}
+}
+
+// ── conflicts ────────────────────────────────────────────────────────────────
+
+func cmdConflicts(args []string) {
+	fs := flag.NewFlagSet("conflicts", flag.ExitOnError)
+	name := fs.String("name", "", "Show conflicts for a specific folder only (omit for all)")
+	fs.Parse(args)
+
+	resp := send(ipc.Request{Cmd: ipc.CmdListConflicts, Name: *name})
+	if len(resp.Conflicts) == 0 {
+		fmt.Println("No unresolved conflicts.")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "FOLDER\tFILE\tCONFLICT COPY\tDETECTED AT")
+	for _, c := range resp.Conflicts {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.Folder, c.Path, c.ConflictPath, c.CreatedAt)
+	}
+	w.Flush()
 }

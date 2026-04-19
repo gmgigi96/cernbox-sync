@@ -236,6 +236,11 @@ func Run(cfg Config) error {
 	}
 	defer state.Close()
 
+	// Remove conflict records whose .conflict- file has been deleted by the user.
+	if err := state.SweepConflicts(); err != nil {
+		logf(cfg.FolderLog, "[sync] WARNING sweep conflicts: %v", err)
+	}
+
 	// ── 1. Load DB state ─────────────────────────────────────────────────────
 	// Loaded first so scanRemote can use stored ETags to skip unchanged subtrees.
 	if err := ctx.Err(); err != nil {
@@ -961,6 +966,9 @@ func execOne(
 		logf(fl, "[sync] conflict     %q — renaming local to %s", a.path, filepath.Base(conflictPath))
 		if err := os.Rename(localAbs, conflictPath); err != nil {
 			return fmt.Errorf("rename conflict copy: %w", err)
+		}
+		if err := state.AddConflict(a.path, conflictPath, time.Now()); err != nil {
+			logf(fl, "[sync] WARNING record conflict %q: %v", a.path, err)
 		}
 		// Now download the server version as if it were a fresh download.
 		a.kind = download
