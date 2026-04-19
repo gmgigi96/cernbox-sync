@@ -39,9 +39,10 @@ type fakeWebDAV struct {
 	mu    sync.Mutex
 	files map[string]*fakeFile // keyed by relative path (no leading slash)
 
-	puts    []string
-	deletes []string
-	mkcols  []string
+	puts      []string
+	deletes   []string
+	mkcols    []string
+	propfinds []string // path of every PROPFIND received
 }
 
 func newFakeWebDAV() *fakeWebDAV {
@@ -98,6 +99,8 @@ func (f *fakeWebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (f *fakeWebDAV) servePropfind(w http.ResponseWriter, r *http.Request, relPath string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	f.propfinds = append(f.propfinds, relPath)
 
 	entry, ok := f.files[relPath]
 	if !ok {
@@ -829,6 +832,93 @@ func TestSync_HiddenFiles_MixedLocal_OnlyRegularSynced(t *testing.T) {
 	}
 	if contains(env.dav.puts, ".hidden") {
 		t.Fatalf(".hidden should not have been uploaded when SyncHiddenFiles=false; puts=%v", env.dav.puts)
+	}
+}
+
+// ─── incremental scan tests ───────────────────────────────────────────────────
+
+// After an initial sync, a second sync where nothing changed should issue only
+// one PROPFIND (the root with Depth:1). The subdirectory's ETag matches the DB,
+// so its subtree is replayed without any further network calls.
+func TestSync_IncrementalScan_UnchangedSubtreeSkipped(t *testing.T) {
+	env := setup(t)
+	modTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+
+	env.dav.addDir("docs", "etag-docs")
+	env.dav.addFile("docs/readme.txt", "readme content", "etag-readme", modTime)
+
+	// First sync: full scan, everything downloaded.
+	env.run()
+
+	if !env.localExists("docs/readme.txt") {
+		t.Fatal("docs/readme.txt should have been downloaded on first sync")
+	}
+
+	// Reset propfind counter before second sync.
+	env.dav.mu.Lock()
+	env.dav.propfinds = nil
+	env.dav.mu.Unlock()
+
+	// Second sync: nothing changed on either side.
+	env.run()
+
+	env.dav.mu.Lock()
+	pf := make([]string, len(env.dav.propfinds))
+	copy(pf, env.dav.propfinds)
+	env.dav.mu.Unlock()
+
+	// Only the root Depth:1 PROPFIND should have been issued.
+	// The "docs" dir ETag matches DB so its subtree is replayed from DB.
+	if len(pf) != 1 {
+		t.Fatalf("expected 1 PROPFIND on unchanged second sync, got %d: %v", len(pf), pf)
+	}
+	if pf[0] != "" {
+		t.Fatalf("expected PROPFIND on root \"\", got %q", pf[0])
+	}
+}
+
+// When a file inside a subdirectory changes on the remote, the directory ETag
+// changes too (CERNBox propagates ETags up). The engine must re-scan that
+// directory and detect the updated file.
+func TestSync_IncrementalScan_ChangedSubtreeRescanned(t *testing.T) {
+	env := setup(t)
+	modTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+
+	env.dav.addDir("docs", "etag-docs-v1")
+	env.dav.addFile("docs/readme.txt", "original", "etag-readme-v1", modTime)
+
+	// First sync.
+	env.run()
+
+	// Simulate a remote change: update file content and bump both ETags.
+	env.dav.mu.Lock()
+	env.dav.files["docs"].etag = "etag-docs-v2"
+	env.dav.files["docs/readme.txt"].content = []byte("updated")
+	env.dav.files["docs/readme.txt"].etag = "etag-readme-v2"
+	env.dav.mu.Unlock()
+
+	env.dav.mu.Lock()
+	env.dav.propfinds = nil
+	env.dav.mu.Unlock()
+
+	// Second sync: the "docs" ETag changed so its children must be re-fetched.
+	env.run()
+
+	if got := env.readLocal("docs/readme.txt"); got != "updated" {
+		t.Fatalf("docs/readme.txt should contain updated content; got %q", got)
+	}
+
+	env.dav.mu.Lock()
+	pf := make([]string, len(env.dav.propfinds))
+	copy(pf, env.dav.propfinds)
+	env.dav.mu.Unlock()
+
+	// Should have issued PROPFIND on root and on "docs".
+	if !contains(pf, "") {
+		t.Fatalf("expected PROPFIND on root; got %v", pf)
+	}
+	if !contains(pf, "docs") {
+		t.Fatalf("expected PROPFIND on docs/; got %v", pf)
 	}
 }
 

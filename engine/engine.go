@@ -211,27 +211,8 @@ func Run(cfg Config) error {
 	}
 	defer state.Close()
 
-	// ── 1. Remote scan ───────────────────────────────────────────────────────
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	remoteMap, err := scanRemote(wdc, cfg.Folders, cfg.SyncHiddenFiles)
-	if err != nil {
-		return fmt.Errorf("remote scan: %w", err)
-	}
-	logf(cfg.FolderLog, "[sync] remote resources: %d", len(remoteMap))
-
-	// ── 2. Local scan ────────────────────────────────────────────────────────
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	localMap, err := scanLocal(cfg.LocalRoot, cfg.SyncHiddenFiles)
-	if err != nil {
-		return fmt.Errorf("local scan: %w", err)
-	}
-	logf(cfg.FolderLog, "[sync] local resources: %d", len(localMap))
-
-	// ── 3. Load DB state ─────────────────────────────────────────────────────
+	// ── 1. Load DB state ─────────────────────────────────────────────────────
+	// Loaded first so scanRemote can use stored ETags to skip unchanged subtrees.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -240,6 +221,26 @@ func Run(cfg Config) error {
 		return fmt.Errorf("load db: %w", err)
 	}
 	logf(cfg.FolderLog, "[sync] db entries: %d", len(dbState))
+
+	// ── 2. Remote scan ───────────────────────────────────────────────────────
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	remoteMap, err := scanRemote(wdc, cfg.Folders, cfg.SyncHiddenFiles, dbState)
+	if err != nil {
+		return fmt.Errorf("remote scan: %w", err)
+	}
+	logf(cfg.FolderLog, "[sync] remote resources: %d", len(remoteMap))
+
+	// ── 3. Local scan ────────────────────────────────────────────────────────
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	localMap, err := scanLocal(cfg.LocalRoot, cfg.SyncHiddenFiles)
+	if err != nil {
+		return fmt.Errorf("local scan: %w", err)
+	}
+	logf(cfg.FolderLog, "[sync] local resources: %d", len(localMap))
 
 	// ── 4. Classify ──────────────────────────────────────────────────────────
 	actions := classify(remoteMap, localMap, dbState)
@@ -265,7 +266,13 @@ func Run(cfg Config) error {
 // If folders is non-empty only those top-level sub-directories (and their
 // descendants) are visited; the root entry is still included so the engine
 // can track the anchor point.
-func scanRemote(wdc *webdav.Client, folders []string, syncHiddenFiles bool) (map[string]*webdav.Resource, error) {
+//
+// Incremental optimisation: when a directory's ETag matches the stored DB
+// entry, its subtree is replayed from the DB instead of issuing further
+// PROPFIND requests. On ownCloud/CERNBox a directory's ETag changes whenever
+// any descendant changes, so an unchanged ETag guarantees the entire subtree
+// is identical to the last sync.
+func scanRemote(wdc *webdav.Client, folders []string, syncHiddenFiles bool, dbState map[string]*db.Entry) (map[string]*webdav.Resource, error) {
 	result := make(map[string]*webdav.Resource)
 
 	// Seed the BFS queue.
@@ -325,14 +332,60 @@ func scanRemote(wdc *webdav.Client, folders []string, syncHiddenFiles bool) (map
 
 			result[rel] = e
 
-			// Recurse into subdirectories (but not the entry we just came from).
 			if e.IsDir && rel != cur {
+				// Incremental check: if this directory has a DB entry whose ETag
+				// matches the server, the entire subtree is unchanged. Replay the
+				// DB entries and skip the PROPFIND traversal for this subtree.
+				if dbEntry, ok := dbState[rel]; ok && dbEntry.ETag == e.ETag {
+					if err := replaySubtree(rel, dbState, syncHiddenFiles, result); err != nil {
+						return nil, fmt.Errorf("replay subtree %q: %w", rel, err)
+					}
+					continue
+				}
 				queue = append(queue, rel)
 			}
 		}
 	}
 
 	return result, nil
+}
+
+// replaySubtree copies all DB entries under prefix into result without issuing
+// any network requests. Called when a directory's ETag is unchanged.
+func replaySubtree(prefix string, dbState map[string]*db.Entry, syncHiddenFiles bool, result map[string]*webdav.Resource) error {
+	for path, e := range dbState {
+		if !strings.HasPrefix(path, prefix+"/") {
+			continue
+		}
+		if _, seen := result[path]; seen {
+			continue
+		}
+		// Skip hidden entries unless enabled.
+		if !syncHiddenFiles {
+			name := path
+			if idx := strings.LastIndex(path, "/"); idx >= 0 {
+				name = path[idx+1:]
+			}
+			if isHidden(name, "") {
+				continue
+			}
+		}
+		result[path] = dbEntryToResource(e)
+	}
+	return nil
+}
+
+// dbEntryToResource converts a DB entry back into a webdav.Resource so that
+// replayed subtree entries are indistinguishable from freshly fetched ones.
+func dbEntryToResource(e *db.Entry) *webdav.Resource {
+	return &webdav.Resource{
+		Path:         e.Path,
+		ETag:         e.ETag,
+		IsDir:        e.IsDir,
+		Size:         e.Size,
+		LastModified: e.LastModified,
+		FileID:       e.FileID,
+	}
 }
 
 // ─── local scan ──────────────────────────────────────────────────────────────

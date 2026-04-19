@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -118,6 +119,42 @@ func (d *DB) Upsert(e Entry) error {
 		return fmt.Errorf("db upsert %q: %w", e.Path, err)
 	}
 	return nil
+}
+
+// AllUnder returns every entry whose path is strictly under the given prefix
+// (i.e. path starts with prefix+"/"). The prefix itself is not included.
+func (d *DB) AllUnder(prefix string) (map[string]*Entry, error) {
+	rows, err := d.conn.Query(
+		`SELECT path, etag, is_dir, size, last_modified, file_id FROM sync_state WHERE path LIKE ? ESCAPE '\'`,
+		escapeLike(prefix)+"/%",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("db allunder %q: %w", prefix, err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]*Entry)
+	for rows.Next() {
+		var e Entry
+		var modUnix int64
+		var isDir int
+		if err := rows.Scan(&e.Path, &e.ETag, &isDir, &e.Size, &modUnix, &e.FileID); err != nil {
+			return nil, err
+		}
+		e.IsDir = isDir != 0
+		e.LastModified = time.Unix(modUnix, 0)
+		result[e.Path] = &e
+	}
+	return result, rows.Err()
+}
+
+// escapeLike escapes special LIKE characters in s so it can be used as a
+// literal prefix in a LIKE pattern (with ESCAPE '\').
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 // Delete removes the entry for path.
