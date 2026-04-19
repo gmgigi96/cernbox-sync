@@ -7,12 +7,14 @@ import {
 import { openPath } from "@tauri-apps/plugin-opener";
 import type { DaemonState } from "../hooks/useDaemon";
 import type { Folder } from "../types";
+import { ipc } from "../ipc";
 import type { SyncProgress } from "../store/syncStore";
 
 interface DashboardProps {
   daemon: DaemonState;
   onNavigate: (p: "folders") => void;
   onOpenFolder: (folder: Folder) => void;
+  onOpenConflicts: () => void;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -136,7 +138,7 @@ function Section({ title, defaultOpen = true, children, badge }: {
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
 
-export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) {
+export function Dashboard({ daemon, onNavigate, onOpenFolder, onOpenConflicts }: DashboardProps) {
   const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, syncFolder, pauseAll, resumeAll } = daemon;
   const syncing = status?.syncing ?? [];
   const globalPaused = status?.global_paused ?? false;
@@ -148,7 +150,11 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) 
   const totalFiles = Object.values(status?.counts ?? {}).reduce((acc, c) => acc + c.files, 0);
   const totalSize = Object.values(status?.counts ?? {}).reduce((acc, c) => acc + c.size, 0);
 
-  const conflictCount = 0; // placeholder — no conflict API yet
+  const [conflictCount, setConflictCount] = useState(0);
+  useEffect(() => {
+    if (!daemonOnline) return;
+    ipc.listConflicts().then((c) => setConflictCount(c?.length ?? 0)).catch(() => {});
+  }, [daemonOnline, status?.last_sync]);
 
   if (loading) {
     return (
@@ -247,7 +253,7 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) 
           <StatCard label="Total Size" value={totalSize > 0 ? formatBytes(totalSize) : "—"} icon={<HardDrive size={16} strokeWidth={1.5} />} />
           <StatCard label="Currently Syncing" value={String(syncingCount)} icon={<RefreshCw size={16} strokeWidth={1.5} />} highlight={syncingCount > 0} />
           <StatCard label="Daemon" value={daemonOnline ? "Online" : "Offline"} icon={<Activity size={16} strokeWidth={1.5} />} ok={daemonOnline} err={!daemonOnline} />
-          <StatCard label="Conflicts" value={conflictCount > 0 ? String(conflictCount) : "None"} icon={<AlertTriangle size={16} strokeWidth={1.5} />} err={conflictCount > 0} />
+          <StatCard label="Conflicts" value={conflictCount > 0 ? String(conflictCount) : "None"} icon={<AlertTriangle size={16} strokeWidth={1.5} />} err={conflictCount > 0} onClick={conflictCount > 0 ? onOpenConflicts : undefined} />
         </div>
       </Section>
 
@@ -354,13 +360,16 @@ function TransferRow({ name, progress: p, pct }: { name: string; progress?: Sync
   );
 }
 
-function StatCard({ label, value, icon, highlight, ok, err }: {
+function StatCard({ label, value, icon, highlight, ok, err, onClick }: {
   label: string; value: string; icon: React.ReactNode;
-  highlight?: boolean; ok?: boolean; err?: boolean;
+  highlight?: boolean; ok?: boolean; err?: boolean; onClick?: () => void;
 }) {
   const color = err ? "var(--error)" : ok ? "var(--success)" : highlight ? "var(--tertiary)" : "var(--on-surface)";
   return (
-    <div style={S.statCard}>
+    <div
+      style={{ ...S.statCard, ...(onClick ? { cursor: "pointer" } : {}) }}
+      onClick={onClick}
+    >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
         <span style={{ color: "var(--outline)" }}>{icon}</span>
         <span className="label-sm">{label}</span>

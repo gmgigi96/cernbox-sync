@@ -453,3 +453,94 @@ func TestIntegration_RepeatedSyncsAreNoOp(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegration_Conflict_RecordedInDB: after a conflict sync, list-conflicts
+// must return the conflict entry for the affected folder.
+func TestIntegration_Conflict_RecordedInDB(t *testing.T) {
+	env := setup(t)
+
+	// Establish baseline.
+	env.writeRemote("report.txt", "original")
+	env.triggerSync()
+
+	// Diverge both sides.
+	env.writeRemote("report.txt", "server version")
+	env.writeLocal("report.txt", "local version")
+	env.triggerSync()
+
+	// The conflict must be visible via the IPC command.
+	conflicts := env.listConflicts(folderName)
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+	}
+	if conflicts[0].Path != "report.txt" {
+		t.Errorf("conflict path: got %q, want %q", conflicts[0].Path, "report.txt")
+	}
+	if !strings.Contains(conflicts[0].ConflictPath, ".conflict-") {
+		t.Errorf("conflict_path %q does not contain .conflict-", conflicts[0].ConflictPath)
+	}
+	if conflicts[0].Folder != folderName {
+		t.Errorf("conflict folder: got %q, want %q", conflicts[0].Folder, folderName)
+	}
+
+	// list-conflicts without a folder filter must also include this entry.
+	all := env.listConflicts("")
+	if len(all) != 1 {
+		t.Fatalf("global list-conflicts: expected 1, got %d", len(all))
+	}
+}
+
+// TestIntegration_Conflict_SweepOnResolve: once the user deletes the .conflict-*
+// file, the next sync must remove the DB record; list-conflicts returns empty.
+func TestIntegration_Conflict_SweepOnResolve(t *testing.T) {
+	env := setup(t)
+
+	// Establish baseline and create a conflict.
+	env.writeRemote("notes.txt", "original")
+	env.triggerSync()
+	env.writeRemote("notes.txt", "server version")
+	env.writeLocal("notes.txt", "local version")
+	env.triggerSync()
+
+	cfiles := env.conflictFiles("")
+	if len(cfiles) == 0 {
+		t.Fatal("expected a .conflict-* file after conflict sync")
+	}
+	if len(env.listConflicts(folderName)) != 1 {
+		t.Fatal("expected 1 conflict entry in DB after conflict sync")
+	}
+
+	// User resolves by deleting the conflict copy.
+	if err := os.Remove(filepath.Join(env.localDir, cfiles[0])); err != nil {
+		t.Fatalf("remove conflict file: %v", err)
+	}
+
+	// Next sync cycle sweeps the stale record.
+	env.triggerSync()
+
+	if got := env.listConflicts(folderName); len(got) != 0 {
+		t.Fatalf("expected 0 conflicts after resolution, got %d", len(got))
+	}
+}
+
+// TestIntegration_Conflict_NotUploadedOnNextSync: the .conflict-* copy must
+// never be uploaded to the remote server.
+func TestIntegration_Conflict_NotUploadedOnNextSync(t *testing.T) {
+	env := setup(t)
+
+	// Establish baseline and create a conflict.
+	env.writeRemote("data.txt", "original")
+	env.triggerSync()
+	env.writeRemote("data.txt", "server version")
+	env.writeLocal("data.txt", "local version")
+	env.triggerSync()
+
+	cfiles := env.conflictFiles("")
+	if len(cfiles) == 0 {
+		t.Fatal("expected a .conflict-* file after conflict sync")
+	}
+
+	// Run another sync; the conflict copy must not appear on the remote.
+	env.triggerSync()
+	env.assertInSync() // assertInSync excludes .conflict-* from its comparison
+}

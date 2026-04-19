@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -221,18 +220,3 @@ func (d *DB) DeleteConflict(conflictPath string) error {
 	return nil
 }
 
-// SweepConflicts removes conflict records whose conflict file no longer exists on disk.
-func (d *DB) SweepConflicts() error {
-	entries, err := d.AllConflicts()
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if _, statErr := os.Stat(e.ConflictPath); os.IsNotExist(statErr) {
-			if err := d.DeleteConflict(e.ConflictPath); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}

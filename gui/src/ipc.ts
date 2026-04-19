@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, Folder, SyncStatus } from "./types";
+import type { Account, ConflictEntry, Folder, SyncStatus } from "./types";
 
 export const ipc = {
   list(): Promise<Folder[]> {
@@ -53,7 +53,9 @@ export const ipc = {
   openLogFile(path: string): Promise<void> {
     return invoke("open_log_file", { path });
   },
-
+  listConflicts(name?: string): Promise<ConflictEntry[]> {
+    return invoke<ConflictEntry[]>("ipc_list_conflicts", { name: name ?? null });
+  },
 };
 
 export interface LocalEntry {

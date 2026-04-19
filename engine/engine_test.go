@@ -358,6 +358,21 @@ func (e *testEnv) dbGet(path string) *db.Entry {
 	return entry
 }
 
+// dbConflicts reads all conflict entries from the state DB.
+func (e *testEnv) dbConflicts() []db.ConflictEntry {
+	e.t.Helper()
+	d, err := db.Open(e.dbPath)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer d.Close()
+	entries, err := d.AllConflicts()
+	if err != nil {
+		e.t.Fatalf("dbConflicts: %v", err)
+	}
+	return entries
+}
+
 // conflictFiles returns names of files inside a local sub-directory whose names
 // contain ".conflict-" — i.e. files renamed by the conflict resolution logic.
 // Pass "." for the sync root itself.
@@ -954,6 +969,126 @@ func TestSync_IncrementalScan_ChangedSubtreeRescanned(t *testing.T) {
 	}
 	if !contains(pf, "docs") {
 		t.Fatalf("expected PROPFIND on docs/; got %v", pf)
+	}
+}
+
+// ─── conflict DB tests ────────────────────────────────────────────────────────
+
+// After a conflict, the sync state DB must contain exactly one conflict entry
+// recording the original path and the absolute path of the .conflict-* copy.
+func TestSync_Conflict_RecordedInDB(t *testing.T) {
+	env := setup(t)
+	oldTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	newTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+
+	env.dav.addFile("shared.txt", "server version", "etag-v2", newTime)
+	env.writeLocalAt("shared.txt", "local version", newTime)
+	env.seedDB(db.Entry{
+		Path:         "shared.txt",
+		ETag:         "etag-v1",
+		Size:         8, // local is 13 bytes → local also changed
+		LastModified: oldTime,
+	})
+
+	env.run()
+
+	entries := env.dbConflicts()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 conflict DB entry, got %d", len(entries))
+	}
+	if entries[0].Path != "shared.txt" {
+		t.Errorf("conflict Path: got %q, want %q", entries[0].Path, "shared.txt")
+	}
+	if !strings.Contains(entries[0].ConflictPath, ".conflict-") {
+		t.Errorf("conflict ConflictPath %q does not contain .conflict-", entries[0].ConflictPath)
+	}
+	if entries[0].CreatedAt.IsZero() {
+		t.Error("conflict CreatedAt should not be zero")
+	}
+}
+
+// After the user deletes the .conflict-* file on disk, the next sync must
+// remove the conflict DB entry (sweep) and not re-add it.
+func TestSync_Conflict_SweepOnResolve(t *testing.T) {
+	env := setup(t)
+	oldTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	newTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+
+	env.dav.addFile("shared.txt", "server version", "etag-v2", newTime)
+	env.writeLocalAt("shared.txt", "local version", newTime)
+	env.seedDB(db.Entry{
+		Path:         "shared.txt",
+		ETag:         "etag-v1",
+		Size:         8,
+		LastModified: oldTime,
+	})
+
+	// First sync: creates the conflict copy and DB entry.
+	env.run()
+
+	conflictFiles := env.conflictFiles(".")
+	if len(conflictFiles) == 0 {
+		t.Fatal("expected a .conflict-* file after first sync")
+	}
+	if len(env.dbConflicts()) != 1 {
+		t.Fatal("expected 1 conflict DB entry after first sync")
+	}
+
+	// User resolves by deleting the conflict copy.
+	conflictAbs := filepath.Join(env.localDir, conflictFiles[0])
+	if err := os.Remove(conflictAbs); err != nil {
+		t.Fatalf("remove conflict file: %v", err)
+	}
+
+	// Second sync: sweep must clear the DB entry.
+	env.run()
+
+	if len(env.dbConflicts()) != 0 {
+		t.Fatalf("expected 0 conflict DB entries after sweep, got %d", len(env.dbConflicts()))
+	}
+}
+
+// A second conflict on the same file (e.g. both sides changed again after the
+// first conflict was not yet resolved) must update the existing DB entry rather
+// than adding a duplicate.
+func TestSync_Conflict_MultipleConflictsOnSameFile(t *testing.T) {
+	env := setup(t)
+	oldTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	newTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+
+	env.dav.addFile("shared.txt", "server v2", "etag-v2", newTime)
+	env.writeLocalAt("shared.txt", "local version", newTime)
+	env.seedDB(db.Entry{
+		Path:         "shared.txt",
+		ETag:         "etag-v1",
+		Size:         8,
+		LastModified: oldTime,
+	})
+	env.run()
+
+	// Trigger a second conflict on the same original path.
+	laterTime := time.Date(2025, 1, 10, 10, 0, 0, 0, time.UTC)
+	env.dav.addFile("shared.txt", "server v3", "etag-v3", laterTime)
+	env.writeLocalAt("shared.txt", "local version 2", laterTime)
+	// DB now has etag-v2 from the previous sync; we seed it to simulate that.
+	env.seedDB(db.Entry{
+		Path:         "shared.txt",
+		ETag:         "etag-v2",
+		Size:         int64(len("server v2")),
+		LastModified: newTime,
+	})
+	env.run()
+
+	// There may be two distinct conflict copies on disk but each has a unique
+	// conflict_path, so both can coexist in the DB.
+	entries := env.dbConflicts()
+	if len(entries) == 0 {
+		t.Fatal("expected at least 1 conflict DB entry after second conflict")
+	}
+	for _, e := range entries {
+		if e.Path != "shared.txt" {
+			t.Errorf("unexpected conflict path %q", e.Path)
+		}
 	}
 }
 

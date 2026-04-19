@@ -42,6 +42,7 @@ interface FolderDetailProps {
   onBack: () => void;
   onRemove: () => void;
   onFolderUpdated: (f: FolderType) => void;
+  onOpenConflicts: () => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -241,7 +242,7 @@ export function sessionToActivity(s: SyncSession, isLeading: boolean): ActivityD
 }
 
 
-export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFolderUpdated }: FolderDetailProps) {
+export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFolderUpdated, onOpenConflicts }: FolderDetailProps) {
   const { status, daemonOnline, syncFolder, pauseFolder, resumeFolder } = daemon;
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -255,13 +256,18 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
     ipc.readTextFile(`${folder.LocalRoot}/.sync.log`).then((content) => {
       if (!content) return;
       const sessions = parseSyncLog(content);
-      const totalConflicts = sessions.reduce((sum, s) => sum + s.conflicts.length, 0);
-      setConflictCount(totalConflicts);
       const collapsed = collapseSessions(sessions.slice(-MAX_SESSIONS).reverse());
       const items = collapsed.map((s, i) => sessionToActivity(s, i === 0));
       setActivityItems(items);
     }).catch(() => {/* log file unreadable — leave empty */});
   }, [folder.LocalRoot, lastSyncTs]);
+
+  // Fetch real conflict count from daemon DB.
+  useEffect(() => {
+    ipc.listConflicts(folder.Name)
+      .then((c) => setConflictCount(c?.length ?? 0))
+      .catch(() => setConflictCount(null));
+  }, [folder.Name, lastSyncTs]);
 
   const syncing = status?.syncing?.includes(folder.Name) ?? false;
   const paused = status?.paused_folders?.includes(folder.Name) ?? false;
@@ -371,7 +377,10 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
             </p>
           </div>
 
-          <div style={s.statCard}>
+          <div
+            style={{ ...s.statCard, ...(conflictCount ? { cursor: "pointer" } : {}) }}
+            onClick={conflictCount ? onOpenConflicts : undefined}
+          >
             <p style={s.statLabel}>CONFLICTS</p>
             <p style={{ ...s.statValue, color: conflictCount ? "var(--tertiary)" : undefined }}>
               {conflictCount == null ? "—" : conflictCount.toLocaleString()}

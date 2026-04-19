@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSyncStore, type DaemonSnapshot, type DaemonEvent } from "./store/syncStore";
 import { Layout } from "./components/Layout";
 import { Dashboard } from "./pages/Dashboard";
+import { Conflicts } from "./pages/Conflicts";
 import { Folders } from "./pages/Folders";
 import { FolderDetail } from "./pages/FolderDetail";
 import { Settings } from "./pages/Settings";
@@ -72,6 +73,8 @@ export function App() {
   }, []);
   const [flow, setFlow] = useState<FlowStep>({ step: "none" });
   const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
+  // null = show all conflicts; string = show conflicts for that folder name
+  const [conflictFolder, setConflictFolder] = useState<string | null>(null);
   // null = still checking, false = no account, Account = loaded
   const [account, setAccount] = useState<Account | null | false>(null);
 
@@ -155,11 +158,17 @@ export function App() {
 
   function navigate(p: NavPage) {
     if (p !== "folderDetail") setSelectedFolder(null);
+    if (p !== "conflicts") setConflictFolder(null);
     setPage(p);
   }
 
-  // Map folderDetail → folders so sidebar highlights "Syncing Folders"
-  const sidebarPage: NavPage = page === "folderDetail" ? "folders" : page;
+  function openConflicts(folderName?: string) {
+    setConflictFolder(folderName ?? null);
+    setPage("conflicts");
+  }
+
+  // Map folderDetail/conflicts → folders so sidebar highlights correctly
+  const sidebarPage: NavPage = (page === "folderDetail" || page === "conflicts") ? "folders" : page;
 
   return (
     <Layout page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
@@ -168,6 +177,7 @@ export function App() {
           daemon={daemon}
           onNavigate={(p) => navigate(p)}
           onOpenFolder={(folder) => { setSelectedFolder(folder); setPage("folderDetail"); }}
+          onOpenConflicts={() => openConflicts()}
         />
       )}
       {page === "folders" && (
@@ -185,6 +195,20 @@ export function App() {
           onBack={() => { setSelectedFolder(null); setPage("folders"); }}
           onFolderUpdated={(f) => setSelectedFolder(f)}
           onRemove={() => { daemon.removeFolder(selectedFolder.Name); setSelectedFolder(null); setPage("folders"); }}
+          onOpenConflicts={() => openConflicts(selectedFolder.Name)}
+        />
+      )}
+      {page === "conflicts" && (
+        <Conflicts
+          folderName={conflictFolder ?? undefined}
+          onBack={() => {
+            if (conflictFolder && selectedFolder) {
+              setPage("folderDetail");
+            } else {
+              setConflictFolder(null);
+              setPage("dashboard");
+            }
+          }}
         />
       )}
       {page === "settings" && <Settings />}

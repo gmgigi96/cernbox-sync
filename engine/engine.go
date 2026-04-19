@@ -237,8 +237,18 @@ func Run(cfg Config) error {
 	defer state.Close()
 
 	// Remove conflict records whose .conflict- file has been deleted by the user.
-	if err := state.SweepConflicts(); err != nil {
+	if entries, err := state.AllConflicts(); err != nil {
 		logf(cfg.FolderLog, "[sync] WARNING sweep conflicts: %v", err)
+	} else {
+		for _, e := range entries {
+			if _, statErr := os.Stat(e.ConflictPath); os.IsNotExist(statErr) {
+				if err := state.DeleteConflict(e.ConflictPath); err != nil {
+					logf(cfg.FolderLog, "[sync] WARNING delete conflict record %q: %v", e.Path, err)
+				} else {
+					logf(cfg.FolderLog, "[sync] conflict resolved %q — conflict copy removed by user", e.Path)
+				}
+			}
+		}
 	}
 
 	// ── 1. Load DB state ─────────────────────────────────────────────────────

@@ -44,7 +44,14 @@ export interface Space {
   description: string;
 }
 
-export type NavPage = "dashboard" | "folders" | "settings" | "folderDetail";
+export type NavPage = "dashboard" | "folders" | "settings" | "folderDetail" | "conflicts";
+
+export interface ConflictEntry {
+  folder: string;
+  path: string;
+  conflict_path: string;
+  created_at: string;
+}
 
 export interface RemoteResource {
   href: string;           // full WebDAV href

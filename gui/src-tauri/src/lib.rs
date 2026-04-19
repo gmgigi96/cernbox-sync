@@ -70,6 +70,14 @@ struct IpcRequest {
     account: Option<AccountPayload>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ConflictEntry {
+    folder: String,
+    path: String,
+    conflict_path: String,
+    created_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct IpcResponse {
     ok: bool,
@@ -83,6 +91,8 @@ struct IpcResponse {
     settings: Option<SettingsPayload>,
     #[serde(default)]
     account: Option<AccountPayload>,
+    #[serde(default)]
+    conflicts: Vec<ConflictEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -475,6 +485,19 @@ fn ipc_set_settings(log_rotate_max_age: Option<String>, sync_interval: Option<St
 }
 
 #[tauri::command]
+fn ipc_list_conflicts(name: Option<String>) -> Result<Vec<ConflictEntry>, String> {
+    let req = IpcRequest {
+        cmd: "list-conflicts".into(),
+        folder: None,
+        name,
+        settings: None,
+        account: None,
+    };
+    let resp = ipc_send(&req)?;
+    Ok(resp.conflicts)
+}
+
+#[tauri::command]
 fn ipc_pause(name: Option<String>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "pause".into(),
@@ -703,6 +726,7 @@ pub fn run() {
             ipc_get_account,
             ipc_set_account,
             ipc_get_snapshot,
+            ipc_list_conflicts,
             list_local_dir,
             create_local_dir,
             read_text_file,

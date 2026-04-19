@@ -577,6 +577,41 @@ func (e *testEnv) trySync(name string) *ipc.Response {
 	return resp
 }
 
+// listConflicts sends list-conflicts to the daemon and returns the entries.
+// If name is non-empty only conflicts for that folder are returned.
+func (e *testEnv) listConflicts(name string) []ipc.ConflictEntry {
+	e.t.Helper()
+	resp, err := ipc.Send(e.sockPath, ipc.Request{Cmd: ipc.CmdListConflicts, Name: name})
+	if err != nil {
+		e.t.Fatalf("list-conflicts: %v", err)
+	}
+	if !resp.OK {
+		e.t.Fatalf("list-conflicts: daemon error: %s", resp.Error)
+	}
+	return resp.Conflicts
+}
+
+// conflictFiles returns the names (not full paths) of .conflict-* files in the
+// local sync root, or a subdirectory when subdir is non-empty.
+func (e *testEnv) conflictFiles(subdir string) []string {
+	e.t.Helper()
+	dir := e.localDir
+	if subdir != "" {
+		dir = filepath.Join(dir, subdir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		e.t.Fatalf("conflictFiles ReadDir %s: %v", dir, err)
+	}
+	var out []string
+	for _, de := range entries {
+		if strings.Contains(de.Name(), ".conflict-") {
+			out = append(out, de.Name())
+		}
+	}
+	return out
+}
+
 // ── misc helpers ──────────────────────────────────────────────────────────────
 
 func hashBytes(b []byte) string {
