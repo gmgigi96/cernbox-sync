@@ -7,6 +7,8 @@ export interface SyncProgress {
   done: number;
   total: number;
   current: string;
+  upload_bps: number;
+  download_bps: number;
 }
 
 export interface DaemonSnapshot {
@@ -32,6 +34,10 @@ export interface SyncState {
   status: SyncStatus;
   /** Per-folder real-time sync progress (only present while syncing). */
   progress: Record<string, SyncProgress>;
+  /** Aggregate upload bytes/sec across all currently-syncing folders. */
+  uploadBps: number;
+  /** Aggregate download bytes/sec across all currently-syncing folders. */
+  downloadBps: number;
   daemonOnline: boolean;
   loading: boolean;
   error: string | null;
@@ -48,6 +54,8 @@ export const useSyncStore = create<SyncState>((set) => ({
   folders: [],
   status: emptyStatus,
   progress: {},
+  uploadBps: 0,
+  downloadBps: 0,
   daemonOnline: false,
   loading: true,
   error: null,
@@ -75,15 +83,21 @@ export const useSyncStore = create<SyncState>((set) => ({
 
         case "sync_progress": {
           const name = event.folder!;
-          return {
-            progress: { ...state.progress, [name]: event.progress! },
-          };
+          const newProgress = { ...state.progress, [name]: event.progress! };
+          let up = 0, down = 0;
+          for (const p of Object.values(newProgress)) {
+            up += p.upload_bps ?? 0;
+            down += p.download_bps ?? 0;
+          }
+          return { progress: newProgress, uploadBps: up, downloadBps: down };
         }
 
         case "sync_completed": {
           const name = event.folder!;
           const newProgress = { ...state.progress };
           delete newProgress[name];
+          let up = 0, down = 0;
+          for (const p of Object.values(newProgress)) { up += p.upload_bps ?? 0; down += p.download_bps ?? 0; }
           return {
             status: {
               ...state.status,
@@ -94,6 +108,8 @@ export const useSyncStore = create<SyncState>((set) => ({
                 : state.status.counts,
             },
             progress: newProgress,
+            uploadBps: up,
+            downloadBps: down,
           };
         }
 
@@ -101,12 +117,16 @@ export const useSyncStore = create<SyncState>((set) => ({
           const name = event.folder!;
           const newProgress = { ...state.progress };
           delete newProgress[name];
+          let up = 0, down = 0;
+          for (const p of Object.values(newProgress)) { up += p.upload_bps ?? 0; down += p.download_bps ?? 0; }
           return {
             status: {
               ...state.status,
               syncing: state.status.syncing.filter((n) => n !== name),
             },
             progress: newProgress,
+            uploadBps: up,
+            downloadBps: down,
           };
         }
 

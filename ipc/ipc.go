@@ -45,9 +45,11 @@ const (
 
 // SyncProgressPayload describes how far a running sync has progressed.
 type SyncProgressPayload struct {
-	Done    int    `json:"done"`
-	Total   int    `json:"total"`
-	Current string `json:"current,omitempty"` // relative path of the item being processed
+	Done        int    `json:"done"`
+	Total       int    `json:"total"`
+	Current     string `json:"current,omitempty"`      // relative path of the item being processed
+	UploadBps   int64  `json:"upload_bps,omitempty"`   // current upload bytes/sec
+	DownloadBps int64  `json:"download_bps,omitempty"` // current download bytes/sec
 }
 
 // Event is pushed by the daemon to subscribed clients as newline-delimited JSON.

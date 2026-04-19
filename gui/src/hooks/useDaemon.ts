@@ -8,6 +8,10 @@ export interface DaemonState {
   status: SyncStatus;
   /** Real-time progress per folder name — only present while a sync is running. */
   progress: Record<string, SyncProgress>;
+  /** Aggregate upload bytes/sec across all currently-syncing folders. */
+  uploadBps: number;
+  /** Aggregate download bytes/sec across all currently-syncing folders. */
+  downloadBps: number;
   daemonOnline: boolean;
   loading: boolean;
   error: string | null;
@@ -19,7 +23,7 @@ export interface DaemonState {
 }
 
 export function useDaemon(): DaemonState {
-  const { folders, status, progress, daemonOnline, loading, error } = useSyncStore();
+  const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, error } = useSyncStore();
 
   // Manual refresh — re-fetches full state from the daemon directly.
   // Useful as a fallback when reconnecting after a missed event.
@@ -66,6 +70,8 @@ export function useDaemon(): DaemonState {
     folders,
     status,
     progress,
+    uploadBps,
+    downloadBps,
     daemonOnline,
     loading,
     error,

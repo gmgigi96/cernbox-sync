@@ -470,6 +470,10 @@ pub struct SyncProgressPayload {
     pub total: i32,
     #[serde(default)]
     pub current: String,
+    #[serde(default)]
+    pub upload_bps: i64,
+    #[serde(default)]
+    pub download_bps: i64,
 }
 
 /// A single push event emitted by the daemon over the subscribe connection.

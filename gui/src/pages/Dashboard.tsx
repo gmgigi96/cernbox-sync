@@ -45,37 +45,32 @@ function mostRecentSync(lastSync: Record<string, string>): string | null {
   return times.reduce((a, b) => (new Date(a) > new Date(b) ? a : b));
 }
 
-// ── Mock bandwidth data for sparklines ────────────────────────────────────────
+// ── Real bandwidth sparkline history ──────────────────────────────────────────
 
 const SPARKLINE_POINTS = 30;
 
-function generateMockBandwidth(): { up: number[]; down: number[] } {
-  const up: number[] = [];
-  const down: number[] = [];
-  for (let i = 0; i < SPARKLINE_POINTS; i++) {
-    up.push(Math.random() * 2_000_000 + 100_000);
-    down.push(Math.random() * 5_000_000 + 200_000);
-  }
-  return { up, down };
-}
+function useBandwidthHistory(uploadBps: number, downloadBps: number) {
+  const [history, setHistory] = useState<{ up: number[]; down: number[] }>(() => ({
+    up: Array(SPARKLINE_POINTS).fill(0),
+    down: Array(SPARKLINE_POINTS).fill(0),
+  }));
 
-function useMockBandwidth(active: boolean) {
-  const [data, setData] = useState<{ up: number[]; down: number[] }>(generateMockBandwidth);
+  // Keep a ref so the stable interval closure always reads the latest values.
+  const bpsRef = useRef({ uploadBps, downloadBps });
+  bpsRef.current = { uploadBps, downloadBps };
 
   useEffect(() => {
-    if (!active) return;
     const id = setInterval(() => {
-      setData((prev) => ({
-        up: [...prev.up.slice(1), Math.random() * 2_000_000 + 100_000],
-        down: [...prev.down.slice(1), Math.random() * 5_000_000 + 200_000],
+      const { uploadBps: up, downloadBps: down } = bpsRef.current;
+      setHistory((prev) => ({
+        up: [...prev.up.slice(1), up],
+        down: [...prev.down.slice(1), down],
       }));
-    }, 800);
+    }, 1000);
     return () => clearInterval(id);
-  }, [active]);
+  }, []); // stable — never recreated
 
-  const currentUp = data.up[data.up.length - 1] ?? 0;
-  const currentDown = data.down[data.down.length - 1] ?? 0;
-  return { data, currentUp, currentDown };
+  return history;
 }
 
 // ── Sparkline SVG ──────────────────────────────────────────────────────────────
@@ -142,12 +137,12 @@ function Section({ title, defaultOpen = true, children, badge }: {
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
 
 export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) {
-  const { folders, status, progress, daemonOnline, loading, syncFolder } = daemon;
+  const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, syncFolder } = daemon;
   const syncing = status?.syncing ?? [];
   const syncingCount = syncing.length;
   const totalFolders = folders.length;
   const lastSyncTs = status ? mostRecentSync(status.last_sync) : null;
-  const { data: bw, currentUp, currentDown } = useMockBandwidth(daemonOnline);
+  const bw = useBandwidthHistory(uploadBps, downloadBps);
 
   const totalFiles = Object.values(status?.counts ?? {}).reduce((acc, c) => acc + c.files, 0);
   const totalSize = Object.values(status?.counts ?? {}).reduce((acc, c) => acc + c.size, 0);
@@ -241,27 +236,27 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) 
       </Section>
 
       {/* ── 3. Bandwidth sparklines ───────────────────────────────────────────── */}
-      <Section title="Bandwidth" defaultOpen badge={<span className="chip chip-syncing" style={{ fontSize: "0.6rem" }}>MOCK</span>}>
+      <Section title="Bandwidth" defaultOpen>
         <div style={S.bwRow}>
           <BandwidthCard
             label="Upload"
             icon={<ArrowUp size={13} strokeWidth={1.5} style={{ color: "var(--primary)" }} />}
-            current={currentUp}
+            current={uploadBps}
             values={bw.up}
             color="var(--primary)"
           />
           <BandwidthCard
             label="Download"
             icon={<ArrowDown size={13} strokeWidth={1.5} style={{ color: "var(--success)" }} />}
-            current={currentDown}
+            current={downloadBps}
             values={bw.down}
             color="var(--success)"
           />
           <BandwidthCard
             label="Combined"
             icon={<ArrowUpDown size={13} strokeWidth={1.5} style={{ color: "var(--tertiary)" }} />}
-            current={currentUp + currentDown}
-            values={bw.up.map((u, i) => u + (bw.down[i] ?? 0))}
+            current={uploadBps + downloadBps}
+            values={bw.up.map((u: number, i: number) => u + (bw.down[i] ?? 0))}
             color="var(--tertiary)"
           />
         </div>

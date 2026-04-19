@@ -269,14 +269,16 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		DownloadLimiter: downloadLimiter,
 		TransferStreams:  transferStreams,
 		MetadataStreams:  metadataStreams,
-		OnProgress: func(done, total int, current string) {
+		OnProgress: func(done, total int, current string, uploadBps, downloadBps int64) {
 			d.bus.publish(ipc.Event{
 				Type:   ipc.EventSyncProgress,
 				Folder: f.Name,
 				Progress: &ipc.SyncProgressPayload{
-					Done:    done,
-					Total:   total,
-					Current: current,
+					Done:        done,
+					Total:       total,
+					Current:     current,
+					UploadBps:   uploadBps,
+					DownloadBps: downloadBps,
 				},
 			})
 		},
