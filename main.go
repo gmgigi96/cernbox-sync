@@ -27,6 +27,8 @@ Commands:
   list          List registered sync folder pairs
   remove        Remove a registered sync folder pair
   run           Trigger a sync cycle in the daemon (non-blocking)
+  pause         Pause syncing globally or for a specific folder
+  resume        Resume syncing globally or for a specific folder
   status        Show the daemon's current sync status
   stop          Ask the daemon to shut down
   set-settings  Configure daemon settings (e.g. log rotation)
@@ -56,6 +58,10 @@ func main() {
 		cmdRemove(os.Args[2:])
 	case "run":
 		cmdRun(os.Args[2:])
+	case "pause":
+		cmdPause(os.Args[2:])
+	case "resume":
+		cmdResume(os.Args[2:])
 	case "status":
 		cmdStatus(os.Args[2:])
 	case "stop":
@@ -180,6 +186,36 @@ func cmdRun(args []string) {
 	}
 }
 
+// ── pause ─────────────────────────────────────────────────────────────────────
+
+func cmdPause(args []string) {
+	fs := flag.NewFlagSet("pause", flag.ExitOnError)
+	name := fs.String("name", "", "Name of the folder to pause (omit to pause globally)")
+	fs.Parse(args)
+
+	send(ipc.Request{Cmd: ipc.CmdPause, Name: *name})
+	if *name != "" {
+		fmt.Printf("Paused folder %q\n", *name)
+	} else {
+		fmt.Println("Syncing paused globally")
+	}
+}
+
+// ── resume ────────────────────────────────────────────────────────────────────
+
+func cmdResume(args []string) {
+	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+	name := fs.String("name", "", "Name of the folder to resume (omit to resume globally)")
+	fs.Parse(args)
+
+	send(ipc.Request{Cmd: ipc.CmdResume, Name: *name})
+	if *name != "" {
+		fmt.Printf("Resumed folder %q\n", *name)
+	} else {
+		fmt.Println("Syncing resumed globally")
+	}
+}
+
 // ── status ───────────────────────────────────────────────────────────────────
 
 func cmdStatus(args []string) {
@@ -189,6 +225,13 @@ func cmdStatus(args []string) {
 	resp := send(ipc.Request{Cmd: ipc.CmdStatus})
 	s := resp.Status
 
+	if s.GlobalPaused {
+		fmt.Println("Status:            PAUSED (globally)")
+	}
+	if len(s.PausedFolders) > 0 {
+		sort.Strings(s.PausedFolders)
+		fmt.Printf("Paused folders:    %s\n", strings.Join(s.PausedFolders, ", "))
+	}
 	sort.Strings(s.Syncing)
 	if len(s.Syncing) > 0 {
 		fmt.Printf("Currently syncing: %s\n", strings.Join(s.Syncing, ", "))

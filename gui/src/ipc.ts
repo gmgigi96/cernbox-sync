@@ -23,6 +23,12 @@ export const ipc = {
   sync(name?: string): Promise<void> {
     return invoke("ipc_sync", { name: name ?? null });
   },
+  pause(name?: string): Promise<void> {
+    return invoke("ipc_pause", { name: name ?? null });
+  },
+  resume(name?: string): Promise<void> {
+    return invoke("ipc_resume", { name: name ?? null });
+  },
   status(): Promise<SyncStatus> {
     return invoke<SyncStatus>("ipc_status");
   },

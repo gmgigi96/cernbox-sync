@@ -46,10 +46,12 @@ type Daemon struct {
 	// cancel is set by Run; calling it shuts the daemon down.
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
-	syncing  map[string]bool           // folders currently being synced
-	lastSync map[string]time.Time      // time of last successful sync per folder
-	counts   map[string]ipc.FileCounts // local file/dir counts after last sync
+	mu           sync.Mutex
+	syncing      map[string]bool              // folders currently being synced
+	syncCancels  map[string]context.CancelFunc // cancel funcs for in-progress syncs
+	lastSync     map[string]time.Time         // time of last successful sync per folder
+	counts       map[string]ipc.FileCounts    // local file/dir counts after last sync
+	globalPaused bool                         // all syncing paused when true
 
 	bus *eventBus // push-event broadcaster
 
@@ -70,7 +72,7 @@ type Daemon struct {
 	metadataStreams int
 
 	// syncTicker is the periodic sync ticker; reset when the interval changes.
-	syncTicker     *time.Ticker
+	syncTicker      *time.Ticker
 	syncTickerReset chan time.Duration // send a new duration to reset the ticker
 
 	// filesystem watcher (auto-sync on change)
@@ -94,6 +96,7 @@ func New(cfgDB *config.DB, interval time.Duration, log *slog.Logger) *Daemon {
 		interval:         interval,
 		log:              log,
 		syncing:          make(map[string]bool),
+		syncCancels:      make(map[string]context.CancelFunc),
 		lastSync:         make(map[string]time.Time),
 		counts:           make(map[string]ipc.FileCounts),
 		watchedRoots:     make(map[string]config.Folder),
@@ -123,6 +126,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 		d.downloadLimiter = newLimiter(s.DownloadBandwidth)
 		d.transferStreams = s.TransferStreams
 		d.metadataStreams = s.MetadataStreams
+		d.globalPaused = s.GlobalPaused
 	}
 
 	// Remove stale socket from a previous (crashed) run.
@@ -188,6 +192,14 @@ func (d *Daemon) syncLoop(ctx context.Context) {
 }
 
 func (d *Daemon) syncAll() {
+	d.mu.Lock()
+	paused := d.globalPaused
+	d.mu.Unlock()
+	if paused {
+		d.log.Info("[daemon] sync cycle skipped — globally paused")
+		return
+	}
+
 	folders, err := d.cfgDB.All()
 	if err != nil {
 		d.log.Error("[daemon] list folders", "err", err)
@@ -195,6 +207,10 @@ func (d *Daemon) syncAll() {
 	}
 	d.log.Info("[daemon] starting sync cycle", "folders", len(folders))
 	for _, f := range folders {
+		if f.Settings.Paused {
+			d.log.Debug("[daemon] skipping paused folder", "folder", f.Name)
+			continue
+		}
 		d.syncFolder(f)
 	}
 	d.log.Info("[daemon] sync cycle complete")
@@ -207,7 +223,9 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		d.log.Debug("[daemon] already syncing, skipping", "folder", f.Name)
 		return
 	}
+	ctx, cancelSync := context.WithCancel(context.Background())
 	d.syncing[f.Name] = true
+	d.syncCancels[f.Name] = cancelSync
 	d.mu.Unlock()
 
 	start := time.Now()
@@ -216,10 +234,12 @@ func (d *Daemon) syncFolder(f config.Folder) {
 
 	var syncErr error
 	defer func() {
+		cancelSync() // always release resources
 		c := countLocalEntries(f.LocalRoot)
 		now := time.Now()
 		d.mu.Lock()
 		delete(d.syncing, f.Name)
+		delete(d.syncCancels, f.Name)
 		d.lastSync[f.Name] = now
 		d.counts[f.Name] = c
 		d.mu.Unlock()
@@ -257,6 +277,7 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	d.mu.Unlock()
 
 	cfg := engine.Config{
+		Ctx:             ctx,
 		LocalRoot:       f.LocalRoot,
 		RemoteBase:      f.RemoteBase,
 		Folders:         f.Folders,
@@ -358,15 +379,24 @@ func (d *Daemon) handleSubscribe(ctx context.Context, conn net.Conn) {
 	}
 	counts := make(map[string]ipc.FileCounts, len(d.counts))
 	maps.Copy(counts, d.counts)
+	globalPaused := d.globalPaused
 	d.mu.Unlock()
+	var pausedFolders []string
+	for _, f := range folders {
+		if f.Settings.Paused {
+			pausedFolders = append(pausedFolders, f.Name)
+		}
+	}
 
 	snapshot := ipc.SubscribeResponse{
 		OK:      true,
 		Folders: folders,
 		Status: &ipc.Status{
-			Syncing:  syncing,
-			LastSync: last,
-			Counts:   counts,
+			Syncing:       syncing,
+			LastSync:      last,
+			Counts:        counts,
+			GlobalPaused:  globalPaused,
+			PausedFolders: pausedFolders,
 		},
 	}
 	if err := json.NewEncoder(conn).Encode(snapshot); err != nil {
@@ -469,7 +499,92 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderUpdated, FolderData: &req.Folder})
 		return ok()
 
+	case ipc.CmdPause:
+		if req.Name != "" {
+			// Per-folder pause.
+			f, err := d.cfgDB.Get(req.Name)
+			if err != nil {
+				return fail(err.Error())
+			}
+			if f == nil {
+				return fail(fmt.Sprintf("folder %q not found", req.Name))
+			}
+			f.Settings.Paused = true
+			if err := d.cfgDB.Update(*f); err != nil {
+				return fail(err.Error())
+			}
+			// Cancel any running sync for this folder.
+			d.mu.Lock()
+			if cancel, ok := d.syncCancels[req.Name]; ok {
+				cancel()
+			}
+			d.mu.Unlock()
+			d.log.Info("[daemon] pause: paused folder", "folder", req.Name)
+			d.bus.publish(ipc.Event{Type: ipc.EventSyncPaused, Folder: req.Name, FolderData: f})
+		} else {
+			// Global pause.
+			d.mu.Lock()
+			d.globalPaused = true
+			// Cancel all in-progress syncs.
+			for _, cancel := range d.syncCancels {
+				cancel()
+			}
+			d.mu.Unlock()
+			// Persist.
+			s, err := d.cfgDB.GetSettings()
+			if err != nil {
+				return fail("read settings: " + err.Error())
+			}
+			s.GlobalPaused = true
+			if err := d.cfgDB.SetSettings(s); err != nil {
+				return fail(err.Error())
+			}
+			d.log.Info("[daemon] pause: globally paused")
+			d.bus.publish(ipc.Event{Type: ipc.EventSyncPaused})
+		}
+		return ok()
+
+	case ipc.CmdResume:
+		if req.Name != "" {
+			// Per-folder resume.
+			f, err := d.cfgDB.Get(req.Name)
+			if err != nil {
+				return fail(err.Error())
+			}
+			if f == nil {
+				return fail(fmt.Sprintf("folder %q not found", req.Name))
+			}
+			f.Settings.Paused = false
+			if err := d.cfgDB.Update(*f); err != nil {
+				return fail(err.Error())
+			}
+			d.log.Info("[daemon] resume: resumed folder", "folder", req.Name)
+			d.bus.publish(ipc.Event{Type: ipc.EventSyncResumed, Folder: req.Name, FolderData: f})
+		} else {
+			// Global resume.
+			d.mu.Lock()
+			d.globalPaused = false
+			d.mu.Unlock()
+			s, err := d.cfgDB.GetSettings()
+			if err != nil {
+				return fail("read settings: " + err.Error())
+			}
+			s.GlobalPaused = false
+			if err := d.cfgDB.SetSettings(s); err != nil {
+				return fail(err.Error())
+			}
+			d.log.Info("[daemon] resume: globally resumed")
+			d.bus.publish(ipc.Event{Type: ipc.EventSyncResumed})
+		}
+		return ok()
+
 	case ipc.CmdSync:
+		d.mu.Lock()
+		globalPaused := d.globalPaused
+		d.mu.Unlock()
+		if globalPaused {
+			return fail("syncing is globally paused; resume first")
+		}
 		var folders []config.Folder
 		if req.Name != "" {
 			d.log.Debug("[daemon] sync: requested for folder", "folder", req.Name)
@@ -479,6 +594,9 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			}
 			if f == nil {
 				return fail(fmt.Sprintf("folder %q not found", req.Name))
+			}
+			if f.Settings.Paused {
+				return fail(fmt.Sprintf("folder %q is paused; resume it first", req.Name))
 			}
 			folders = []config.Folder{*f}
 		} else {
@@ -491,6 +609,14 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			if len(folders) == 0 {
 				return fail("no sync folders registered; use 'cernbox-sync add' to add one")
 			}
+			// Filter out individually paused folders.
+			var active []config.Folder
+			for _, f := range folders {
+				if !f.Settings.Paused {
+					active = append(active, f)
+				}
+			}
+			folders = active
 		}
 		d.log.Debug("[daemon] sync: dispatching", "count", len(folders))
 		for _, f := range folders {
@@ -510,12 +636,22 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		counts := make(map[string]ipc.FileCounts, len(d.counts))
 		maps.Copy(counts, d.counts)
+		globalPaused := d.globalPaused
 		d.mu.Unlock()
+		folders, _ := d.cfgDB.All()
+		var pausedFolders []string
+		for _, f := range folders {
+			if f.Settings.Paused {
+				pausedFolders = append(pausedFolders, f.Name)
+			}
+		}
 		d.log.Debug("[daemon] status", "syncing", syncing, "last", last)
 		return ipc.Response{OK: true, Status: &ipc.Status{
-			Syncing:  syncing,
-			LastSync: last,
-			Counts:   counts,
+			Syncing:       syncing,
+			LastSync:      last,
+			Counts:        counts,
+			GlobalPaused:  globalPaused,
+			PausedFolders: pausedFolders,
 		}}
 
 	case ipc.CmdStop:

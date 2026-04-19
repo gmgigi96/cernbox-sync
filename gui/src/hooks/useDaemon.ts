@@ -20,6 +20,10 @@ export interface DaemonState {
   updateFolder: (f: Folder) => Promise<void>;
   removeFolder: (name: string) => Promise<void>;
   syncFolder: (name?: string) => Promise<void>;
+  pauseFolder: (name: string) => Promise<void>;
+  resumeFolder: (name: string) => Promise<void>;
+  pauseAll: () => Promise<void>;
+  resumeAll: () => Promise<void>;
 }
 
 export function useDaemon(): DaemonState {
@@ -66,6 +70,26 @@ export function useDaemon(): DaemonState {
     // State is updated automatically via sync_started / sync_completed events.
   }, []);
 
+  const pauseFolder = useCallback(async (name: string) => {
+    await ipc.pause(name);
+    // State is updated automatically via sync_paused event.
+  }, []);
+
+  const resumeFolder = useCallback(async (name: string) => {
+    await ipc.resume(name);
+    // State is updated automatically via sync_resumed event.
+  }, []);
+
+  const pauseAll = useCallback(async () => {
+    await ipc.pause();
+    // State is updated automatically via sync_paused event.
+  }, []);
+
+  const resumeAll = useCallback(async () => {
+    await ipc.resume();
+    // State is updated automatically via sync_resumed event.
+  }, []);
+
   return {
     folders,
     status,
@@ -80,5 +104,9 @@ export function useDaemon(): DaemonState {
     updateFolder,
     removeFolder,
     syncFolder,
+    pauseFolder,
+    resumeFolder,
+    pauseAll,
+    resumeAll,
   };
 }

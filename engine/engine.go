@@ -119,6 +119,10 @@ func (rl *rateLimitedReader) Read(p []byte) (int, error) {
 
 // Config holds the parameters for a sync session.
 type Config struct {
+	// Ctx is an optional context for cancelling an in-progress sync.
+	// When cancelled, the execute phase stops after the current in-flight
+	// operations finish. If nil, context.Background() is used.
+	Ctx context.Context
 	// LocalRoot is the absolute path of the local directory to sync.
 	LocalRoot string
 	// RemoteBase is the full WebDAV URL of the remote root directory.
@@ -192,6 +196,11 @@ func logf(fl *synclog.Logger, format string, args ...any) {
 
 // Run executes one full sync cycle.
 func Run(cfg Config) error {
+	ctx := cfg.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	logf(cfg.FolderLog, "[sync] starting — local: %s  remote: %s", cfg.LocalRoot, cfg.RemoteBase)
 
 	wdc := webdav.NewClient(cfg.RemoteBase, cfg.Username, cfg.Password)
@@ -203,6 +212,9 @@ func Run(cfg Config) error {
 	defer state.Close()
 
 	// ── 1. Remote scan ───────────────────────────────────────────────────────
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	remoteMap, err := scanRemote(wdc, cfg.Folders, cfg.SyncHiddenFiles)
 	if err != nil {
 		return fmt.Errorf("remote scan: %w", err)
@@ -210,6 +222,9 @@ func Run(cfg Config) error {
 	logf(cfg.FolderLog, "[sync] remote resources: %d", len(remoteMap))
 
 	// ── 2. Local scan ────────────────────────────────────────────────────────
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	localMap, err := scanLocal(cfg.LocalRoot, cfg.SyncHiddenFiles)
 	if err != nil {
 		return fmt.Errorf("local scan: %w", err)
@@ -217,6 +232,9 @@ func Run(cfg Config) error {
 	logf(cfg.FolderLog, "[sync] local resources: %d", len(localMap))
 
 	// ── 3. Load DB state ─────────────────────────────────────────────────────
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	dbState, err := state.All()
 	if err != nil {
 		return fmt.Errorf("load db: %w", err)
@@ -230,7 +248,7 @@ func Run(cfg Config) error {
 	// ── 5. Execute ───────────────────────────────────────────────────────────
 	uploadCounter := &bandwidthCounter{}
 	downloadCounter := &bandwidthCounter{}
-	if err := execute(cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter, uploadCounter, downloadCounter, cfg.TransferStreams, cfg.MetadataStreams); err != nil {
+	if err := execute(ctx, cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter, uploadCounter, downloadCounter, cfg.TransferStreams, cfg.MetadataStreams); err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}
 
@@ -521,6 +539,7 @@ func depth(p string) int         { return strings.Count(p, "/") }
 // ─── execute ─────────────────────────────────────────────────────────────────
 
 func execute(
+	ctx context.Context,
 	localRoot string,
 	fl *synclog.Logger,
 	wdc *webdav.Client,
@@ -561,6 +580,7 @@ func execute(
 
 	// runPool dispatches a slice of actions to a worker pool of size n.
 	// All actions are independent within the slice (caller guarantees this).
+	// Workers stop picking up new actions when ctx is cancelled.
 	runPool := func(items []action, n int) {
 		if len(items) == 0 {
 			return
@@ -574,6 +594,9 @@ func execute(
 		for range n {
 			wg.Go(func() {
 				for a := range work {
+					if ctx.Err() != nil {
+						return
+					}
 					if onProgress != nil {
 						doneMu.Lock()
 						d := done

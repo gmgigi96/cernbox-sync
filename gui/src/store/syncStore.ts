@@ -154,6 +154,48 @@ export const useSyncStore = create<SyncState>((set) => ({
           };
         }
 
+        case "sync_paused": {
+          if (!event.folder) {
+            // Global pause
+            return {
+              status: { ...state.status, global_paused: true },
+            };
+          }
+          // Per-folder pause: update the folder's settings in the list
+          const f = event.folder_data;
+          return {
+            folders: f
+              ? state.folders.map((x) => (x.Name === f.Name ? f : x))
+              : state.folders,
+            status: {
+              ...state.status,
+              paused_folders: [
+                ...(state.status.paused_folders ?? []).filter((n) => n !== event.folder),
+                event.folder,
+              ],
+            },
+          };
+        }
+
+        case "sync_resumed": {
+          if (!event.folder) {
+            // Global resume
+            return {
+              status: { ...state.status, global_paused: false },
+            };
+          }
+          const f = event.folder_data;
+          return {
+            folders: f
+              ? state.folders.map((x) => (x.Name === f.Name ? f : x))
+              : state.folders,
+            status: {
+              ...state.status,
+              paused_folders: (state.status.paused_folders ?? []).filter((n) => n !== event.folder),
+            },
+          };
+        }
+
         default:
           return {};
       }

@@ -14,6 +14,8 @@ pub struct FolderSettings {
     pub sync_hidden_files: bool,
     #[serde(default)]
     pub auto_sync_on_change: bool,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -97,6 +99,10 @@ pub struct StatusPayload {
     last_sync: HashMap<String, String>,
     #[serde(default)]
     counts: HashMap<String, FileCounts>,
+    #[serde(default)]
+    global_paused: bool,
+    #[serde(default)]
+    paused_folders: Vec<String>,
 }
 
 // ── Tauri-facing status type ──────────────────────────────────────────────────
@@ -106,6 +112,8 @@ pub struct SyncStatus {
     pub syncing: Vec<String>,
     pub last_sync: HashMap<String, String>,
     pub counts: HashMap<String, FileCounts>,
+    pub global_paused: bool,
+    pub paused_folders: Vec<String>,
 }
 
 // ── Daemon sidecar state (Windows only) ───────────────────────────────────────
@@ -224,6 +232,7 @@ fn ipc_add(name: String, local_root: String, remote_base: String, folders: Optio
             settings: FolderSettings {
                 sync_hidden_files: sync_hidden_files.unwrap_or(false),
                 auto_sync_on_change: auto_sync_on_change.unwrap_or(false),
+                paused: false,
             },
         }),
         name: None,
@@ -285,6 +294,7 @@ fn ipc_update(name: String, local_root: String, remote_base: String, folders: Op
             settings: FolderSettings {
                 sync_hidden_files: sync_hidden_files.unwrap_or(false),
                 auto_sync_on_change: auto_sync_on_change.unwrap_or(false),
+                paused: false,
             },
         }),
         name: None,
@@ -323,6 +333,8 @@ fn ipc_status() -> Result<SyncStatus, String> {
         syncing: s.syncing,
         last_sync: s.last_sync,
         counts: s.counts,
+        global_paused: s.global_paused,
+        paused_folders: s.paused_folders,
     })
 }
 
@@ -456,6 +468,32 @@ fn ipc_set_settings(log_rotate_max_age: Option<String>, sync_interval: Option<St
         folder: None,
         name: None,
         settings: Some(SettingsPayload { log_rotate_max_age, sync_interval, upload_bandwidth, download_bandwidth, transfer_streams, metadata_streams }),
+        account: None,
+    };
+    ipc_send(&req)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn ipc_pause(name: Option<String>) -> Result<(), String> {
+    let req = IpcRequest {
+        cmd: "pause".into(),
+        folder: None,
+        name,
+        settings: None,
+        account: None,
+    };
+    ipc_send(&req)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn ipc_resume(name: Option<String>) -> Result<(), String> {
+    let req = IpcRequest {
+        cmd: "resume".into(),
+        folder: None,
+        name,
+        settings: None,
         account: None,
     };
     ipc_send(&req)?;
@@ -652,6 +690,8 @@ pub fn run() {
             ipc_update,
             ipc_remove,
             ipc_sync,
+            ipc_pause,
+            ipc_resume,
             ipc_status,
             ipc_stop,
             ipc_get_settings,

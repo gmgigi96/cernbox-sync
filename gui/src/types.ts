@@ -3,6 +3,8 @@ export interface FolderSettings {
   sync_hidden_files: boolean;
   /** Trigger an immediate sync whenever a local filesystem change is detected. */
   auto_sync_on_change: boolean;
+  /** Suspend automatic and manual syncing for this folder. */
+  paused?: boolean;
 }
 
 export interface Folder {
@@ -30,6 +32,8 @@ export interface SyncStatus {
   syncing: string[];
   last_sync: Record<string, string>; // folder name → RFC 3339 timestamp
   counts: Record<string, FileCounts>; // folder name → local file/dir counts after last sync
+  global_paused?: boolean;
+  paused_folders?: string[];
 }
 
 export interface Space {

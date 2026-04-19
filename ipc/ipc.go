@@ -30,6 +30,10 @@ const (
 	CmdSetAccount  = "set-account"
 	// CmdSubscribe keeps the connection open and streams push events.
 	CmdSubscribe = "subscribe"
+	// CmdPause pauses syncing globally (Name=="") or for a specific folder.
+	CmdPause = "pause"
+	// CmdResume resumes syncing globally (Name=="") or for a specific folder.
+	CmdResume = "resume"
 )
 
 // Event type names pushed by the daemon to subscribed clients.
@@ -41,6 +45,8 @@ const (
 	EventFolderAdded   = "folder_added"
 	EventFolderRemoved = "folder_removed"
 	EventFolderUpdated = "folder_updated"
+	EventSyncPaused    = "sync_paused"
+	EventSyncResumed   = "sync_resumed"
 )
 
 // SyncProgressPayload describes how far a running sync has progressed.
@@ -136,6 +142,10 @@ type Status struct {
 	LastSync map[string]string `json:"last_sync"`
 	// Counts maps folder name → local file/dir counts after the last sync.
 	Counts map[string]FileCounts `json:"counts,omitempty"`
+	// GlobalPaused is true when all syncing has been paused globally.
+	GlobalPaused bool `json:"global_paused,omitempty"`
+	// PausedFolders is the set of individually paused folder names.
+	PausedFolders []string `json:"paused_folders,omitempty"`
 }
 
 // SocketPath returns the platform-appropriate Unix socket path for the daemon.

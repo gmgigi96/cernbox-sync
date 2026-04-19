@@ -52,6 +52,8 @@ const (
 	// KeyMetadataStreams holds the number of concurrent metadata operations
 	// (directory creates and deletes) per depth tier. 0 or 1 means sequential.
 	KeyMetadataStreams = "metadata_streams"
+	// KeyGlobalPaused holds "1" when all syncing is paused globally.
+	KeyGlobalPaused = "global_paused"
 )
 
 // FolderSettings holds per-folder sync preferences.
@@ -62,6 +64,8 @@ type FolderSettings struct {
 	// AutoSyncOnChange triggers an immediate sync whenever a filesystem change
 	// is detected inside the local root. Defaults to false.
 	AutoSyncOnChange bool `json:"auto_sync_on_change"`
+	// Paused suspends automatic and manual syncing for this folder.
+	Paused bool `json:"paused,omitempty"`
 }
 
 // Folder represents one registered sync pair.
@@ -287,6 +291,8 @@ type Settings struct {
 	// MetadataStreams is the number of concurrent metadata operations
 	// (directory creates and deletes) per depth tier. 0 or 1 means sequential.
 	MetadataStreams int
+	// GlobalPaused suspends all automatic and manual syncing when true.
+	GlobalPaused bool
 }
 
 // GetSettings reads the current settings from the DB, returning defaults for
@@ -357,6 +363,8 @@ func (d *DB) GetSettings() (Settings, error) {
 				}
 				s.MetadataStreams = v
 			}
+		case KeyGlobalPaused:
+			s.GlobalPaused = value == "1"
 		}
 	}
 	return s, rows.Err()
@@ -389,6 +397,10 @@ func (d *DB) SetSettings(s Settings) error {
 	if s.MetadataStreams > 0 {
 		metadataStreams = fmt.Sprintf("%d", s.MetadataStreams)
 	}
+	globalPaused := ""
+	if s.GlobalPaused {
+		globalPaused = "1"
+	}
 	pairs := []struct{ k, v string }{
 		{KeyLogRotateMaxAge, maxAge},
 		{KeyAccountUsername, s.AccountUsername},
@@ -398,6 +410,7 @@ func (d *DB) SetSettings(s Settings) error {
 		{KeyDownloadBandwidth, downloadBW},
 		{KeyTransferStreams, transferStreams},
 		{KeyMetadataStreams, metadataStreams},
+		{KeyGlobalPaused, globalPaused},
 	}
 	for _, p := range pairs {
 		if _, err := d.conn.Exec(

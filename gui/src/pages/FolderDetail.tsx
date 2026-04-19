@@ -13,6 +13,8 @@ import {
   Download,
   Upload,
   AlertTriangle,
+  PauseCircle,
+  PlayCircle,
 } from "lucide-react";
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { DaemonState } from "../hooks/useDaemon";
@@ -240,7 +242,7 @@ export function sessionToActivity(s: SyncSession, isLeading: boolean): ActivityD
 
 
 export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFolderUpdated }: FolderDetailProps) {
-  const { status, daemonOnline, syncFolder } = daemon;
+  const { status, daemonOnline, syncFolder, pauseFolder, resumeFolder } = daemon;
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activityItems, setActivityItems] = useState<ActivityData[]>([]);
@@ -262,11 +264,22 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
   }, [folder.LocalRoot, lastSyncTs]);
 
   const syncing = status?.syncing?.includes(folder.Name) ?? false;
+  const paused = status?.paused_folders?.includes(folder.Name) ?? false;
   const counts = status?.counts?.[folder.Name] ?? null;
 
   function handleSync() {
     setMenuOpen(false);
     syncFolder(folder.Name);
+  }
+
+  function handlePause() {
+    setMenuOpen(false);
+    pauseFolder(folder.Name);
+  }
+
+  function handleResume() {
+    setMenuOpen(false);
+    resumeFolder(folder.Name);
   }
 
   function handleRemove() {
@@ -318,9 +331,18 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
             <>
               <div style={s.menuOverlay} onClick={() => setMenuOpen(false)} />
               <div style={s.menu}>
-                <button style={s.menuItem} onClick={handleSync} disabled={!daemonOnline}>
+                <button style={s.menuItem} onClick={handleSync} disabled={!daemonOnline || paused}>
                   <RefreshCw size={13} strokeWidth={1.5} /> Sync Now
                 </button>
+                {paused ? (
+                  <button style={s.menuItem} onClick={handleResume} disabled={!daemonOnline}>
+                    <PlayCircle size={13} strokeWidth={1.5} /> Resume Sync
+                  </button>
+                ) : (
+                  <button style={s.menuItem} onClick={handlePause} disabled={!daemonOnline}>
+                    <PauseCircle size={13} strokeWidth={1.5} /> Pause Sync
+                  </button>
+                )}
                 <div style={s.menuDivider} />
                 <button style={{ ...s.menuItem, color: "var(--error)" }} onClick={handleRemove}>
                   <Trash2 size={13} strokeWidth={1.5} /> Remove Folder
@@ -365,11 +387,13 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
 
           <div style={s.statCard}>
             <p style={s.statLabel}>STATUS</p>
-            <p style={{ ...s.statValue, fontSize: "1.125rem", color: syncing ? "var(--tertiary)" : "var(--success)" }}>
-              {syncing ? "Syncing" : "Up to date"}
+            <p style={{ ...s.statValue, fontSize: "1.125rem", color: paused ? "var(--tertiary)" : syncing ? "var(--primary)" : "var(--success)" }}>
+              {paused ? "Paused" : syncing ? "Syncing" : "Up to date"}
             </p>
             <p style={s.statMeta}>
-              {syncing
+              {paused
+                ? <><PauseCircle size={10} strokeWidth={1.5} style={{ marginRight: 4 }} />Sync suspended</>
+                : syncing
                 ? <><RefreshCw size={10} strokeWidth={2} style={{ animation: "spin 1.5s linear infinite", marginRight: 4 }} />In progress</>
                 : <><CheckCircle2 size={10} strokeWidth={1.5} style={{ marginRight: 4 }} />All files synced</>
               }

@@ -137,8 +137,9 @@ function Section({ title, defaultOpen = true, children, badge }: {
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
 
 export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) {
-  const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, syncFolder } = daemon;
+  const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, syncFolder, pauseAll, resumeAll } = daemon;
   const syncing = status?.syncing ?? [];
+  const globalPaused = status?.global_paused ?? false;
   const syncingCount = syncing.length;
   const totalFolders = folders.length;
   const lastSyncTs = status ? mostRecentSync(status.last_sync) : null;
@@ -170,17 +171,21 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) 
         <div style={S.heroCard}>
           <div style={S.heroLeft}>
             <div style={S.statusBadge}>
-              {daemonOnline
-                ? <><Wifi size={11} strokeWidth={1.5} style={{ color: "var(--success)" }} /> SYSTEM READY</>
-                : <><WifiOff size={11} strokeWidth={1.5} style={{ color: "var(--error)" }} /> DAEMON OFFLINE</>
+              {!daemonOnline
+                ? <><WifiOff size={11} strokeWidth={1.5} style={{ color: "var(--error)" }} /> DAEMON OFFLINE</>
+                : globalPaused
+                ? <><PauseCircle size={11} strokeWidth={1.5} style={{ color: "var(--tertiary)" }} /> PAUSED</>
+                : <><Wifi size={11} strokeWidth={1.5} style={{ color: "var(--success)" }} /> SYSTEM READY</>
               }
             </div>
             <h1 style={S.headline}>
-              {syncingCount > 0
+              {!daemonOnline
+                ? "Cannot reach daemon"
+                : globalPaused
+                ? "Syncing is paused"
+                : syncingCount > 0
                 ? `Syncing ${syncingCount} folder${syncingCount > 1 ? "s" : ""}…`
-                : daemonOnline
-                ? "All files are up to date"
-                : "Cannot reach daemon"}
+                : "All files are up to date"}
             </h1>
             {lastSyncTs && (
               <p style={S.subtext}>
@@ -192,10 +197,21 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) 
               <button className="btn-secondary" style={S.ctaBtn} onClick={() => onNavigate("folders")}>
                 <FolderOpen size={13} strokeWidth={1.5} /> Open Folders
               </button>
-              <button className="btn-ghost" style={S.ctaBtn} onClick={() => syncFolder()} disabled={!daemonOnline}>
-                {syncingCount > 0
-                  ? <><PauseCircle size={13} strokeWidth={1.5} /> Syncing…</>
-                  : <><RefreshCw size={13} strokeWidth={1.5} /> Sync All</>}
+              {globalPaused ? (
+                <button className="btn-ghost" style={S.ctaBtn} onClick={() => resumeAll()} disabled={!daemonOnline}>
+                  <RefreshCw size={13} strokeWidth={1.5} /> Resume All
+                </button>
+              ) : (
+                <button className="btn-ghost" style={S.ctaBtn} onClick={() => syncFolder()} disabled={!daemonOnline}>
+                  {syncingCount > 0
+                    ? <><PauseCircle size={13} strokeWidth={1.5} /> Syncing…</>
+                    : <><RefreshCw size={13} strokeWidth={1.5} /> Sync All</>}
+                </button>
+              )}
+              <button className="btn-ghost" style={S.ctaBtn} onClick={() => globalPaused ? resumeAll() : pauseAll()} disabled={!daemonOnline}>
+                {globalPaused
+                  ? <><RefreshCw size={13} strokeWidth={1.5} /> Resume Sync</>
+                  : <><PauseCircle size={13} strokeWidth={1.5} /> Pause All</>}
               </button>
             </div>
           </div>
@@ -273,12 +289,15 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder }: DashboardProps) 
                 key={f.Name}
                 folder={f}
                 syncing={syncing.includes(f.Name)}
+                paused={(status?.paused_folders ?? []).includes(f.Name)}
                 progress={progress[f.Name]}
                 lastSyncTs={status?.last_sync[f.Name]}
                 counts={status?.counts[f.Name]}
                 daemonOnline={daemonOnline}
                 onSync={() => syncFolder(f.Name)}
                 onOpen={() => onOpenFolder(f)}
+                onPause={() => daemon.pauseFolder(f.Name)}
+                onResume={() => daemon.resumeFolder(f.Name)}
               />
             ))}
           </div>
@@ -370,15 +389,18 @@ function BandwidthCard({ label, icon, current, values, color }: {
   );
 }
 
-function FolderOverviewCard({ folder, syncing, progress: p, lastSyncTs, counts, daemonOnline, onSync, onOpen }: {
+function FolderOverviewCard({ folder, syncing, paused, progress: p, lastSyncTs, counts, daemonOnline, onSync, onOpen, onPause, onResume }: {
   folder: Folder;
   syncing: boolean;
+  paused: boolean;
   progress?: SyncProgress;
   lastSyncTs?: string;
   counts?: { files: number; dirs: number; size: number };
   daemonOnline: boolean;
   onSync: () => void;
   onOpen: () => void;
+  onPause: () => void;
+  onResume: () => void;
 }) {
   const pct = syncing && p && p.total > 0 ? Math.round((p.done / p.total) * 100) : syncing ? 0 : 100;
 
@@ -401,6 +423,8 @@ function FolderOverviewCard({ folder, syncing, progress: p, lastSyncTs, counts, 
         </div>
         {syncing
           ? <span className="chip chip-syncing"><RefreshCw size={8} strokeWidth={2} style={{ animation: "spin 1.5s linear infinite" }} />Syncing</span>
+          : paused
+          ? <span className="chip" style={{ background: "rgba(255,181,150,0.15)", color: "var(--tertiary)" }}><PauseCircle size={8} strokeWidth={2} />Paused</span>
           : <span className="chip chip-success"><CheckCircle2 size={8} strokeWidth={2} />Up to date</span>
         }
       </div>
@@ -432,13 +456,25 @@ function FolderOverviewCard({ folder, syncing, progress: p, lastSyncTs, counts, 
             ? <><Clock size={10} strokeWidth={1.5} style={{ color: "var(--outline)" }} /><span style={{ fontSize: "0.6875rem", color: "var(--outline)" }}>{formatRelative(lastSyncTs)}</span></>
             : <><AlertCircle size={10} strokeWidth={1.5} style={{ color: "var(--tertiary)" }} /><span style={{ fontSize: "0.6875rem", color: "var(--tertiary)" }}>Never</span></>
           }
+          {!paused && (
+            <button
+              className="btn-ghost"
+              style={{ fontSize: "0.6875rem", padding: "0.2rem 0.4rem", marginLeft: "0.25rem" }}
+              onClick={(e) => { e.stopPropagation(); onSync(); }}
+              disabled={!daemonOnline}
+              title="Sync now"
+            >
+              <RefreshCw size={10} strokeWidth={1.5} />
+            </button>
+          )}
           <button
             className="btn-ghost"
-            style={{ fontSize: "0.6875rem", padding: "0.2rem 0.4rem", marginLeft: "0.25rem" }}
-            onClick={(e) => { e.stopPropagation(); onSync(); }}
+            style={{ fontSize: "0.6875rem", padding: "0.2rem 0.4rem" }}
+            onClick={(e) => { e.stopPropagation(); paused ? onResume() : onPause(); }}
             disabled={!daemonOnline}
+            title={paused ? "Resume" : "Pause"}
           >
-            <RefreshCw size={10} strokeWidth={1.5} />
+            {paused ? <RefreshCw size={10} strokeWidth={1.5} /> : <PauseCircle size={10} strokeWidth={1.5} />}
           </button>
         </div>
       </div>
