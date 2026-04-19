@@ -192,6 +192,138 @@ func TestSyncState_ConflictTableDoesNotInterfereWithSyncState(t *testing.T) {
 	}
 }
 
+// ── All ───────────────────────────────────────────────────────────────────────
+
+func TestSyncState_All_Empty(t *testing.T) {
+	d := openDB(t)
+	m, err := d.All()
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	if len(m) != 0 {
+		t.Fatalf("expected empty map, got %d entries", len(m))
+	}
+}
+
+func TestSyncState_All_ReturnsAllEntries(t *testing.T) {
+	d := openDB(t)
+	entries := []db.Entry{
+		{Path: "a.txt", ETag: "e1", LastModified: time.Now()},
+		{Path: "b.txt", ETag: "e2", IsDir: false, Size: 42, LastModified: time.Now()},
+		{Path: "dir/c.txt", ETag: "e3", LastModified: time.Now()},
+	}
+	for _, e := range entries {
+		if err := d.Upsert(e); err != nil {
+			t.Fatalf("Upsert %q: %v", e.Path, err)
+		}
+	}
+	m, err := d.All()
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	if len(m) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(m))
+	}
+	if m["b.txt"].Size != 42 {
+		t.Errorf("b.txt Size: got %d", m["b.txt"].Size)
+	}
+}
+
+// ── AllUnder ──────────────────────────────────────────────────────────────────
+
+func TestSyncState_AllUnder_Basic(t *testing.T) {
+	d := openDB(t)
+	for _, path := range []string{"docs/a.txt", "docs/b.txt", "docs/sub/c.txt", "other/d.txt"} {
+		if err := d.Upsert(db.Entry{Path: path, ETag: "e", LastModified: time.Now()}); err != nil {
+			t.Fatalf("Upsert %q: %v", path, err)
+		}
+	}
+	m, err := d.AllUnder("docs")
+	if err != nil {
+		t.Fatalf("AllUnder: %v", err)
+	}
+	if len(m) != 3 {
+		t.Fatalf("expected 3 entries under docs/, got %d", len(m))
+	}
+	if _, ok := m["other/d.txt"]; ok {
+		t.Error("other/d.txt should not be in docs/ results")
+	}
+}
+
+func TestSyncState_AllUnder_ExcludesPrefixItself(t *testing.T) {
+	d := openDB(t)
+	// Insert the directory entry itself and a child.
+	for _, path := range []string{"docs", "docs/a.txt"} {
+		if err := d.Upsert(db.Entry{Path: path, ETag: "e", IsDir: path == "docs", LastModified: time.Now()}); err != nil {
+			t.Fatalf("Upsert %q: %v", path, err)
+		}
+	}
+	m, err := d.AllUnder("docs")
+	if err != nil {
+		t.Fatalf("AllUnder: %v", err)
+	}
+	if _, ok := m["docs"]; ok {
+		t.Error("prefix itself should not appear in AllUnder results")
+	}
+	if _, ok := m["docs/a.txt"]; !ok {
+		t.Error("docs/a.txt should appear in AllUnder results")
+	}
+}
+
+func TestSyncState_AllUnder_SpecialCharsInPrefix(t *testing.T) {
+	d := openDB(t)
+	// Prefix contains LIKE-special characters.
+	for _, path := range []string{"50%_off/a.txt", "50%_off/b.txt", "other/c.txt"} {
+		if err := d.Upsert(db.Entry{Path: path, ETag: "e", LastModified: time.Now()}); err != nil {
+			t.Fatalf("Upsert %q: %v", path, err)
+		}
+	}
+	m, err := d.AllUnder("50%_off")
+	if err != nil {
+		t.Fatalf("AllUnder with special chars: %v", err)
+	}
+	if len(m) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(m))
+	}
+}
+
+func TestSyncState_AllUnder_Empty(t *testing.T) {
+	d := openDB(t)
+	m, err := d.AllUnder("nonexistent")
+	if err != nil {
+		t.Fatalf("AllUnder: %v", err)
+	}
+	if len(m) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(m))
+	}
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+func TestSyncState_Delete(t *testing.T) {
+	d := openDB(t)
+	if err := d.Upsert(db.Entry{Path: "todelete.txt", ETag: "e", LastModified: time.Now()}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := d.Delete("todelete.txt"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	got, err := d.Get("todelete.txt")
+	if err != nil {
+		t.Fatalf("Get after Delete: %v", err)
+	}
+	if got != nil {
+		t.Fatal("expected nil after Delete")
+	}
+}
+
+func TestSyncState_Delete_NonExistent_NoError(t *testing.T) {
+	d := openDB(t)
+	if err := d.Delete("ghost.txt"); err != nil {
+		t.Fatalf("Delete non-existent: %v", err)
+	}
+}
+
 // ── helper: fake file on disk ─────────────────────────────────────────────────
 
 func writeTempFile(t *testing.T, dir, name string) string {
