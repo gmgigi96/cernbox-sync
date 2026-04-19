@@ -1,0 +1,10 @@
+*.qcow2
+*.iso
+*.pid
+*.log
+OVMF_VARS.fd
+id_ed25519
+id_ed25519.pub
+autounattend.xml
+answer-iso-root/
+autounattend.img
