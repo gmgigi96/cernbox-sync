@@ -4,3 +4,10 @@ import "@testing-library/jest-dom";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
+
+// jsdom doesn't implement ResizeObserver; provide a no-op stub.
+global.ResizeObserver = class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};

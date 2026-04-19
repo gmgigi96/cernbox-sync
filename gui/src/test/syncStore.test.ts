@@ -70,17 +70,17 @@ describe("_handleEvent", () => {
       useSyncStore.getState()._handleEvent({
         type: "sync_progress",
         folder: "docs",
-        progress: { done: 3, total: 10, current: "file.txt", upload_bps: 0, download_bps: 0 },
+        progress: { done: 3, total: 10, current: "file.txt", upload_bps: 0, download_bps: 0, bytes_done: 0, bytes_total: 0 },
       });
-      expect(useSyncStore.getState().progress["docs"]).toEqual({ done: 3, total: 10, current: "file.txt", upload_bps: 0, download_bps: 0 });
+      expect(useSyncStore.getState().progress["docs"]).toEqual({ done: 3, total: 10, current: "file.txt", upload_bps: 0, download_bps: 0, bytes_done: 0, bytes_total: 0 });
     });
 
     it("overwrites previous progress for the same folder", () => {
-      useSyncStore.setState({ progress: { docs: { done: 1, total: 10, current: "a.txt", upload_bps: 0, download_bps: 0 } } });
+      useSyncStore.setState({ progress: { docs: { done: 1, total: 10, current: "a.txt", upload_bps: 0, download_bps: 0, bytes_done: 0, bytes_total: 0 } } });
       useSyncStore.getState()._handleEvent({
         type: "sync_progress",
         folder: "docs",
-        progress: { done: 5, total: 10, current: "b.txt", upload_bps: 0, download_bps: 0 },
+        progress: { done: 5, total: 10, current: "b.txt", upload_bps: 0, download_bps: 0, bytes_done: 0, bytes_total: 0 },
       });
       expect(useSyncStore.getState().progress["docs"].done).toBe(5);
     });
@@ -90,7 +90,7 @@ describe("_handleEvent", () => {
     it("removes folder from syncing, clears its progress, records last_sync and counts", () => {
       useSyncStore.setState({
         status: { ...emptyStatus, syncing: ["docs", "photos"] },
-        progress: { docs: { done: 5, total: 5, current: "", upload_bps: 0, download_bps: 0 } },
+        progress: { docs: { done: 5, total: 5, current: "", upload_bps: 0, download_bps: 0, bytes_done: 0, bytes_total: 0 } },
       });
       useSyncStore.getState()._handleEvent({
         type: "sync_completed",
@@ -126,7 +126,7 @@ describe("_handleEvent", () => {
     it("removes folder from syncing and clears its progress", () => {
       useSyncStore.setState({
         status: { ...emptyStatus, syncing: ["docs"] },
-        progress: { docs: { done: 2, total: 10, current: "x.txt", upload_bps: 0, download_bps: 0 } },
+        progress: { docs: { done: 2, total: 10, current: "x.txt", upload_bps: 0, download_bps: 0, bytes_done: 0, bytes_total: 0 } },
       });
       useSyncStore.getState()._handleEvent({ type: "sync_failed", folder: "docs" });
       const s = useSyncStore.getState();

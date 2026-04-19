@@ -8,7 +8,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import type { DaemonState } from "../hooks/useDaemon";
 import type { Folder } from "../types";
 import { ipc } from "../ipc";
-import type { SyncProgress } from "../store/syncStore";
+import { useSyncStore, type SyncProgress } from "../store/syncStore";
 
 interface DashboardProps {
   daemon: DaemonState;
@@ -166,7 +166,10 @@ function parseLastSyncErrors(folderName: string, log: string): ErrorEntry[] {
 }
 
 export function Dashboard({ daemon, onNavigate, onOpenFolder, onOpenConflicts }: DashboardProps) {
-  const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, syncFolder, pauseAll, resumeAll } = daemon;
+  const { folders, status, daemonOnline, loading, syncFolder, pauseAll, resumeAll } = daemon;
+  const progress = useSyncStore((s) => s.progress);
+  const uploadBps = useSyncStore((s) => s.uploadBps);
+  const downloadBps = useSyncStore((s) => s.downloadBps);
   const syncing = status?.syncing ?? [];
   const globalPaused = status?.global_paused ?? false;
   const syncingCount = syncing.length;
@@ -273,7 +276,7 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder, onOpenConflicts }:
               <div style={S.transferList}>
                 {syncing.map((name) => {
                   const p = progress[name];
-                  const pct = p && p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+                  const pct = calcPct(p, true);
                   return (
                     <TransferRow key={name} name={name} progress={p} pct={pct} />
                   );
@@ -400,6 +403,14 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder, onOpenConflicts }:
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
+function calcPct(p: SyncProgress | undefined, syncing: boolean): number {
+  if (!syncing || !p || p.total <= 0) return 0;
+  if (p.bytes_total > 0) {
+    return Math.round(((p.done + p.bytes_done / p.bytes_total) / p.total) * 100);
+  }
+  return Math.round((p.done / p.total) * 100);
+}
+
 function TransferRow({ name, progress: p, pct }: { name: string; progress?: SyncProgress; pct: number }) {
   return (
     <div style={S.transferRow}>
@@ -468,7 +479,7 @@ function FolderOverviewCard({ folder, syncing, paused, progress: p, lastSyncTs, 
   onPause: () => void;
   onResume: () => void;
 }) {
-  const pct = syncing && p && p.total > 0 ? Math.round((p.done / p.total) * 100) : syncing ? 0 : 100;
+  const pct = syncing ? calcPct(p, syncing) : 100;
   const radius = 18;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference - (pct / 100) * circumference;
