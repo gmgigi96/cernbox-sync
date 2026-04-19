@@ -4,6 +4,8 @@ package integration_test
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -267,6 +269,155 @@ func TestIntegration_SecondSyncIsNoOp(t *testing.T) {
 
 	if got := env.readLocal("stable.txt"); got != "stable content" {
 		t.Fatalf("stable.txt should be unchanged after second sync; got %q", got)
+	}
+}
+
+// TestIntegration_PauseFolderBlocksSync: a paused folder must be rejected when
+// a manual sync is requested and must not receive any changes.
+func TestIntegration_PauseFolderBlocksSync(t *testing.T) {
+	env := setup(t)
+
+	// Establish a baseline so there is something to sync later.
+	env.writeRemote("before.txt", "before pause")
+	env.triggerSync()
+	env.assertInSync()
+
+	// Pause the folder.
+	env.pause(folderName)
+
+	if !env.isPaused(folderName) {
+		t.Fatal("folder should be reported as paused after pause command")
+	}
+
+	// Add a remote file while the folder is paused.
+	env.writeRemote("during.txt", "added while paused")
+
+	// Manual sync must be rejected.
+	resp := env.trySync(folderName)
+	if resp.OK {
+		t.Fatal("sync command should have been rejected while folder is paused")
+	}
+
+	// The new remote file must not have been downloaded.
+	if env.localExists("during.txt") {
+		t.Fatal("during.txt should not be present locally while folder is paused")
+	}
+
+	// Resume and sync — change must now propagate.
+	env.resume(folderName)
+
+	if env.isPaused(folderName) {
+		t.Fatal("folder should no longer be paused after resume command")
+	}
+
+	env.triggerSync()
+
+	if !env.localExists("during.txt") {
+		t.Fatal("during.txt should have been downloaded after resume + sync")
+	}
+	if got := env.readLocal("during.txt"); got != "added while paused" {
+		t.Fatalf("during.txt content: got %q, want %q", got, "added while paused")
+	}
+	env.assertInSync()
+}
+
+// TestIntegration_GlobalPauseBlocksAllSyncs: globally pausing the daemon must
+// prevent syncing for all folders and be lifted by a global resume.
+func TestIntegration_GlobalPauseBlocksAllSyncs(t *testing.T) {
+	env := setup(t)
+
+	// Baseline.
+	env.writeRemote("base.txt", "base")
+	env.triggerSync()
+	env.assertInSync()
+
+	// Global pause.
+	env.pause("") // empty name → global pause
+
+	if !env.isGloballyPaused() {
+		t.Fatal("daemon should report globally paused")
+	}
+
+	// Add a remote file while globally paused.
+	env.writeRemote("blocked.txt", "should not arrive")
+
+	// Manual sync must be rejected.
+	resp := env.trySync(folderName)
+	if resp.OK {
+		t.Fatal("sync command should have been rejected while globally paused")
+	}
+
+	if env.localExists("blocked.txt") {
+		t.Fatal("blocked.txt should not be present while globally paused")
+	}
+
+	// Global resume — sync must succeed now.
+	env.resume("") // empty name → global resume
+
+	if env.isGloballyPaused() {
+		t.Fatal("daemon should no longer be globally paused after resume")
+	}
+
+	env.triggerSync()
+
+	if !env.localExists("blocked.txt") {
+		t.Fatal("blocked.txt should have been downloaded after global resume + sync")
+	}
+	env.assertInSync()
+}
+
+// TestIntegration_PausePersistsAcrossRestart: a paused folder must still be
+// paused after the daemon is restarted (state stored in the config DB).
+func TestIntegration_PausePersistsAcrossRestart(t *testing.T) {
+	env := setup(t)
+
+	// Baseline.
+	env.writeRemote("base.txt", "base")
+	env.triggerSync()
+
+	env.pause(folderName)
+	if !env.isPaused(folderName) {
+		t.Fatal("folder should be paused")
+	}
+
+	// Stop and restart the daemon.
+	env.stopDaemon()
+
+	configDir := filepath.Join(env.tmpDir, "config")
+	runDir := filepath.Join(env.tmpDir, "run")
+	logFile, err := os.CreateTemp(env.tmpDir, "daemon2-*.log")
+	if err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+
+	env.daemonCmd = exec.Command(daemonPath,
+		"-interval", syncInterval,
+		"-socket", env.sockPath,
+	)
+	env.daemonCmd.Env = append(os.Environ(),
+		"XDG_RUNTIME_DIR="+runDir,
+		"XDG_CONFIG_HOME="+configDir,
+	)
+	env.daemonCmd.Stdout = logFile
+	env.daemonCmd.Stderr = logFile
+	if err := env.daemonCmd.Start(); err != nil {
+		t.Fatalf("restart daemon: %v", err)
+	}
+	env.waitDaemonReady()
+
+	// The folder must still be paused after restart.
+	if !env.isPaused(folderName) {
+		t.Fatal("folder should still be paused after daemon restart")
+	}
+
+	// Add a remote file — sync must still be blocked.
+	env.writeRemote("after_restart.txt", "after restart")
+	resp := env.trySync(folderName)
+	if resp.OK {
+		t.Fatal("sync should still be rejected after restart while folder is paused")
+	}
+	if env.localExists("after_restart.txt") {
+		t.Fatal("after_restart.txt should not be downloaded while still paused")
 	}
 }
 

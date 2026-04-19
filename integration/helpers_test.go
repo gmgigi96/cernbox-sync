@@ -522,6 +522,61 @@ func (e *testEnv) collectRemote() map[string]string {
 	return out
 }
 
+// pause sends a pause command for the given folder name (or globally if empty).
+func (e *testEnv) pause(name string) {
+	e.t.Helper()
+	resp, err := ipc.Send(e.sockPath, ipc.Request{Cmd: ipc.CmdPause, Name: name})
+	if err != nil {
+		e.t.Fatalf("pause %q: %v", name, err)
+	}
+	if !resp.OK {
+		e.t.Fatalf("pause %q: daemon error: %s", name, resp.Error)
+	}
+}
+
+// resume sends a resume command for the given folder name (or globally if empty).
+func (e *testEnv) resume(name string) {
+	e.t.Helper()
+	resp, err := ipc.Send(e.sockPath, ipc.Request{Cmd: ipc.CmdResume, Name: name})
+	if err != nil {
+		e.t.Fatalf("resume %q: %v", name, err)
+	}
+	if !resp.OK {
+		e.t.Fatalf("resume %q: daemon error: %s", name, resp.Error)
+	}
+}
+
+// isPaused returns true if the named folder is listed in the daemon's paused folders.
+func (e *testEnv) isPaused(name string) bool {
+	e.t.Helper()
+	resp, err := ipc.Send(e.sockPath, ipc.Request{Cmd: ipc.CmdStatus})
+	if err != nil {
+		e.t.Fatalf("status: %v", err)
+	}
+	return sliceContains(resp.Status.PausedFolders, name)
+}
+
+// isGloballyPaused returns true when the daemon reports global pause.
+func (e *testEnv) isGloballyPaused() bool {
+	e.t.Helper()
+	resp, err := ipc.Send(e.sockPath, ipc.Request{Cmd: ipc.CmdStatus})
+	if err != nil {
+		e.t.Fatalf("status: %v", err)
+	}
+	return resp.Status.GlobalPaused
+}
+
+// trySync sends a sync command and returns the daemon's response without
+// failing the test. Used when the caller expects the command to be rejected.
+func (e *testEnv) trySync(name string) *ipc.Response {
+	e.t.Helper()
+	resp, err := ipc.Send(e.sockPath, ipc.Request{Cmd: ipc.CmdSync, Name: name})
+	if err != nil {
+		e.t.Fatalf("trySync %q: %v", name, err)
+	}
+	return resp
+}
+
 // ── misc helpers ──────────────────────────────────────────────────────────────
 
 func hashBytes(b []byte) string {
