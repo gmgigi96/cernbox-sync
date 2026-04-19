@@ -403,13 +403,37 @@ function FolderOverviewCard({ folder, syncing, paused, progress: p, lastSyncTs, 
   onResume: () => void;
 }) {
   const pct = syncing && p && p.total > 0 ? Math.round((p.done / p.total) * 100) : syncing ? 0 : 100;
+  const radius = 18;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference - (pct / 100) * circumference;
 
   return (
     <div style={S.folderCard} onClick={onOpen}>
       <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
-        <div style={S.folderIconWrap}>
-          <FolderOpen size={15} strokeWidth={1.5} />
-        </div>
+        {syncing ? (
+          <div style={{ position: "relative", width: 40, height: 40, flexShrink: 0 }}>
+            <svg width="40" height="40" style={{ position: "absolute", top: 0, left: 0, transform: "rotate(-90deg)" }}>
+              <circle cx="20" cy="20" r={radius} fill="none" stroke="var(--surface-container)" strokeWidth="2.5" />
+              <circle
+                cx="20" cy="20" r={radius} fill="none"
+                stroke="var(--primary)" strokeWidth="2.5"
+                strokeDasharray={circumference}
+                strokeDashoffset={p && p.total > 0 ? dashOffset : circumference * 0.75}
+                strokeLinecap="round"
+                style={p && p.total > 0 ? undefined : { animation: "spin 1.5s linear infinite", transformOrigin: "20px 20px" }}
+              />
+            </svg>
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ fontSize: "0.5rem", fontWeight: 600, color: "var(--primary)", lineHeight: 1 }}>
+                {p && p.total > 0 ? `${pct}%` : "…"}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div style={S.folderIconWrap}>
+            <FolderOpen size={15} strokeWidth={1.5} />
+          </div>
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={S.folderCardName}>{folder.Name}</div>
           <div
@@ -429,18 +453,6 @@ function FolderOverviewCard({ folder, syncing, paused, progress: p, lastSyncTs, 
         }
       </div>
 
-      {syncing && (
-        <div style={{ marginBottom: "0.75rem" }}>
-          <div className="progress-track">
-            <div className="progress-fill" style={{ width: `${pct}%` }} />
-          </div>
-          {p?.current && (
-            <div className="label-sm" style={{ marginTop: "0.25rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {p.current.split("/").pop()}
-            </div>
-          )}
-        </div>
-      )}
 
       <div style={S.folderCardFooter}>
         <div style={{ display: "flex", gap: "0.75rem" }}>
