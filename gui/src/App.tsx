@@ -164,7 +164,11 @@ export function App() {
   return (
     <Layout page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
       {page === "dashboard" && (
-        <Dashboard daemon={daemon} onNavigate={(p) => navigate(p)} />
+        <Dashboard
+          daemon={daemon}
+          onNavigate={(p) => navigate(p)}
+          onOpenFolder={(folder) => { setSelectedFolder(folder); setPage("folderDetail"); }}
+        />
       )}
       {page === "folders" && (
         <Folders
