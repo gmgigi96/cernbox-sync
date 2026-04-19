@@ -1,4 +1,4 @@
-import { LayoutDashboard, FolderSync, Settings, Activity, Plus } from "lucide-react";
+import { LayoutDashboard, FolderSync, Settings, Plus } from "lucide-react";
 import type { NavPage } from "../types";
 
 interface SidebarProps {
@@ -49,13 +49,7 @@ export function Sidebar({ page, onNavigate, onAddFolder }: SidebarProps) {
 
       <div style={styles.spacer} />
 
-      {/* Activity hint */}
-      <button style={styles.navItem}>
-        <Activity size={16} strokeWidth={1.5} />
-        <span>Activity</span>
-      </button>
-
-      {/* Add folder CTA */}
+      {/* Add sync folder */}
       <button className="btn-primary" style={styles.addBtn} onClick={onAddFolder}>
         <Plus size={15} strokeWidth={2} />
         Add Sync Folder
