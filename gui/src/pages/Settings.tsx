@@ -162,13 +162,24 @@ export function Settings() {
       .finally(() => setLoading(false));
   }, []);
 
-  const dirty =
-    logRotateMaxAge !== committed.logRotateMaxAge ||
-    syncInterval !== committed.syncInterval ||
-    uploadBandwidth !== committed.uploadBandwidth ||
-    downloadBandwidth !== committed.downloadBandwidth ||
-    transferStreams !== committed.transferStreams ||
-    metadataStreams !== committed.metadataStreams;
+  const dirtyFields = {
+    syncInterval: syncInterval !== committed.syncInterval,
+    logRotateMaxAge: logRotateMaxAge !== committed.logRotateMaxAge,
+    uploadBandwidth: uploadBandwidth !== committed.uploadBandwidth,
+    downloadBandwidth: downloadBandwidth !== committed.downloadBandwidth,
+    transferStreams: transferStreams !== committed.transferStreams,
+    metadataStreams: metadataStreams !== committed.metadataStreams,
+  };
+
+  const dirty = Object.values(dirtyFields).some(Boolean);
+
+  const isDefault =
+    committed.syncInterval === DEFAULTS.syncInterval &&
+    committed.logRotateMaxAge === DEFAULTS.logRotateMaxAge &&
+    committed.uploadBandwidth === DEFAULTS.uploadBandwidth &&
+    committed.downloadBandwidth === DEFAULTS.downloadBandwidth &&
+    committed.transferStreams === DEFAULTS.transferStreams &&
+    committed.metadataStreams === DEFAULTS.metadataStreams;
 
   function cancel() {
     setLogRotateMaxAge(committed.logRotateMaxAge);
@@ -227,15 +238,17 @@ export function Settings() {
           <p style={styles.subtitle}>Configure daemon behaviour</p>
         </div>
         <div style={styles.headerActions}>
-          <button
-            className="btn-ghost"
-            style={{ gap: "0.375rem", display: "flex", alignItems: "center" }}
-            onClick={reset}
-            disabled={loading}
-            title="Reset all settings to defaults and save"
-          >
-            <RotateCcw size={13} strokeWidth={1.5} /> Reset to defaults
-          </button>
+          {!isDefault && (
+            <button
+              className="btn-ghost"
+              style={{ gap: "0.375rem", display: "flex", alignItems: "center" }}
+              onClick={reset}
+              disabled={loading}
+              title="Reset all settings to defaults and save"
+            >
+              <RotateCcw size={13} strokeWidth={1.5} /> Reset to defaults
+            </button>
+          )}
           {dirty && (
             <>
               <button
@@ -260,18 +273,14 @@ export function Settings() {
         </div>
       )}
 
-      {saved && (
-        <div style={styles.successBox}>
-          <CheckCircle2 size={14} strokeWidth={1.5} />
-          Settings saved.
-        </div>
-      )}
+
 
       <div style={styles.grid}>
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
             <Timer size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Sync Interval</span>
+            {dirtyFields.syncInterval && <span style={styles.dirtyDot} />}
           </div>
           <div style={styles.field}>
             <p style={styles.hint}>
@@ -292,6 +301,7 @@ export function Settings() {
           <div style={styles.sectionHeader}>
             <RotateCcw size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Log Rotation Time</span>
+            {dirtyFields.logRotateMaxAge && <span style={styles.dirtyDot} />}
           </div>
           <div style={styles.field}>
             <p style={styles.hint}>
@@ -312,6 +322,7 @@ export function Settings() {
           <div style={styles.sectionHeader}>
             <Upload size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Upload Bandwidth</span>
+            {dirtyFields.uploadBandwidth && <span style={styles.dirtyDot} />}
           </div>
           <div style={styles.field}>
             <p style={styles.hint}>
@@ -325,6 +336,7 @@ export function Settings() {
           <div style={styles.sectionHeader}>
             <Download size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Download Bandwidth</span>
+            {dirtyFields.downloadBandwidth && <span style={styles.dirtyDot} />}
           </div>
           <div style={styles.field}>
             <p style={styles.hint}>
@@ -338,6 +350,7 @@ export function Settings() {
           <div style={styles.sectionHeader}>
             <ArrowLeftRight size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Transfer Streams</span>
+            {dirtyFields.transferStreams && <span style={styles.dirtyDot} />}
           </div>
           <div style={styles.field}>
             <p style={styles.hint}>
@@ -362,6 +375,7 @@ export function Settings() {
           <div style={styles.sectionHeader}>
             <FolderCog size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
             <span style={styles.sectionTitle}>Metadata Streams</span>
+            {dirtyFields.metadataStreams && <span style={styles.dirtyDot} />}
           </div>
           <div style={styles.field}>
             <p style={styles.hint}>
@@ -382,6 +396,13 @@ export function Settings() {
           </div>
         </div>
       </div>
+
+      {saved && (
+        <div style={styles.successToast}>
+          <CheckCircle2 size={14} strokeWidth={1.5} />
+          Settings saved.
+        </div>
+      )}
     </div>
   );
 }
@@ -464,6 +485,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.75rem",
     fontFamily: "monospace",
   },
+  dirtyDot: {
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    background: "var(--primary)",
+    flexShrink: 0,
+    marginLeft: "auto",
+  },
   errorBox: {
     display: "flex",
     alignItems: "center",
@@ -474,14 +503,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.8125rem",
     color: "var(--error)",
   },
-  successBox: {
+  successToast: {
+    position: "fixed",
+    bottom: "1.5rem",
+    right: "1.5rem",
     display: "flex",
     alignItems: "center",
     gap: "0.5rem",
-    background: "rgba(107,217,160,0.1)",
+    background: "var(--surface-container-highest)",
+    border: "1px solid rgba(107,217,160,0.3)",
     borderRadius: "var(--radius-md)",
-    padding: "0.5rem 0.75rem",
+    padding: "0.5rem 1rem",
     fontSize: "0.8125rem",
     color: "var(--success)",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+    zIndex: 100,
   },
 };
