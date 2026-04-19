@@ -597,6 +597,41 @@ func TestSync_Conflict(t *testing.T) {
 	}
 }
 
+// After a conflict is resolved (server wins, local copy renamed to .conflict-*),
+// a second sync must NOT upload the conflict file to the remote.
+func TestSync_ConflictFile_NotUploaded(t *testing.T) {
+	env := setup(t)
+	oldTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	newTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+
+	env.dav.addFile("shared.txt", "server version", "etag-v2", newTime)
+	env.writeLocalAt("shared.txt", "local version", newTime)
+	env.seedDB(db.Entry{
+		Path:         "shared.txt",
+		ETag:         "etag-v1",
+		Size:         8, // local is 13 bytes → local also changed
+		LastModified: oldTime,
+	})
+
+	// First sync: conflict resolved — server wins, conflict file created locally.
+	env.run()
+
+	conflicts := env.conflictFiles(".")
+	if len(conflicts) == 0 {
+		t.Fatal("expected a conflict-renamed file after first sync")
+	}
+
+	// Second sync: conflict file must not be uploaded.
+	env.dav.resetSideEffects()
+	env.run()
+
+	for _, put := range env.dav.puts {
+		if strings.Contains(put, ".conflict-") {
+			t.Fatalf("conflict file should not be uploaded; got PUT for %q", put)
+		}
+	}
+}
+
 // Nothing changed: remote ETag, local mtime and size all match the DB baseline.
 // Expected: no uploads, no downloads, no deletes.
 func TestSync_InSync(t *testing.T) {

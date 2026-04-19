@@ -433,7 +433,7 @@ func scanLocal(root string, syncHiddenFiles bool) (map[string]*localInfo, error)
 
 		// Skip internal files — they live inside the local root but must
 		// never be uploaded or treated as sync-able files.
-		if rel == ".sync.db" || rel == ".sync.log" {
+		if rel == ".sync.db" || rel == ".sync.log" || isConflictFile(d.Name()) {
 			return nil
 		}
 
@@ -968,6 +968,25 @@ func execOne(
 	}
 
 	return nil
+}
+
+// isConflictFile reports whether name matches the conflict-rename pattern.
+func isConflictFile(name string) bool {
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	// base ends with ".conflict-YYYYMMDD-HHMMSS"
+	const prefix = ".conflict-"
+	idx := strings.LastIndex(base, prefix)
+	if idx < 0 {
+		return false
+	}
+	suffix := base[idx+len(prefix):]
+	// expect exactly "YYYYMMDD-HHMMSS" (15 chars)
+	if len(suffix) != 15 {
+		return false
+	}
+	_, err := time.Parse("20060102-150405", suffix)
+	return err == nil
 }
 
 // conflictName appends a timestamp suffix before the file extension.
