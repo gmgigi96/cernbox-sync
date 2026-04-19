@@ -64,7 +64,7 @@ function formatRelative(iso: string): string {
 
 const MAX_SESSIONS = 20;
 
-interface SyncSession {
+export interface SyncSession {
   startTime: Date;
   idleNewest?: Date;     // set by collapseSessions for collapsed idle runs
   downloads: string[];   // file downloads
@@ -82,7 +82,7 @@ function extractQuotedPath(msg: string): string {
   return m ? m[1] : "";
 }
 
-function parseSyncLog(content: string): SyncSession[] {
+export function parseSyncLog(content: string): SyncSession[] {
   const sessions: SyncSession[] = [];
   let current: SyncSession | null = null;
 
@@ -139,7 +139,7 @@ function isIdleSession(s: SyncSession): boolean {
 
 // Collapse consecutive idle sessions (newest-first order) into one.
 // idleNewest tracks the newest time of the run; startTime becomes the oldest.
-function collapseSessions(sessions: SyncSession[]): SyncSession[] {
+export function collapseSessions(sessions: SyncSession[]): SyncSession[] {
   const result: SyncSession[] = [];
   for (const s of sessions) {
     const prev = result[result.length - 1];
@@ -165,7 +165,7 @@ function n(count: number, singular: string, plural = singular + "s") {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function sessionToActivity(s: SyncSession, isLeading: boolean): ActivityData {
+export function sessionToActivity(s: SyncSession, isLeading: boolean): ActivityData {
   const foldersCreated = s.mkdirLocals.length + s.mkcolRemotes.length;
   const deleted = s.deleteLocals.length + s.deleteRemotes.length;
   const total = s.downloads.length + s.uploads.length + foldersCreated + deleted + s.conflicts.length;
@@ -185,9 +185,7 @@ function sessionToActivity(s: SyncSession, isLeading: boolean): ActivityData {
   if (total === 0) {
     const idleTitle = isLeading
       ? `Nothing changed since ${time}`
-      : s.idleNewest
-        ? `Nothing changed for ${formatDuration(s.idleNewest.getTime() - s.startTime.getTime())}`
-        : `Nothing changed since ${time}`;
+      : `Nothing changed for ${formatDuration((s.idleNewest ?? new Date()).getTime() - s.startTime.getTime())}`;
     return {
       icon: <CheckCircle2 size={13} strokeWidth={1.5} />,
       iconBg: "rgba(107,217,160,0.15)",
