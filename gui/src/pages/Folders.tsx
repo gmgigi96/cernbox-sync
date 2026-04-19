@@ -124,7 +124,14 @@ function FolderCard({
 
   const progressPct = syncing
     ? syncProgress && syncProgress.total > 0
-      ? Math.round((syncProgress.done / syncProgress.total) * 100)
+      ? syncProgress.bytes_total > 0
+        // Mid-file: blend action-level + byte-level progress for smooth movement
+        ? Math.round(
+            ((syncProgress.done + syncProgress.bytes_done / syncProgress.bytes_total) /
+              syncProgress.total) *
+              100
+          )
+        : Math.round((syncProgress.done / syncProgress.total) * 100)
       : 0
     : 100;
 

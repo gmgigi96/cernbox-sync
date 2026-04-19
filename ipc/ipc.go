@@ -53,9 +53,11 @@ const (
 type SyncProgressPayload struct {
 	Done        int    `json:"done"`
 	Total       int    `json:"total"`
-	Current     string `json:"current,omitempty"`      // relative path of the item being processed
-	UploadBps   int64  `json:"upload_bps,omitempty"`   // current upload bytes/sec
-	DownloadBps int64  `json:"download_bps,omitempty"` // current download bytes/sec
+	Current     string `json:"current,omitempty"`       // relative path of the item being processed
+	UploadBps   int64  `json:"upload_bps,omitempty"`    // current upload bytes/sec
+	DownloadBps int64  `json:"download_bps,omitempty"`  // current download bytes/sec
+	BytesDone   int64  `json:"bytes_done,omitempty"`    // bytes transferred for the current file
+	BytesTotal  int64  `json:"bytes_total,omitempty"`   // total bytes for the current file (0 when not a file transfer)
 }
 
 // Event is pushed by the daemon to subscribed clients as newline-delimited JSON.

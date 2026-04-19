@@ -9,6 +9,8 @@ export interface SyncProgress {
   current: string;
   upload_bps: number;
   download_bps: number;
+  bytes_done: number;
+  bytes_total: number;
 }
 
 export interface DaemonSnapshot {

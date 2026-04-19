@@ -87,6 +87,29 @@ type rateLimitedReader struct {
 	counter   *bandwidthCounter
 }
 
+// byteProgressReader wraps an io.Reader and calls onProgress after each read
+// so callers can track byte-level transfer progress.
+type byteProgressReader struct {
+	r          io.Reader
+	path       string
+	done       int64
+	total      int64
+	onProgress func(path string, bytesDone, bytesTotal int64)
+}
+
+func newByteProgressReader(r io.Reader, path string, total int64, onProgress func(string, int64, int64)) io.Reader {
+	return &byteProgressReader{r: r, path: path, total: total, onProgress: onProgress}
+}
+
+func (b *byteProgressReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if n > 0 {
+		b.done += int64(n)
+		b.onProgress(b.path, b.done, b.total)
+	}
+	return n, err
+}
+
 func newRateLimitedReader(r io.Reader, lim *rate.Limiter, counter *bandwidthCounter) io.Reader {
 	if lim == nil && counter == nil {
 		return r
@@ -145,11 +168,13 @@ type Config struct {
 	UploadLimiter *rate.Limiter
 	// DownloadLimiter is the global rate limiter for downloads. nil means unlimited.
 	DownloadLimiter *rate.Limiter
-	// OnProgress is called before each action is executed. done is the number
-	// of actions completed so far, total is the total action count, current is
-	// the relative path being processed, uploadBps and downloadBps are the
-	// current rolling bytes/sec rates. May be nil.
-	OnProgress func(done, total int, current string, uploadBps, downloadBps int64)
+	// OnProgress is called before each action is executed and periodically
+	// during file transfers. done is the number of actions completed so far,
+	// total is the total action count, current is the relative path being
+	// processed, uploadBps and downloadBps are the current rolling bytes/sec
+	// rates. bytesDone and bytesTotal are the bytes transferred and total size
+	// for the current file (bytesTotal == 0 when not mid-transfer). May be nil.
+	OnProgress func(done, total int, current string, uploadBps, downloadBps, bytesDone, bytesTotal int64)
 	// TransferStreams is the number of concurrent upload/download operations.
 	// 0 or 1 means sequential (no concurrency).
 	TransferStreams int
@@ -598,7 +623,7 @@ func execute(
 	wdc *webdav.Client,
 	state *db.DB,
 	actions []action,
-	onProgress func(done, total int, current string, uploadBps, downloadBps int64),
+	onProgress func(done, total int, current string, uploadBps, downloadBps, bytesDone, bytesTotal int64),
 	uploadLimiter, downloadLimiter *rate.Limiter,
 	uploadCounter, downloadCounter *bandwidthCounter,
 	transferStreams, metadataStreams int,
@@ -620,6 +645,35 @@ func execute(
 	bps := func() (int64, int64) {
 		return uploadCounter.bytesPerSec(), downloadCounter.bytesPerSec()
 	}
+
+	// Per-file byte-level progress: track the currently-transferring file's
+	// path, bytes done, and total size so the ticker can report sub-action
+	// progress between action completions.
+	var (
+		fileMu        sync.Mutex
+		fileProgress  = make(map[string][2]int64) // path → [bytesDone, bytesTotal]
+	)
+	setFileProgress := func(path string, bytesDone, bytesTotal int64) {
+		fileMu.Lock()
+		if bytesDone >= bytesTotal && bytesTotal > 0 {
+			delete(fileProgress, path)
+		} else {
+			fileProgress[path] = [2]int64{bytesDone, bytesTotal}
+		}
+		fileMu.Unlock()
+	}
+	// aggregateFileProgress returns the sum of bytes across all in-flight transfers.
+	aggregateFileProgress := func() (int64, int64) {
+		fileMu.Lock()
+		defer fileMu.Unlock()
+		var bd, bt int64
+		for _, v := range fileProgress {
+			bd += v[0]
+			bt += v[1]
+		}
+		return bd, bt
+	}
+
 	reportDone := func(path string) {
 		doneMu.Lock()
 		done++
@@ -627,8 +681,16 @@ func execute(
 		doneMu.Unlock()
 		if onProgress != nil {
 			up, down := bps()
-			onProgress(d, total, path, up, down)
+			bd, bt := aggregateFileProgress()
+			onProgress(d, total, path, up, down, bd, bt)
 		}
+	}
+
+	// onByteProgress is passed into execOne so uploads/downloads can report
+	// streaming byte progress.
+	onByteProgress := func(path string, bytesDone, bytesTotal int64) {
+		setFileProgress(path, bytesDone, bytesTotal)
+		// No need to call onProgress here; the ticker fires every second.
 	}
 
 	// runPool dispatches a slice of actions to a worker pool of size n.
@@ -655,9 +717,10 @@ func execute(
 						d := done
 						doneMu.Unlock()
 						up, down := bps()
-						onProgress(d, total, a.path, up, down)
+						bd, bt := aggregateFileProgress()
+						onProgress(d, total, a.path, up, down, bd, bt)
 					}
-					if err := execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter); err != nil {
+					if err := execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress); err != nil {
 						logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
 					}
 					reportDone(a.path)
@@ -703,7 +766,7 @@ func execute(
 
 	if onProgress != nil {
 		up, down := bps()
-		onProgress(0, total, "", up, down)
+		onProgress(0, total, "", up, down, 0, 0)
 	}
 
 	// Ticker goroutine: fire onProgress every second so bandwidth readings
@@ -720,7 +783,8 @@ func execute(
 					d := done
 					doneMu.Unlock()
 					up, down := bps()
-					onProgress(d, total, "", up, down)
+					bd, bt := aggregateFileProgress()
+					onProgress(d, total, "", up, down, bd, bt)
 				case <-stopTicker:
 					return
 				}
@@ -743,7 +807,7 @@ func execute(
 
 	if onProgress != nil {
 		up, down := bps()
-		onProgress(total, total, "", up, down)
+		onProgress(total, total, "", up, down, 0, 0)
 	}
 	return nil
 }
@@ -756,6 +820,7 @@ func execOne(
 	a action,
 	uploadLimiter, downloadLimiter *rate.Limiter,
 	uploadCounter, downloadCounter *bandwidthCounter,
+	onByteProgress func(path string, bytesDone, bytesTotal int64),
 ) error {
 	localAbs := filepath.Join(localRoot, filepath.FromSlash(a.path))
 
@@ -789,7 +854,12 @@ func execOne(
 			return err
 		}
 		tmpPath := f.Name()
-		if _, err := io.Copy(f, newRateLimitedReader(rc, downloadLimiter, downloadCounter)); err != nil {
+		fileTotal := a.remote.Size
+		src := newRateLimitedReader(rc, downloadLimiter, downloadCounter)
+		if onByteProgress != nil && fileTotal > 0 {
+			src = newByteProgressReader(src, a.path, fileTotal, onByteProgress)
+		}
+		if _, err := io.Copy(f, src); err != nil {
 			f.Close()
 			os.Remove(tmpPath)
 			return err
@@ -838,7 +908,11 @@ func execOne(
 			return err
 		}
 		defer f.Close()
-		if err := wdc.Put(a.path, newRateLimitedReader(f, uploadLimiter, uploadCounter), a.local.size); err != nil {
+		src := newRateLimitedReader(f, uploadLimiter, uploadCounter)
+		if onByteProgress != nil && a.local.size > 0 {
+			src = newByteProgressReader(src, a.path, a.local.size, onByteProgress)
+		}
+		if err := wdc.Put(a.path, src, a.local.size); err != nil {
 			return err
 		}
 		// Re-fetch etag so DB matches server.
@@ -890,7 +964,7 @@ func execOne(
 		}
 		// Now download the server version as if it were a fresh download.
 		a.kind = download
-		return execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter)
+		return execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress)
 	}
 
 	return nil
