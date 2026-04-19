@@ -308,14 +308,21 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		},
 	}
 	d.log.Debug("[daemon] running engine", "folder", f.Name)
+	if fl != nil {
+		fl.Printf("[sync] started")
+	}
 	if err := engine.Run(cfg); err != nil {
 		syncErr = err
 		d.log.Error("[daemon] sync failed", "folder", f.Name, "err", err)
 		if fl != nil {
 			fl.Printf("[sync] ERROR: %v", err)
+			fl.Printf("[sync] completed with errors")
 		}
 	} else {
 		d.log.Info("[daemon] sync OK", "folder", f.Name)
+		if fl != nil {
+			fl.Printf("[sync] completed")
+		}
 	}
 }
 

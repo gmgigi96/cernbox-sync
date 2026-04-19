@@ -138,6 +138,33 @@ function Section({ title, defaultOpen = true, children, badge }: {
 
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
 
+interface ErrorEntry {
+  folder: string;
+  message: string;
+  timestamp: string;
+}
+
+function parseLastSyncErrors(folderName: string, log: string): ErrorEntry[] {
+  const lines = log.split("\n");
+  // Find the last "[sync] started" line index
+  let lastStart = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].includes("[sync] started")) { lastStart = i; break; }
+  }
+  const slice = lastStart >= 0 ? lines.slice(lastStart) : lines;
+  const errors: ErrorEntry[] = [];
+  for (const line of slice) {
+    if (!line.trim()) continue;
+    const isError = line.includes("[sync] ERROR") || line.includes("[sync] conflict ");
+    if (!isError) continue;
+    const spaceIdx = line.indexOf(" ");
+    const timestamp = spaceIdx > 0 ? line.slice(0, spaceIdx) : "";
+    const message = spaceIdx > 0 ? line.slice(spaceIdx + 1) : line;
+    errors.push({ folder: folderName, message, timestamp });
+  }
+  return errors;
+}
+
 export function Dashboard({ daemon, onNavigate, onOpenFolder, onOpenConflicts }: DashboardProps) {
   const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, syncFolder, pauseAll, resumeAll } = daemon;
   const syncing = status?.syncing ?? [];
@@ -155,6 +182,18 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder, onOpenConflicts }:
     if (!daemonOnline) return;
     ipc.listConflicts().then((c) => setConflictCount(c?.length ?? 0)).catch(() => {});
   }, [daemonOnline, status?.last_sync]);
+
+  const [errorEntries, setErrorEntries] = useState<ErrorEntry[]>([]);
+  useEffect(() => {
+    if (!folders.length) { setErrorEntries([]); return; }
+    Promise.all(
+      folders.map(async (f) => {
+        const log = await ipc.readTextFile(`${f.LocalRoot}/.sync.log`).catch(() => null);
+        if (!log) return [];
+        return parseLastSyncErrors(f.Name, log);
+      })
+    ).then((results) => setErrorEntries(results.flat()));
+  }, [folders, status?.last_sync]);
 
   if (loading) {
     return (
@@ -330,12 +369,30 @@ export function Dashboard({ daemon, onNavigate, onOpenFolder, onOpenConflicts }:
         </div>
       </Section>
 
-      {/* ── 6. Nice-to-have: error log & pending changes ──────────────────────── */}
-      <Section title="Error Log" defaultOpen={false}>
-        <div style={S.errorLogEmpty}>
-          <CheckCircle2 size={20} strokeWidth={1} style={{ color: "var(--success)", opacity: 0.5 }} />
-          <span style={{ fontSize: "0.8125rem", color: "var(--outline)", marginTop: "0.375rem" }}>No errors recorded</span>
-        </div>
+      {/* ── 6. Error log ──────────────────────────────────────────────────────── */}
+      <Section
+        title="Error Log"
+        defaultOpen={errorEntries.length > 0}
+        badge={errorEntries.length > 0 ? <span style={{ fontSize: "0.6875rem", fontWeight: 600, color: "var(--error)", background: "rgba(var(--error-rgb,220,53,69),0.12)", borderRadius: "0.75rem", padding: "0.1rem 0.45rem" }}>{errorEntries.length}</span> : undefined}
+      >
+        {errorEntries.length === 0 ? (
+          <div style={S.errorLogEmpty}>
+            <CheckCircle2 size={20} strokeWidth={1} style={{ color: "var(--success)", opacity: 0.5 }} />
+            <span style={{ fontSize: "0.8125rem", color: "var(--outline)", marginTop: "0.375rem" }}>No errors in last sync</span>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+            {errorEntries.map((e, i) => (
+              <div key={i} style={S.errorRow}>
+                <AlertCircle size={13} strokeWidth={1.5} style={{ color: e.message.includes("conflict") ? "var(--tertiary)" : "var(--error)", flexShrink: 0, marginTop: "0.1rem" }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: "0.75rem", color: "var(--on-surface)", wordBreak: "break-all" }}>{e.message}</div>
+                  <div style={{ fontSize: "0.6875rem", color: "var(--outline)", marginTop: "0.1rem" }}>{e.folder} · {e.timestamp}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </Section>
     </div>
   );
@@ -788,6 +845,15 @@ const S: Record<string, React.CSSProperties> = {
     borderRadius: "50%",
     background: "var(--primary)",
     flexShrink: 0,
+  },
+
+  errorRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "0.5rem",
+    padding: "0.5rem 0.625rem",
+    borderRadius: "var(--radius-md)",
+    background: "var(--surface-container-highest)",
   },
 
   // Error log / pending
