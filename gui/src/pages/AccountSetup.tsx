@@ -106,9 +106,6 @@ export function AccountSetup({ onDone }: AccountSetupProps) {
           </button>
         </form>
 
-        <p style={styles.note}>
-          Basic auth — SSO support coming soon.
-        </p>
       </div>
     </div>
   );
