@@ -506,6 +506,49 @@ func TestSync_RemoteDeleted(t *testing.T) {
 	}
 }
 
+// Remote deleted a file while the local copy was modified since last sync.
+// Per the "write wins over delete" rule, the local changes must be preserved
+// as a conflict copy; the original path is removed.
+func TestSync_RemoteDeletedLocalUpdated(t *testing.T) {
+	env := setup(t)
+	oldTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	newTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+
+	// Local file has been modified (larger size, newer mtime) since last sync.
+	env.writeLocalAt("report.txt", "locally modified content", newTime)
+	// DB baseline has the old size so isLocalChanged fires.
+	env.seedDB(db.Entry{
+		Path:         "report.txt",
+		ETag:         "etag-old",
+		Size:         11,
+		LastModified: oldTime,
+	})
+	// Remote has no "report.txt" — it was deleted server-side.
+
+	env.run()
+
+	// Original path must be gone.
+	if env.localExists("report.txt") {
+		t.Fatal("report.txt original should be deleted (server deletion wins)")
+	}
+	// DB entry for the original path must be removed.
+	if env.dbGet("report.txt") != nil {
+		t.Fatal("DB entry for report.txt should be gone")
+	}
+	// Local changes must be preserved as a conflict copy.
+	conflicts := env.dbConflicts()
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict entry; got %d", len(conflicts))
+	}
+	if _, err := os.Stat(conflicts[0].ConflictPath); err != nil {
+		t.Fatalf("conflict copy %q should exist on disk: %v", conflicts[0].ConflictPath, err)
+	}
+	got, _ := os.ReadFile(conflicts[0].ConflictPath)
+	if string(got) != "locally modified content" {
+		t.Fatalf("conflict copy should contain local changes; got %q", got)
+	}
+}
+
 // File was previously synced (in DB + remote); it has since been deleted locally.
 // Expected: remote file deleted via DELETE; DB entry removed.
 func TestSync_LocalDeleted(t *testing.T) {

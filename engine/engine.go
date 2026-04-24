@@ -14,6 +14,7 @@
 //     - localDeleted: in DB, not on disk, remote unchanged → delete remote
 //     - localDeletedRemoteUpdated: local deleted but remote changed → download (server wins)
 //     - conflict   : changed both locally & remotely      → server wins, rename local copy
+//     - remoteDeletedLocalUpdated: remote deleted, local changed → rename local as conflict copy, then delete
 //     - inSync     : nothing changed                      → no-op
 //  5. Execute the actions in safe order:
 //     dirs before files (create), files before dirs (delete).
@@ -195,6 +196,7 @@ const (
 	mkcolRemote                    // create remote directory
 	mkdirLocal                     // create local directory
 	conflictTake                   // conflict: server wins, rename local
+	conflictDeleteLocal            // remote deleted while local changed: rename local as conflict, then delete
 )
 
 type action struct {
@@ -593,8 +595,16 @@ func classify(
 				a.kind = upload
 			}
 			actions = append(actions, a)
+		} else if !loc.isDir && isLocalChanged(loc, dbEntry) {
+			// Remote deleted while local was modified → save conflict copy, then delete.
+			actions = append(actions, action{
+				kind:  conflictDeleteLocal,
+				path:  path,
+				isDir: loc.isDir,
+				local: loc,
+			})
 		} else {
-			// Was in DB, was on remote, now only local → remote deleted → delete local.
+			// Remote deleted, local unchanged → delete local.
 			actions = append(actions, action{
 				kind:  deleteLocal,
 				path:  path,
@@ -784,7 +794,7 @@ func execute(
 			transfers = append(transfers, a)
 		case deleteLocal, deleteRemote:
 			teardown = append(teardown, a)
-		case conflictTake:
+		case conflictTake, conflictDeleteLocal:
 			conflicts = append(conflicts, a)
 		default: // mkdirLocal, mkcolRemote
 			creates = append(creates, a)
@@ -995,6 +1005,19 @@ func execOne(
 		// Now download the server version as if it were a fresh download.
 		a.kind = download
 		return execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress)
+
+	case conflictDeleteLocal:
+		// Remote was deleted while local was modified: preserve local changes as a
+		// conflict copy so no work is lost, then remove the original path.
+		conflictPath := conflictName(localAbs)
+		logf(fl, "[sync] conflict     %q — remote deleted, renaming local to %s", a.path, filepath.Base(conflictPath))
+		if err := os.Rename(localAbs, conflictPath); err != nil {
+			return fmt.Errorf("rename conflict copy: %w", err)
+		}
+		if err := state.AddConflict(a.path, conflictPath, time.Now()); err != nil {
+			logf(fl, "[sync] WARNING record conflict %q: %v", a.path, err)
+		}
+		return state.Delete(a.path)
 	}
 
 	return nil
@@ -1043,6 +1066,8 @@ func kindName(k actionKind) string {
 		return "mkdirLocal"
 	case conflictTake:
 		return "conflict"
+	case conflictDeleteLocal:
+		return "conflictDelete"
 	default:
 		return "unknown"
 	}
