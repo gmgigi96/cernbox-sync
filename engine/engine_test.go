@@ -530,6 +530,40 @@ func TestSync_LocalDeleted(t *testing.T) {
 	}
 }
 
+// File was deleted locally but the remote version changed in the meantime.
+// Per the "write wins over delete" rule, the server's new content must be
+// restored locally; the remote file must NOT be deleted.
+func TestSync_LocalDeletedRemoteUpdated(t *testing.T) {
+	env := setup(t)
+	oldTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	newTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+
+	env.dav.addFile("report.txt", "new server content", "etag-v2", newTime)
+	// DB baseline matches the OLD remote etag; local file no longer exists.
+	env.seedDB(db.Entry{
+		Path:         "report.txt",
+		ETag:         "etag-v1",
+		Size:         10,
+		LastModified: oldTime,
+	})
+
+	env.run()
+
+	// Remote must NOT have been deleted.
+	if contains(env.dav.deletes, "report.txt") {
+		t.Fatal("report.txt must not be deleted from remote; server write should win")
+	}
+	// Server version must be restored locally.
+	if got := env.readLocal("report.txt"); got != "new server content" {
+		t.Fatalf("local file should contain server version; got %q", got)
+	}
+	// DB must reflect the new etag.
+	entry := env.dbGet("report.txt")
+	if entry == nil || entry.ETag != "etag-v2" {
+		t.Fatalf("DB should reflect new etag; entry=%v", entry)
+	}
+}
+
 // Remote ETag changed since last sync; local file is unchanged.
 // Expected: file re-downloaded; DB updated with the new ETag.
 func TestSync_RemoteUpdated(t *testing.T) {

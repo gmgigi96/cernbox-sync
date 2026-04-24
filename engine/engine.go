@@ -11,7 +11,8 @@
 //     - remoteDeleted: in DB, not in remote scan          → delete local
 //     - localNew   : exists locally, not in DB            → upload
 //     - localUpdated: mtime/size changed vs DB            → upload
-//     - localDeleted: in DB, not on disk                  → delete remote
+//     - localDeleted: in DB, not on disk, remote unchanged → delete remote
+//     - localDeletedRemoteUpdated: local deleted but remote changed → download (server wins)
 //     - conflict   : changed both locally & remotely      → server wins, rename local copy
 //     - inSync     : nothing changed                      → no-op
 //  5. Execute the actions in safe order:
@@ -519,12 +520,23 @@ func classify(
 			actions = append(actions, a)
 
 		case dbEntry != nil && loc == nil:
-			// In DB and remote but not local → local was deleted → delete remote.
-			actions = append(actions, action{
-				kind:  deleteRemote,
-				path:  path,
-				isDir: rem.IsDir,
-			})
+			if rem.ETag != dbEntry.ETag {
+				// Remote changed while local was deleted → server wins; download.
+				a := action{path: path, isDir: rem.IsDir, remote: rem}
+				if rem.IsDir {
+					a.kind = mkdirLocal
+				} else {
+					a.kind = download
+				}
+				actions = append(actions, a)
+			} else {
+				// Remote unchanged; propagate local deletion to server.
+				actions = append(actions, action{
+					kind:  deleteRemote,
+					path:  path,
+					isDir: rem.IsDir,
+				})
+			}
 
 		default:
 			// dbEntry != nil && loc != nil
