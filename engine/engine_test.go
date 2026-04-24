@@ -1169,6 +1169,359 @@ func TestSync_Conflict_MultipleConflictsOnSameFile(t *testing.T) {
 	}
 }
 
+// ─── multi-client helpers ─────────────────────────────────────────────────────
+
+// setupWithSharedDAV creates an isolated test environment (own local directory
+// and sync DB) that connects to an existing fakeWebDAV server. Use this to
+// simulate multiple sync clients sharing the same remote server.
+func setupWithSharedDAV(t *testing.T, dav *fakeWebDAV, srvURL string) *testEnv {
+	t.Helper()
+	tmp := t.TempDir()
+	localDir := filepath.Join(tmp, "local")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(tmp, "sync.db")
+	return &testEnv{
+		t:        t,
+		localDir: localDir,
+		dbPath:   dbPath,
+		dav:      dav,
+		cfg: engine.Config{
+			LocalRoot:  localDir,
+			RemoteBase: srvURL + davBasePath,
+			Username:   "user",
+			Password:   "pass",
+			DBPath:     dbPath,
+		},
+	}
+}
+
+// ─── multi-client tests ───────────────────────────────────────────────────────
+
+// A file uploaded by client A must be downloaded by client B on its next sync.
+func TestMultiClient_ClientBReceivesFileUploadedByClientA(t *testing.T) {
+	dav := newFakeWebDAV()
+	srv := httptest.NewServer(dav)
+	t.Cleanup(srv.Close)
+
+	envA := setupWithSharedDAV(t, dav, srv.URL)
+	envB := setupWithSharedDAV(t, dav, srv.URL)
+
+	envA.writeLocal("hello.txt", "hello from A")
+	envA.run()
+
+	if !contains(dav.puts, "hello.txt") {
+		t.Fatalf("expected client A to upload hello.txt; puts=%v", dav.puts)
+	}
+	dav.resetSideEffects()
+
+	envB.run()
+
+	if !envB.localExists("hello.txt") {
+		t.Fatal("client B should have downloaded hello.txt")
+	}
+	if got := envB.readLocal("hello.txt"); got != "hello from A" {
+		t.Fatalf("client B hello.txt: got %q, want %q", got, "hello from A")
+	}
+	if envB.dbGet("hello.txt") == nil {
+		t.Fatal("client B DB should have an entry for hello.txt")
+	}
+	envB.assertNoActions("client B should not upload on first sync")
+}
+
+// When client A updates a shared file and syncs, client B must download the new
+// version on its next sync (no conflict — B did not modify the file).
+func TestMultiClient_ClientBGetsUpdateFromClientA(t *testing.T) {
+	dav := newFakeWebDAV()
+	srv := httptest.NewServer(dav)
+	t.Cleanup(srv.Close)
+
+	baseTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+
+	dav.addFile("notes.txt", "v1", "etag-v1", baseTime)
+
+	envA := setupWithSharedDAV(t, dav, srv.URL)
+	envB := setupWithSharedDAV(t, dav, srv.URL)
+
+	// Both clients start with v1 already synced.
+	envA.seedDB(db.Entry{Path: "notes.txt", ETag: "etag-v1", Size: 2, LastModified: baseTime})
+	envB.seedDB(db.Entry{Path: "notes.txt", ETag: "etag-v1", Size: 2, LastModified: baseTime})
+	envA.writeLocalAt("notes.txt", "v1", baseTime)
+	envB.writeLocalAt("notes.txt", "v1", baseTime)
+
+	// Client A modifies and syncs; server now holds A's version.
+	updateTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+	envA.writeLocalAt("notes.txt", "v2 from A", updateTime)
+	envA.run()
+
+	if !contains(dav.puts, "notes.txt") {
+		t.Fatalf("expected client A to upload notes.txt; puts=%v", dav.puts)
+	}
+	dav.resetSideEffects()
+
+	// Client B syncs: remote ETag changed (etag-after-put ≠ etag-v1), local unchanged → download.
+	envB.run()
+
+	if got := envB.readLocal("notes.txt"); got != "v2 from A" {
+		t.Fatalf("client B notes.txt: got %q, want %q", got, "v2 from A")
+	}
+	envB.assertNoActions("client B should not upload when only the remote changed")
+}
+
+// When both clients independently modify the same file and the first one syncs,
+// the second client must detect a conflict: it renames its version to .conflict-*
+// and downloads the server (first client's) version.
+func TestMultiClient_ConflictBothClientsEditSameFile(t *testing.T) {
+	dav := newFakeWebDAV()
+	srv := httptest.NewServer(dav)
+	t.Cleanup(srv.Close)
+
+	baseTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	updateTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+
+	dav.addFile("data.txt", "v1", "etag-v1", baseTime)
+
+	envA := setupWithSharedDAV(t, dav, srv.URL)
+	envB := setupWithSharedDAV(t, dav, srv.URL)
+
+	// Both clients start with v1 already synced.
+	envA.seedDB(db.Entry{Path: "data.txt", ETag: "etag-v1", Size: 2, LastModified: baseTime})
+	envB.seedDB(db.Entry{Path: "data.txt", ETag: "etag-v1", Size: 2, LastModified: baseTime})
+	envA.writeLocalAt("data.txt", "v1", baseTime)
+	envB.writeLocalAt("data.txt", "v1", baseTime)
+
+	// Client A modifies and syncs first; server now has A's version.
+	envA.writeLocalAt("data.txt", "A's edit", updateTime)
+	envA.run()
+
+	if !contains(dav.puts, "data.txt") {
+		t.Fatalf("expected client A to upload data.txt; puts=%v", dav.puts)
+	}
+	dav.resetSideEffects()
+
+	// Client B has also modified data.txt locally (concurrent edit).
+	// "B's edit" is 8 bytes vs DB baseline of 2 → size change detected as local change.
+	envB.writeLocalAt("data.txt", "B's edit", updateTime)
+
+	// Client B syncs: remote ETag changed AND local file changed → conflict.
+	envB.run()
+
+	// Server version (A's edit) wins; B's data.txt must now hold it.
+	if got := envB.readLocal("data.txt"); got != "A's edit" {
+		t.Fatalf("client B data.txt after conflict: got %q, want %q", got, "A's edit")
+	}
+
+	// B's original edit must be preserved as a .conflict-* copy.
+	conflicts := envB.conflictFiles(".")
+	if len(conflicts) == 0 {
+		t.Fatal("expected a .conflict-* file preserving B's edit")
+	}
+	if got := envB.readLocal(conflicts[0]); got != "B's edit" {
+		t.Fatalf("conflict file content: got %q, want %q", got, "B's edit")
+	}
+}
+
+// When client A deletes a file that client B has modified locally (not yet synced),
+// the engine must preserve B's changes as a .conflict-* copy and delete the original.
+func TestMultiClient_ClientADeletesFileClientBModified(t *testing.T) {
+	dav := newFakeWebDAV()
+	srv := httptest.NewServer(dav)
+	t.Cleanup(srv.Close)
+
+	baseTime := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
+	updateTime := time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC)
+
+	dav.addFile("report.txt", "original", "etag-v1", baseTime)
+
+	envA := setupWithSharedDAV(t, dav, srv.URL)
+	envB := setupWithSharedDAV(t, dav, srv.URL)
+
+	envA.seedDB(db.Entry{Path: "report.txt", ETag: "etag-v1", Size: 8, LastModified: baseTime})
+	envB.seedDB(db.Entry{Path: "report.txt", ETag: "etag-v1", Size: 8, LastModified: baseTime})
+	envA.writeLocalAt("report.txt", "original", baseTime)
+	envB.writeLocalAt("report.txt", "original", baseTime)
+
+	// Client A deletes the file locally and syncs.
+	if err := os.Remove(filepath.Join(envA.localDir, "report.txt")); err != nil {
+		t.Fatal(err)
+	}
+	envA.run()
+
+	if !contains(dav.deletes, "report.txt") {
+		t.Fatalf("expected client A to delete report.txt on server; deletes=%v", dav.deletes)
+	}
+	dav.resetSideEffects()
+
+	// Client B has modified report.txt locally (11 bytes vs DB baseline of 8).
+	envB.writeLocalAt("report.txt", "B's changes", updateTime)
+
+	// Client B syncs: remote deleted + local changed → conflictDeleteLocal.
+	envB.run()
+
+	// Remote deletion wins: B's original path must be gone.
+	if envB.localExists("report.txt") {
+		t.Fatal("client B report.txt should have been removed (remote deletion wins)")
+	}
+
+	// B's local changes must be preserved as a .conflict-* copy.
+	conflicts := envB.conflictFiles(".")
+	if len(conflicts) == 0 {
+		t.Fatal("expected a .conflict-* file preserving B's changes")
+	}
+	if got := envB.readLocal(conflicts[0]); got != "B's changes" {
+		t.Fatalf("conflict copy content: got %q, want %q", got, "B's changes")
+	}
+}
+
+// Simulates a complete edit cycle between two clients:
+// A creates a file → B downloads it → B edits and uploads → A downloads B's version.
+func TestMultiClient_TwoClientsRoundTrip(t *testing.T) {
+	dav := newFakeWebDAV()
+	srv := httptest.NewServer(dav)
+	t.Cleanup(srv.Close)
+
+	envA := setupWithSharedDAV(t, dav, srv.URL)
+	envB := setupWithSharedDAV(t, dav, srv.URL)
+
+	// Round 1: A creates the file and syncs.
+	envA.writeLocal("counter.txt", "hello")
+	envA.run()
+	if !contains(dav.puts, "counter.txt") {
+		t.Fatalf("round 1: expected A to upload counter.txt; puts=%v", dav.puts)
+	}
+	dav.resetSideEffects()
+
+	// Round 2: B syncs and receives A's file.
+	envB.run()
+	if got := envB.readLocal("counter.txt"); got != "hello" {
+		t.Fatalf("round 2: client B counter.txt: got %q, want %q", got, "hello")
+	}
+	dav.resetSideEffects()
+
+	// Round 3: B edits (size differs from DB baseline: 11 bytes vs 5) and syncs.
+	envB.writeLocal("counter.txt", "hello world")
+	envB.run()
+	if !contains(dav.puts, "counter.txt") {
+		t.Fatalf("round 3: expected B to upload counter.txt; puts=%v", dav.puts)
+	}
+	// Real WebDAV servers assign a new unique ETag after each PUT. Simulate that
+	// here so A (whose DB still holds the old ETag) detects the remote change.
+	dav.mu.Lock()
+	dav.files["counter.txt"].etag = "etag-b-version"
+	dav.mu.Unlock()
+	dav.resetSideEffects()
+
+	// Round 4: A syncs and receives B's updated version.
+	envA.run()
+	if got := envA.readLocal("counter.txt"); got != "hello world" {
+		t.Fatalf("round 4: client A counter.txt: got %q, want %q", got, "hello world")
+	}
+	envA.assertNoActions("round 4: A should not re-upload")
+}
+
+// When both clients independently create different new files, each file must
+// propagate to the other client within two sync cycles.
+func TestMultiClient_BothClientsCreateDifferentFiles(t *testing.T) {
+	dav := newFakeWebDAV()
+	srv := httptest.NewServer(dav)
+	t.Cleanup(srv.Close)
+
+	envA := setupWithSharedDAV(t, dav, srv.URL)
+	envB := setupWithSharedDAV(t, dav, srv.URL)
+
+	envA.writeLocal("a.txt", "content from A")
+	envB.writeLocal("b.txt", "content from B")
+
+	// Client A syncs first: uploads a.txt.
+	envA.run()
+	if !contains(dav.puts, "a.txt") {
+		t.Fatalf("expected A to upload a.txt; puts=%v", dav.puts)
+	}
+	dav.resetSideEffects()
+
+	// Client B syncs: uploads b.txt and downloads a.txt.
+	envB.run()
+	if !contains(dav.puts, "b.txt") {
+		t.Fatalf("expected B to upload b.txt; puts=%v", dav.puts)
+	}
+	if !envB.localExists("a.txt") {
+		t.Fatal("client B should have downloaded a.txt")
+	}
+	if got := envB.readLocal("a.txt"); got != "content from A" {
+		t.Fatalf("client B a.txt: got %q, want %q", got, "content from A")
+	}
+	dav.resetSideEffects()
+
+	// Client A syncs again: downloads b.txt, no new uploads.
+	envA.run()
+	if !envA.localExists("b.txt") {
+		t.Fatal("client A should have downloaded b.txt")
+	}
+	if got := envA.readLocal("b.txt"); got != "content from B" {
+		t.Fatalf("client A b.txt: got %q, want %q", got, "content from B")
+	}
+	envA.assertNoActions("client A second sync should not upload")
+}
+
+// Client A creates a directory with a file; client B gets both, adds another file
+// to the same directory, and client A then receives that new file.
+func TestMultiClient_ClientACreatesDirClientBAddsFileToIt(t *testing.T) {
+	dav := newFakeWebDAV()
+	srv := httptest.NewServer(dav)
+	t.Cleanup(srv.Close)
+
+	envA := setupWithSharedDAV(t, dav, srv.URL)
+	envB := setupWithSharedDAV(t, dav, srv.URL)
+
+	// Client A creates docs/ and docs/readme.md, then syncs.
+	envA.mkdirLocal("docs")
+	envA.writeLocal("docs/readme.md", "# readme")
+	envA.run()
+
+	if !contains(dav.mkcols, "docs") {
+		t.Fatalf("expected A to create docs/ on server; mkcols=%v", dav.mkcols)
+	}
+	if !contains(dav.puts, "docs/readme.md") {
+		t.Fatalf("expected A to upload docs/readme.md; puts=%v", dav.puts)
+	}
+	dav.resetSideEffects()
+
+	// Client B syncs: downloads docs/ and docs/readme.md.
+	envB.run()
+	if !envB.localIsDir("docs") {
+		t.Fatal("client B should have created docs/ directory")
+	}
+	if got := envB.readLocal("docs/readme.md"); got != "# readme" {
+		t.Fatalf("client B docs/readme.md: got %q, want %q", got, "# readme")
+	}
+	dav.resetSideEffects()
+
+	// Client B creates docs/notes.md and syncs.
+	envB.writeLocal("docs/notes.md", "my notes")
+	envB.run()
+	if !contains(dav.puts, "docs/notes.md") {
+		t.Fatalf("expected B to upload docs/notes.md; puts=%v", dav.puts)
+	}
+	// Real WebDAV servers propagate ETag changes up to parent directories when a
+	// child is added. Simulate that here so A's incremental scan rescans docs/ and
+	// discovers the new file (without this, A would skip docs/ as unchanged).
+	dav.mu.Lock()
+	dav.files["docs"].etag = "etag-docs-updated"
+	dav.mu.Unlock()
+	dav.resetSideEffects()
+
+	// Client A syncs: incremental scan detects docs/ ETag changed, rescans it,
+	// and downloads docs/notes.md.
+	envA.run()
+	if !envA.localExists("docs/notes.md") {
+		t.Fatal("client A should have downloaded docs/notes.md")
+	}
+	if got := envA.readLocal("docs/notes.md"); got != "my notes" {
+		t.Fatalf("client A docs/notes.md: got %q, want %q", got, "my notes")
+	}
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 func contains(ss []string, s string) bool {
