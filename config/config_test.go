@@ -59,6 +59,34 @@ func TestAdd_Get(t *testing.T) {
 	}
 }
 
+// TestOnDemand_Roundtrip verifies that the OnDemand flag survives a full
+// add → get cycle through the config DB, since the daemon relies on it to
+// decide whether to enable placeholder mode.
+func TestOnDemand_Roundtrip(t *testing.T) {
+	d := openDB(t)
+	f := config.Folder{
+		Name:       "ondemand",
+		LocalRoot:  "/home/user/ondemand",
+		RemoteBase: "https://dav.example.com/dav/ondemand",
+		Settings: config.FolderSettings{
+			OnDemand: true,
+		},
+	}
+	if err := d.Add(f); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	got, err := d.Get("ondemand")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Get returned nil")
+	}
+	if !got.Settings.OnDemand {
+		t.Error("OnDemand should be true after roundtrip")
+	}
+}
+
 func TestGet_NotFound(t *testing.T) {
 	d := openDB(t)
 	got, err := d.Get("nonexistent")

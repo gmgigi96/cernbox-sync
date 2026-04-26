@@ -104,10 +104,11 @@ func cmdAdd(args []string) {
 	localDir := fs.String("local", "", "Local directory to sync (required)")
 	remoteURL := fs.String("remote", "", "Remote WebDAV URL of the space (required)")
 	foldersRaw := fs.String("folders", "", "Comma-separated list of sub-folders to sync (omit to sync entire space)")
+	onDemand := fs.Bool("on-demand", false, "Enable on-demand sync (Cloud Files API on Windows): files appear as placeholders and download on access")
 	_ = fs.Parse(args)
 
 	if *name == "" || *localDir == "" || *remoteURL == "" {
-		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync add -name <n> -local <dir> -remote <url> [-folders f1,f2]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync add -name <n> -local <dir> -remote <url> [-folders f1,f2] [-on-demand]\n\n")
 		fs.PrintDefaults()
 		os.Exit(1)
 	}
@@ -129,6 +130,9 @@ func cmdAdd(args []string) {
 			LocalRoot:  *localDir,
 			RemoteBase: *remoteURL,
 			Folders:    folders,
+			Settings: config.FolderSettings{
+				OnDemand: *onDemand,
+			},
 		},
 	})
 	fmt.Printf("Registered sync folder %q\n", *name)

@@ -66,6 +66,11 @@ type FolderSettings struct {
 	AutoSyncOnChange bool `json:"auto_sync_on_change"`
 	// Paused suspends automatic and manual syncing for this folder.
 	Paused bool `json:"paused,omitempty"`
+	// OnDemand enables on-demand sync (Cloud Files API on Windows): remote
+	// files appear locally as placeholders and are downloaded only when
+	// accessed. Once set on a folder, this flag is immutable for v1 — to
+	// change modes, remove and re-add the folder. Defaults to false.
+	OnDemand bool `json:"on_demand,omitempty"`
 }
 
 // Folder represents one registered sync pair.
