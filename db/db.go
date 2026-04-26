@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS conflicts (
     created_at    INTEGER NOT NULL,  -- unix timestamp when the conflict was recorded
     PRIMARY KEY (conflict_path)
 );
+CREATE TABLE IF NOT EXISTS pinned_paths (
+    path TEXT NOT NULL PRIMARY KEY  -- relative path that should stay always-local
+);
 `
 
 // Entry represents one row in the sync_state table.
@@ -220,3 +223,57 @@ func (d *DB) DeleteConflict(conflictPath string) error {
 	return nil
 }
 
+// Pin marks a path (relative to the folder root) as always-local. The
+// daemon re-applies this on every sync cycle in case the OS-side state
+// drifted (e.g. after CfUpdatePlaceholder cleared it).
+func (d *DB) Pin(path string) error {
+	_, err := d.conn.Exec(
+		`INSERT OR IGNORE INTO pinned_paths(path) VALUES (?)`, path)
+	if err != nil {
+		return fmt.Errorf("db pin %q: %w", path, err)
+	}
+	return nil
+}
+
+// Unpin removes the always-local mark on path.
+func (d *DB) Unpin(path string) error {
+	_, err := d.conn.Exec(`DELETE FROM pinned_paths WHERE path = ?`, path)
+	if err != nil {
+		return fmt.Errorf("db unpin %q: %w", path, err)
+	}
+	return nil
+}
+
+// IsPinned reports whether path was pinned via Pin.
+func (d *DB) IsPinned(path string) (bool, error) {
+	var exists int
+	err := d.conn.QueryRow(
+		`SELECT 1 FROM pinned_paths WHERE path = ? LIMIT 1`, path,
+	).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("db is-pinned %q: %w", path, err)
+	}
+	return true, nil
+}
+
+// AllPinned returns every pinned path. Used by the daemon to re-apply
+// pin state during each on-demand sync cycle.
+func (d *DB) AllPinned() ([]string, error) {
+	rows, err := d.conn.Query(`SELECT path FROM pinned_paths`)
+	if err != nil {
+		return nil, fmt.Errorf("db list pinned: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("db scan pinned: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

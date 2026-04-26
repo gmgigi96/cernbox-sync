@@ -36,6 +36,10 @@ const (
 	CmdResume = "resume"
 	// CmdListConflicts returns all unresolved conflicts, optionally filtered by folder name.
 	CmdListConflicts = "list-conflicts"
+	// CmdPin marks a path inside an on-demand folder as always-local.
+	CmdPin = "pin"
+	// CmdUnpin reverts a path back to the default unpinned (lazy) state.
+	CmdUnpin = "unpin"
 )
 
 // Event type names pushed by the daemon to subscribed clients.
@@ -117,6 +121,7 @@ type Request struct {
 	Cmd      string          `json:"cmd"`
 	Folder   config.Folder   `json:"folder"`            // used by CmdAdd
 	Name     string          `json:"name,omitempty"`    // used by CmdRemove and CmdSync
+	Path     string          `json:"path,omitempty"`    // used by CmdPin and CmdUnpin (relative to the folder root)
 	Settings SettingsPayload `json:"settings"`          // used by CmdSetSettings
 	Account  *AccountPayload `json:"account,omitempty"` // used by CmdSetAccount
 }

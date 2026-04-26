@@ -834,6 +834,40 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		d.log.Debug("[daemon] list-conflicts", "count", len(conflicts))
 		return ipc.Response{OK: true, Conflicts: conflicts}
 
+	case ipc.CmdPin, ipc.CmdUnpin:
+		if req.Name == "" || req.Path == "" {
+			return fail("pin/unpin requires both name and path")
+		}
+		f, err := d.cfgDB.Get(req.Name)
+		if err != nil {
+			return fail(err.Error())
+		}
+		if f == nil {
+			return fail(fmt.Sprintf("folder %q not found", req.Name))
+		}
+		if !f.Settings.OnDemand {
+			return fail(fmt.Sprintf("folder %q is not on-demand", req.Name))
+		}
+		sdb, err := db.Open(filepath.Join(f.LocalRoot, ".sync.db"))
+		if err != nil {
+			return fail(err.Error())
+		}
+		defer sdb.Close()
+		if req.Cmd == ipc.CmdPin {
+			if err := sdb.Pin(req.Path); err != nil {
+				return fail(err.Error())
+			}
+		} else {
+			if err := sdb.Unpin(req.Path); err != nil {
+				return fail(err.Error())
+			}
+		}
+		// The CF API call to actually flip the OS-side pin state lands
+		// once the WinRT registration path is wired (see cloudfiles.Provider).
+		// Until then we persist the intent so the daemon can replay it.
+		d.log.Info("[daemon] pin op", "cmd", req.Cmd, "folder", req.Name, "path", req.Path)
+		return ok()
+
 	default:
 		d.log.Error("[daemon] unknown command", "cmd", req.Cmd)
 		return fail(fmt.Sprintf("unknown command %q", req.Cmd))
