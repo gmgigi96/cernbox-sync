@@ -47,6 +47,18 @@ type Config struct {
 	Fetch FetchFunc
 }
 
+// SetPinState sets the always-local pin flag on the placeholder at absPath.
+// pinned == true keeps the OS-cached content for the file even under disk
+// pressure; pinned == false reverts to the default lazy state.
+//
+// The function operates on an existing placeholder via a file handle and
+// does not require a connected sync root, so the daemon can call it
+// directly in response to a pin/unpin command without spinning up a
+// Provider. On non-Windows platforms it returns ErrUnsupported.
+//
+// Implemented in cloudfiles_windows.go and cloudfiles_other.go.
+var _ = (func(string, bool) error)(SetPinState)
+
 // Provider owns one CF-API sync root and exposes the placeholder operations
 // used by the engine (engine.PlaceholderFS) plus lifecycle and pinning.
 //

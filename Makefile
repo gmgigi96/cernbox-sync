@@ -211,7 +211,10 @@ windows-vm-setup: ## Install Go, Git, and MinGW inside the Windows VM (run once 
 test-windows: ## Build and run Windows-specific tests inside the VM
 	$(call wait-for-windows-ssh)
 	@echo "Uploading source..."
-	$(WINDOWS_SSH_CMD) "New-Item -Force -ItemType Directory C:/workspace/cernbox-sync | Out-Null"
+	@# Wipe the workspace first so files removed locally also disappear in
+	@# the VM — tar -x merges into the destination but doesn't delete
+	@# stale files from previous runs.
+	$(WINDOWS_SSH_CMD) "if (Test-Path C:/workspace/cernbox-sync) { Remove-Item -Recurse -Force C:/workspace/cernbox-sync }; New-Item -Force -ItemType Directory C:/workspace/cernbox-sync | Out-Null"
 	@tar -czf - \
 		--exclude='.git' \
 		--exclude='$(WINDOWS_VM_DIR)/*.qcow2' \

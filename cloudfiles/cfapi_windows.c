@@ -205,6 +205,12 @@ typedef HRESULT (WINAPI *PFN_CfExecute)(
     const CernboxCfOperationInfo *,
     void *);          /* CF_OPERATION_PARAMETERS */
 
+typedef HRESULT (WINAPI *PFN_CfSetPinState)(
+    HANDLE,           /* FileHandle */
+    int,              /* CF_PIN_STATE                       */
+    DWORD,            /* CF_SET_PIN_FLAGS                   */
+    LPOVERLAPPED);
+
 static PFN_CfRegisterSyncRoot   p_CfRegisterSyncRoot   = NULL;
 static PFN_CfUnregisterSyncRoot p_CfUnregisterSyncRoot = NULL;
 static PFN_CfConnectSyncRoot    p_CfConnectSyncRoot    = NULL;
@@ -212,6 +218,7 @@ static PFN_CfDisconnectSyncRoot p_CfDisconnectSyncRoot = NULL;
 static PFN_CfCreatePlaceholders p_CfCreatePlaceholders = NULL;
 static PFN_CfUpdatePlaceholder  p_CfUpdatePlaceholder  = NULL;
 static PFN_CfExecute            p_CfExecute            = NULL;
+static PFN_CfSetPinState        p_CfSetPinState        = NULL;
 
 /* enable_manage_volume_privilege turns on SeManageVolumePrivilege for the
  * current process token. CfConnectSyncRoot needs it; without the privilege
@@ -253,10 +260,11 @@ static int32_t load_cldapi(void) {
     p_CfCreatePlaceholders = (PFN_CfCreatePlaceholders)(void *)GetProcAddress(h, "CfCreatePlaceholders");
     p_CfUpdatePlaceholder  = (PFN_CfUpdatePlaceholder) (void *)GetProcAddress(h, "CfUpdatePlaceholder");
     p_CfExecute            = (PFN_CfExecute)           (void *)GetProcAddress(h, "CfExecute");
+    p_CfSetPinState        = (PFN_CfSetPinState)       (void *)GetProcAddress(h, "CfSetPinState");
     if (!p_CfRegisterSyncRoot || !p_CfUnregisterSyncRoot ||
         !p_CfConnectSyncRoot || !p_CfDisconnectSyncRoot ||
         !p_CfCreatePlaceholders || !p_CfUpdatePlaceholder ||
-        !p_CfExecute) {
+        !p_CfExecute || !p_CfSetPinState) {
         loaded = -1;
         return E_NOTIMPL;
     }
@@ -573,4 +581,33 @@ int32_t cf_execute_transfer(
     params.Buffer           = (LPVOID)buffer;
 
     return (int32_t)p_CfExecute(&opi, &params);
+}
+
+int32_t cf_set_pin_state(const char *utf8_abs_path, int32_t pinned) {
+    int32_t loaderr = load_cldapi();
+    if (loaderr) return loaderr;
+
+    wchar_t *path = utf8_to_wide(utf8_abs_path);
+    if (!path) return E_OUTOFMEMORY;
+
+    /* Open the placeholder for writing attributes. FILE_FLAG_OPEN_REPARSE_POINT
+     * keeps us from triggering hydration just by opening it. */
+    HANDLE hFile = CreateFileW(
+        path,
+        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+        NULL);
+    free(path);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    /* CF_PIN_STATE: 1 = PINNED, 2 = UNPINNED. CF_SET_PIN_FLAG_NONE = 0. */
+    int state = pinned ? 1 : 2;
+    HRESULT hr = p_CfSetPinState(hFile, state, 0, NULL);
+    CloseHandle(hFile);
+    return (int32_t)hr;
 }

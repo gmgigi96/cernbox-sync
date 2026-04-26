@@ -84,6 +84,12 @@ int32_t cf_execute_transfer(
     const void *buffer,
     int32_t     status);
 
+/* Set the pin state of a placeholder file: pinned != 0 keeps the content
+ * always-local even under disk pressure; pinned == 0 reverts to the
+ * default lazy state. utf8_abs_path must point to an existing placeholder
+ * under a registered sync root. */
+int32_t cf_set_pin_state(const char *utf8_abs_path, int32_t pinned);
+
 #ifdef __cplusplus
 }
 #endif

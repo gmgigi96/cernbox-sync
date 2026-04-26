@@ -15,6 +15,13 @@ func New(_ Config) (Provider, error) {
 	return nil, ErrUnsupported
 }
 
+// SetPinState always returns ErrUnsupported on non-Windows platforms.
+// The daemon still persists the intent in its DB so a future Windows
+// daemon can replay it.
+func SetPinState(_ string, _ bool) error {
+	return ErrUnsupported
+}
+
 // stubProvider is here for reference only — it is not constructible. Its
 // purpose is to ensure the Provider interface stays implementable across
 // platforms (compile-time check below).

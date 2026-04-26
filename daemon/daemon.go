@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/gmgigi96/cernbox-sync/cloudfiles"
 	"github.com/gmgigi96/cernbox-sync/config"
 	"github.com/gmgigi96/cernbox-sync/db"
 	"github.com/gmgigi96/cernbox-sync/engine"
@@ -853,7 +854,8 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 			return fail(err.Error())
 		}
 		defer sdb.Close()
-		if req.Cmd == ipc.CmdPin {
+		pin := req.Cmd == ipc.CmdPin
+		if pin {
 			if err := sdb.Pin(req.Path); err != nil {
 				return fail(err.Error())
 			}
@@ -862,9 +864,14 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 				return fail(err.Error())
 			}
 		}
-		// The CF API call to actually flip the OS-side pin state lands
-		// once the WinRT registration path is wired (see cloudfiles.Provider).
-		// Until then we persist the intent so the daemon can replay it.
+		// Apply the OS-side pin state best-effort. On non-Windows
+		// SetPinState returns ErrUnsupported and we just log it; the DB
+		// row above is the source of truth and gets re-applied each cycle.
+		abs := filepath.Join(f.LocalRoot, req.Path)
+		if err := cloudfiles.SetPinState(abs, pin); err != nil {
+			d.log.Warn("[daemon] CF SetPinState",
+				"cmd", req.Cmd, "folder", req.Name, "path", req.Path, "err", err)
+		}
 		d.log.Info("[daemon] pin op", "cmd", req.Cmd, "folder", req.Name, "path", req.Path)
 		return ok()
 

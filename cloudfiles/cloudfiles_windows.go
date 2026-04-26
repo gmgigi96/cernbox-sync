@@ -189,9 +189,30 @@ func (p *winProvider) Update(absPath string, r webdav.Resource) error {
 	return hresultErr(hr, "CfUpdatePlaceholder")
 }
 
-// Pin / Unpin land in the pinning phase.
-func (p *winProvider) Pin(relPath string) error   { return errNotImplemented }
-func (p *winProvider) Unpin(relPath string) error { return errNotImplemented }
+// Pin marks relPath (relative to LocalRoot) as always-local. The OS keeps
+// the file's content cached even under disk pressure. Pin can be called
+// before or after the placeholder has been hydrated; the API does not
+// trigger a download by itself.
+func (p *winProvider) Pin(relPath string) error   { return p.setPinState(relPath, true) }
+func (p *winProvider) Unpin(relPath string) error { return p.setPinState(relPath, false) }
+
+func (p *winProvider) setPinState(relPath string, pinned bool) error {
+	return SetPinState(filepath.Join(p.cfg.LocalRoot, relPath), pinned)
+}
+
+// SetPinState pins or unpins a placeholder file. See the package-level
+// documentation in cloudfiles.go for details.
+func SetPinState(absPath string, pinned bool) error {
+	cAbs := C.CString(absPath)
+	defer C.free(unsafe.Pointer(cAbs))
+
+	state := C.int32_t(0)
+	if pinned {
+		state = 1
+	}
+	hr := int32(C.cf_set_pin_state(cAbs, state))
+	return hresultErr(hr, "CfSetPinState")
+}
 
 // timeToFiletime converts a Go time to a Windows FILETIME (100 ns ticks
 // since 1 January 1601 UTC). Returns 0 for zero times.
