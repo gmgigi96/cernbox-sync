@@ -32,6 +32,13 @@ int32_t cf_unregister_sync_root(const char *utf8_path);
  * returned via out_connection_key and must be passed back to disconnect. */
 int32_t cf_connect_sync_root(const char *utf8_path, int64_t *out_connection_key);
 
+/* Connect with our FETCH_DATA callback registered. Use this in production —
+ * the callback-less cf_connect_sync_root is kept around for tests that only
+ * want to validate the registration handshake. */
+int32_t cf_connect_sync_root_with_callback(
+    const char *utf8_path,
+    int64_t    *out_connection_key);
+
 /* Disconnect a previously connected sync root. */
 int32_t cf_disconnect_sync_root(int64_t connection_key);
 
@@ -60,6 +67,22 @@ int32_t cf_update_placeholder(
     int64_t     mtime_filetime,
     const void *file_identity,
     int32_t     file_identity_len);
+
+/* Deliver a chunk of file content to the OS in response to a FETCH_DATA
+ * callback. transfer_key and connection_key come from the callback's
+ * CF_CALLBACK_INFO; offset and length describe where the bytes belong in
+ * the file; buffer holds the bytes (size == length). status is an
+ * NTSTATUS — 0 means success; non-zero signals an error.
+ *
+ * For multi-chunk transfers, call repeatedly with rising offsets until
+ * the full RequiredLength is delivered. */
+int32_t cf_execute_transfer(
+    int64_t     connection_key,
+    int64_t     transfer_key,
+    int64_t     offset,
+    int64_t     length,
+    const void *buffer,
+    int32_t     status);
 
 #ifdef __cplusplus
 }

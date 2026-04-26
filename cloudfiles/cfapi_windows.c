@@ -16,6 +16,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
+#include <objbase.h>   /* CoInitializeEx, COINIT_MULTITHREADED */
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -103,6 +104,78 @@ typedef struct {
 #define CERNBOX_CF_UPDATE_FLAG_MARK_IN_SYNC             0x2
 #define CERNBOX_CF_UPDATE_FLAG_DEHYDRATE                0x4
 
+/* CF_CALLBACK_TYPE values. */
+#define CERNBOX_CF_CALLBACK_TYPE_FETCH_DATA 0
+
+/* CF_OPERATION_TYPE values. */
+#define CERNBOX_CF_OPERATION_TYPE_TRANSFER_DATA 0
+
+/* CF_CALLBACK_INFO mirror; only the fields we use are typed precisely. The
+ * trailing fields we don't need are sized as opaque LARGE_INTEGER / DWORDs
+ * so the struct keeps the right layout for the OS. */
+typedef struct {
+    DWORD              StructSize;
+    LONG_PTR           ConnectionKey;     /* CF_CONNECTION_KEY.Internal */
+    LPVOID             CallbackContext;
+    LPCWSTR            VolumeGuidName;
+    LPCWSTR            VolumeDosName;
+    DWORD              VolumeSerialNumber;
+    int64_t            SyncRootFileId;
+    LPCWSTR            SyncRootIdentity;
+    DWORD              SyncRootIdentityLength;
+    int64_t            FileId;
+    int64_t            FileSize;
+    LPCVOID            FileIdentity;
+    DWORD              FileIdentityLength;
+    LPCWSTR            NormalizedPath;
+    int64_t            TransferKey;
+    UCHAR              PriorityHint;
+    LPVOID             CorrelationVector;
+    int64_t            ProcessInfo;
+    int64_t            RequestKey;
+} CernboxCfCallbackInfo;
+
+/* Subset of CF_CALLBACK_PARAMETERS we read: only the FetchData branch.
+ * The struct is union-shaped on the SDK side; we keep enough room. */
+typedef struct {
+    DWORD    Flags;
+    int64_t  RequiredFileOffset;
+    int64_t  RequiredLength;
+    int64_t  OptionalFileOffset;
+    int64_t  OptionalLength;
+    int64_t  LastDehydrationTime;
+    DWORD    LastDehydrationReason;
+    /* pad so the surrounding union is large enough on the SDK side */
+    UCHAR    _pad[64];
+} CernboxCfCallbackFetchDataParams;
+
+/* CF_OPERATION_INFO mirror for CfExecute. */
+typedef struct {
+    DWORD     StructSize;
+    DWORD     Type;             /* CF_OPERATION_TYPE                 */
+    LPCVOID   CorrelationVector;
+    int64_t   SyncStatus;
+    LONG_PTR  ConnectionKey;
+    int64_t   TransferKey;
+    DWORD     RequestKey;       /* spec uses bytes; DWORD is enough  */
+} CernboxCfOperationInfo;
+
+/* CF_OPERATION_PARAMETERS / TransferData branch. */
+typedef struct {
+    DWORD    ParamsSize;        /* must be set to sizeof(this struct) */
+    DWORD    Flags;
+    int32_t  CompletionStatus;  /* NTSTATUS */
+    int64_t  FileOffset;
+    int64_t  Length;
+    LPVOID   Buffer;
+} CernboxCfOperationParametersTransferData;
+
+/* CF_CALLBACK function pointer. Matches what cldapi.dll passes to the
+ * registration table. */
+typedef VOID (CALLBACK *CernboxCfCallback)(
+    const CernboxCfCallbackInfo *,
+    const void *);  /* opaque CF_CALLBACK_PARAMETERS pointer */
+
 /* Function-pointer typedefs. We resolve these at runtime via LoadLibrary
  * because MinGW does not ship libcldapi.a. */
 typedef HRESULT (WINAPI *PFN_CfRegisterSyncRoot)(
@@ -128,12 +201,38 @@ typedef HRESULT (WINAPI *PFN_CfUpdatePlaceholder)(
     int64_t *,        /* USN out */
     LPOVERLAPPED);
 
+typedef HRESULT (WINAPI *PFN_CfExecute)(
+    const CernboxCfOperationInfo *,
+    void *);          /* CF_OPERATION_PARAMETERS */
+
 static PFN_CfRegisterSyncRoot   p_CfRegisterSyncRoot   = NULL;
 static PFN_CfUnregisterSyncRoot p_CfUnregisterSyncRoot = NULL;
 static PFN_CfConnectSyncRoot    p_CfConnectSyncRoot    = NULL;
 static PFN_CfDisconnectSyncRoot p_CfDisconnectSyncRoot = NULL;
 static PFN_CfCreatePlaceholders p_CfCreatePlaceholders = NULL;
 static PFN_CfUpdatePlaceholder  p_CfUpdatePlaceholder  = NULL;
+static PFN_CfExecute            p_CfExecute            = NULL;
+
+/* enable_manage_volume_privilege turns on SeManageVolumePrivilege for the
+ * current process token. CfConnectSyncRoot needs it; without the privilege
+ * cldapi.dll faults internally rather than returning a clean HRESULT. The
+ * privilege is in the Administrators group's token by default but isn't
+ * enabled — AdjustTokenPrivileges flips the bit. Idempotent. */
+static void enable_manage_volume_privilege(void) {
+    HANDLE token;
+    if (!OpenProcessToken(GetCurrentProcess(),
+                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
+        return;
+    }
+    TOKEN_PRIVILEGES tp = {0};
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    if (LookupPrivilegeValueW(NULL, L"SeManageVolumePrivilege",
+                              &tp.Privileges[0].Luid)) {
+        AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), NULL, NULL);
+    }
+    CloseHandle(token);
+}
 
 /* Lazy-load cldapi.dll on first use. Returns 0 on success, an HRESULT on
  * failure. Subsequent calls are O(1). */
@@ -153,9 +252,11 @@ static int32_t load_cldapi(void) {
     p_CfDisconnectSyncRoot = (PFN_CfDisconnectSyncRoot)(void *)GetProcAddress(h, "CfDisconnectSyncRoot");
     p_CfCreatePlaceholders = (PFN_CfCreatePlaceholders)(void *)GetProcAddress(h, "CfCreatePlaceholders");
     p_CfUpdatePlaceholder  = (PFN_CfUpdatePlaceholder) (void *)GetProcAddress(h, "CfUpdatePlaceholder");
+    p_CfExecute            = (PFN_CfExecute)           (void *)GetProcAddress(h, "CfExecute");
     if (!p_CfRegisterSyncRoot || !p_CfUnregisterSyncRoot ||
         !p_CfConnectSyncRoot || !p_CfDisconnectSyncRoot ||
-        !p_CfCreatePlaceholders || !p_CfUpdatePlaceholder) {
+        !p_CfCreatePlaceholders || !p_CfUpdatePlaceholder ||
+        !p_CfExecute) {
         loaded = -1;
         return E_NOTIMPL;
     }
@@ -373,4 +474,103 @@ int32_t cf_update_placeholder(
         &usn, NULL);
     CloseHandle(hFile);
     return (int32_t)hr;
+}
+
+/* ── FETCH_DATA callback bridge ─────────────────────────────────────────── */
+
+/* The Go entry point (//export goFetchData in callback_windows.go) is
+ * declared in cgo's auto-generated header. Including it pulls in the exact
+ * function signature so we don't drift from the Go side. */
+#include "_cgo_export.h"
+
+/* on_fetch_data is wired into the CF_CALLBACK_REGISTRATION table for
+ * CF_CALLBACK_TYPE_FETCH_DATA. The OS invokes it on a thread-pool thread
+ * each time a placeholder is read for the first time. We pull the few
+ * fields Go needs and call goFetchData; the heavy lifting (download +
+ * CfExecute) happens in a Go worker so the callback returns fast. */
+static VOID CALLBACK on_fetch_data(
+    const CernboxCfCallbackInfo *info,
+    const void                  *params_in) {
+    const CernboxCfCallbackFetchDataParams *params =
+        (const CernboxCfCallbackFetchDataParams *)params_in;
+    /* cgo's auto-generated signature uses `void *` so we cast away the
+     * const here. The Go side does not mutate the buffer. */
+    goFetchData(
+        (int64_t)info->ConnectionKey,
+        info->TransferKey,
+        (void *)info->FileIdentity,
+        (int32_t)info->FileIdentityLength,
+        params->RequiredFileOffset,
+        params->RequiredLength);
+}
+
+/* cf_connect_sync_root_with_callback connects with our FETCH_DATA handler
+ * registered. Replaces cf_connect_sync_root for the real sync root path
+ * (the older empty-callback variant is left in place for tests that just
+ * want to validate the registration handshake). */
+int32_t cf_connect_sync_root_with_callback(
+    const char *utf8_path,
+    int64_t    *out_connection_key) {
+    int32_t loaderr = load_cldapi();
+    if (loaderr) return loaderr;
+
+    /* CfConnectSyncRoot requires SeManageVolumePrivilege; Administrators
+     * have it but it's not enabled by default. Without this, cldapi.dll
+     * faults internally rather than returning a clean access-denied. */
+    enable_manage_volume_privilege();
+
+    /* CfConnectSyncRoot requires the calling thread to be COM-initialized
+     * to MTA. RPC_E_CHANGED_MODE just means COM was already initialized
+     * with a different apartment model — that's fine for our purposes. */
+    HRESULT cohr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (FAILED(cohr) && cohr != RPC_E_CHANGED_MODE) {
+        return (int32_t)cohr;
+    }
+
+    wchar_t *path = utf8_to_wide(utf8_path);
+    if (!path) return E_OUTOFMEMORY;
+
+    /* The OS keeps a pointer to the callback table for the lifetime of the
+     * connection — a stack-allocated array would dangle as soon as we
+     * return, leading to access violations inside cldapi.dll. Static
+     * storage gives the table program-lifetime duration, which is fine
+     * because the table is process-wide and stateless. */
+    static CernboxCfCallbackRegistration g_callbacks[] = {
+        { CERNBOX_CF_CALLBACK_TYPE_FETCH_DATA, (void *)on_fetch_data },
+        { CERNBOX_CF_CALLBACK_TYPE_NONE,       NULL },
+    };
+
+    CernboxCfConnectionKey key;
+    HRESULT hr = p_CfConnectSyncRoot(path, g_callbacks, NULL, 0, &key);
+    free(path);
+    if (SUCCEEDED(hr)) {
+        *out_connection_key = (int64_t)key.Internal;
+    }
+    return (int32_t)hr;
+}
+
+int32_t cf_execute_transfer(
+    int64_t     connection_key,
+    int64_t     transfer_key,
+    int64_t     offset,
+    int64_t     length,
+    const void *buffer,
+    int32_t     status) {
+    int32_t loaderr = load_cldapi();
+    if (loaderr) return loaderr;
+
+    CernboxCfOperationInfo opi = {0};
+    opi.StructSize    = sizeof(opi);
+    opi.Type          = CERNBOX_CF_OPERATION_TYPE_TRANSFER_DATA;
+    opi.ConnectionKey = (LONG_PTR)connection_key;
+    opi.TransferKey   = transfer_key;
+
+    CernboxCfOperationParametersTransferData params = {0};
+    params.ParamsSize       = sizeof(params);
+    params.CompletionStatus = status;
+    params.FileOffset       = offset;
+    params.Length           = length;
+    params.Buffer           = (LPVOID)buffer;
+
+    return (int32_t)p_CfExecute(&opi, &params);
 }

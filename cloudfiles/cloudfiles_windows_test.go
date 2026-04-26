@@ -125,11 +125,111 @@ func TestCreatePlaceholder(t *testing.T) {
 	}
 }
 
-// TestUpdatePlaceholder is gated behind a real CfConnectSyncRoot — the
-// CF API rejects CfUpdatePlaceholder until the sync root has an active
-// connection (HRESULT 0x8007018B / ERROR_CLOUD_FILE_AUTHENTICATION_FAILED).
-// Phase 6 wires real callbacks and connects on Start, after which this
-// test should pass without further changes.
+// TestUpdatePlaceholder verifies metadata refresh on an existing
+// placeholder once the sync root is connected. CfUpdatePlaceholder
+// requires an active CfConnectSyncRoot connection, which itself depends
+// on registering the sync root via the WinRT StorageProviderSyncRootManager
+// path — see the comment on winProvider.Start. Skipped until then.
 func TestUpdatePlaceholder(t *testing.T) {
-	t.Skip("CfUpdatePlaceholder requires a connected sync root — wired in phase 6")
+	t.Skip("blocked on WinRT-based sync root registration; see winProvider.Start")
+	root := t.TempDir()
+	p, err := cloudfiles.New(cloudfiles.Config{
+		LocalRoot: root, FolderName: "test", Fetch: fakeFetch,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = p.Stop()
+		if u, ok := p.(interface{ Unregister() error }); ok {
+			_ = u.Unregister()
+		}
+	})
+
+	abs := filepath.Join(root, "doc.txt")
+	first := webdav.Resource{Size: 100, ETag: "v1", LastModified: time.Now().Add(-time.Hour).Truncate(time.Second)}
+	if err := p.Create(abs, first); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	second := webdav.Resource{Size: 250, ETag: "v2", LastModified: time.Now().Truncate(time.Second)}
+	if err := p.Update(abs, second); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	st, err := os.Stat(abs)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if st.Size() != second.Size {
+		t.Errorf("size = %d, want %d", st.Size(), second.Size)
+	}
+}
+
+// TestHydrate verifies the full FETCH_DATA → cfg.Fetch → CfExecute path.
+// Reading from a placeholder file should trigger our callback, which
+// streams the configured Fetch output back to the OS so the read returns
+// those bytes.
+//
+// Skipped: depends on CfConnectSyncRoot, which currently crashes inside
+// cldapi.dll for sync roots registered via the legacy CfRegisterSyncRoot
+// path. See winProvider.Start for the full story.
+func TestHydrate(t *testing.T) {
+	t.Skip("blocked on WinRT-based sync root registration; see winProvider.Start")
+	const content = "hello on-demand world!"
+	root := t.TempDir()
+
+	var (
+		fetchedRel string
+		fetchCount int
+	)
+	fetch := func(_ context.Context, relPath string) (io.ReadCloser, error) {
+		fetchedRel = relPath
+		fetchCount++
+		return io.NopCloser(strings.NewReader(content)), nil
+	}
+
+	p, err := cloudfiles.New(cloudfiles.Config{
+		LocalRoot: root, FolderName: "test", Fetch: fetch,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = p.Stop()
+		if u, ok := p.(interface{ Unregister() error }); ok {
+			_ = u.Unregister()
+		}
+	})
+
+	abs := filepath.Join(root, "greeting.txt")
+	res := webdav.Resource{
+		Size:         int64(len(content)),
+		ETag:         "etag-1",
+		LastModified: time.Now().Truncate(time.Second),
+	}
+	if err := p.Create(abs, res); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Reading the file triggers FETCH_DATA → cfg.Fetch.
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatalf("ReadFile (hydration): %v", err)
+	}
+	if fetchCount == 0 {
+		t.Errorf("Fetch was never invoked")
+	}
+	if fetchedRel != "greeting.txt" {
+		t.Errorf("Fetch got relPath=%q, want %q", fetchedRel, "greeting.txt")
+	}
+	if string(data) != content {
+		t.Errorf("hydrated content = %q, want %q", string(data), content)
+	}
 }

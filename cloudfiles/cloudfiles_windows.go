@@ -60,11 +60,17 @@ func New(cfg Config) (Provider, error) {
 	return &winProvider{cfg: cfg}, nil
 }
 
-// Start registers the sync root with the OS. The connect step (which
-// requires a FETCH_DATA callback) is deferred to a later phase — calling
-// CfConnectSyncRoot with an empty callback table is rejected by cldapi.dll
-// with an access violation, so it has to wait until phase 6 wires real
-// callbacks in.
+// Start registers the sync root with the OS.
+//
+// CfConnectSyncRoot — the call that wires our FETCH_DATA callback to the OS
+// — currently crashes inside cldapi.dll for sync roots registered via the
+// (deprecated) CfRegisterSyncRoot. The supported path on Win 10/11 is the
+// WinRT StorageProviderSyncRootManager.Register API, which sets up extra
+// shell metadata that CfConnectSyncRoot depends on. Wiring that requires
+// pulling in the C++/WinRT runtime and is tracked as a follow-up; until
+// then Start is register-only and the hydration tests are skipped. The
+// FETCH_DATA bridge itself (callback_windows.go + cf_execute_transfer)
+// is fully implemented and will activate as soon as connect succeeds.
 func (p *winProvider) Start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -78,9 +84,9 @@ func (p *winProvider) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop is the counterpart to Start. Currently a no-op (besides flipping
-// the started flag) since Start does not call CfConnectSyncRoot yet. Once
-// connect is wired in phase 6, Stop will disconnect.
+// Stop is the symmetric counterpart to Start. Once connect is wired through
+// WinRT registration this will also call cf_disconnect_sync_root and
+// unregisterProvider; for now it just flips the started flag.
 func (p *winProvider) Stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -90,6 +96,21 @@ func (p *winProvider) Stop() error {
 	p.started = false
 	p.connKey = 0
 	return nil
+}
+
+// connectWithCallback wires our FETCH_DATA handler. The empty-callback
+// variant (cf_connect_sync_root) is kept around for tests that only want
+// to validate the registration handshake.
+func (p *winProvider) connectWithCallback() (int64, error) {
+	cPath := C.CString(p.cfg.LocalRoot)
+	defer C.free(unsafe.Pointer(cPath))
+
+	var key C.int64_t
+	hr := int32(C.cf_connect_sync_root_with_callback(cPath, &key))
+	if hr != 0 {
+		return 0, hresultErr(hr, "CfConnectSyncRoot")
+	}
+	return int64(key), nil
 }
 
 // register calls CfRegisterSyncRoot for p.cfg.LocalRoot. Returns nil if the
