@@ -183,6 +183,12 @@ type Config struct {
 	// MetadataStreams is the number of concurrent metadata operations
 	// (directory creates and deletes) per depth tier. 0 or 1 means sequential.
 	MetadataStreams int
+	// Placeholders enables on-demand sync. When non-nil, the engine creates
+	// placeholders via this interface instead of downloading remote file
+	// content. Placeholders are hydrated separately (see FetchFile), typically
+	// from a Cloud Files API callback on Windows. nil means normal download
+	// behaviour.
+	Placeholders PlaceholderFS
 }
 
 // action classifies what needs to happen to a path.
@@ -292,7 +298,7 @@ func Run(cfg Config) error {
 	// ── 5. Execute ───────────────────────────────────────────────────────────
 	uploadCounter := &bandwidthCounter{}
 	downloadCounter := &bandwidthCounter{}
-	if err := execute(ctx, cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter, uploadCounter, downloadCounter, cfg.TransferStreams, cfg.MetadataStreams); err != nil {
+	if err := execute(ctx, cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter, uploadCounter, downloadCounter, cfg.TransferStreams, cfg.MetadataStreams, cfg.Placeholders); err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}
 
@@ -662,6 +668,7 @@ func execute(
 	uploadLimiter, downloadLimiter *rate.Limiter,
 	uploadCounter, downloadCounter *bandwidthCounter,
 	transferStreams, metadataStreams int,
+	placeholders PlaceholderFS,
 ) error {
 	if transferStreams < 1 {
 		transferStreams = 1
@@ -755,7 +762,7 @@ func execute(
 						bd, bt := aggregateFileProgress()
 						onProgress(d, total, a.path, up, down, bd, bt)
 					}
-					if err := execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress); err != nil {
+					if err := execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress, placeholders); err != nil {
 						logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
 					}
 					reportDone(a.path)
@@ -856,6 +863,7 @@ func execOne(
 	uploadLimiter, downloadLimiter *rate.Limiter,
 	uploadCounter, downloadCounter *bandwidthCounter,
 	onByteProgress func(path string, bytesDone, bytesTotal int64),
+	placeholders PlaceholderFS,
 ) error {
 	localAbs := filepath.Join(localRoot, filepath.FromSlash(a.path))
 
@@ -875,6 +883,33 @@ func execOne(
 		})
 
 	case download:
+		if placeholders != nil {
+			if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
+				return err
+			}
+			// classify() does not populate a.local for download actions;
+			// probe the disk to choose Create vs Update.
+			_, statErr := os.Lstat(localAbs)
+			if os.IsNotExist(statErr) {
+				logf(fl, "[sync] placeholder  %q", a.path)
+				if err := placeholders.Create(localAbs, *a.remote); err != nil {
+					return err
+				}
+			} else {
+				logf(fl, "[sync] update placeh %q", a.path)
+				if err := placeholders.Update(localAbs, *a.remote); err != nil {
+					return err
+				}
+			}
+			return state.Upsert(db.Entry{
+				Path:         a.path,
+				ETag:         a.remote.ETag,
+				IsDir:        false,
+				Size:         a.remote.Size,
+				LastModified: a.remote.LastModified,
+				FileID:       a.remote.FileID,
+			})
+		}
 		logf(fl, "[sync] download     %q", a.path)
 		if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
 			return err
@@ -1005,7 +1040,7 @@ func execOne(
 		}
 		// Now download the server version as if it were a fresh download.
 		a.kind = download
-		return execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress)
+		return execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress, placeholders)
 
 	case conflictDeleteLocal:
 		// Remote was deleted while local was modified: preserve local changes as a

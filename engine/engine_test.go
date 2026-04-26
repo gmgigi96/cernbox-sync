@@ -42,6 +42,7 @@ type fakeWebDAV struct {
 	puts      []string
 	deletes   []string
 	mkcols    []string
+	gets      []string // path of every GET received
 	propfinds []string // path of every PROPFIND received
 }
 
@@ -157,6 +158,7 @@ func (f *fakeWebDAV) servePropfind(w http.ResponseWriter, r *http.Request, relPa
 func (f *fakeWebDAV) serveGet(w http.ResponseWriter, r *http.Request, relPath string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gets = append(f.gets, relPath)
 	e, ok := f.files[relPath]
 	if !ok || e.isDir {
 		http.NotFound(w, r)
