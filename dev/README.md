@@ -196,6 +196,62 @@ Pass `-v` before the command to print the HTTP method and URL.
 
 ---
 
+## Windows VM (for testing Windows-specific code)
+
+The Windows-specific code paths (e.g. the Cloud Files API integration for on-demand sync) are built and tested inside a local QEMU/KVM Windows VM. The Makefile provisions, runs, and tears it down.
+
+### Prerequisites (Arch Linux)
+
+```bash
+sudo pacman -S qemu-full edk2-ovmf xorriso
+```
+
+A Windows installation ISO is also required. Download the **Windows 11 Multi-Edition** or **Windows 11 Enterprise Evaluation** ISO from the Microsoft Evaluation Center.
+
+### One-time setup
+
+```bash
+# 1. Run the unattended Windows installer (~25 min, displays an SDL window)
+make windows-vm-create WINDOWS_ISO=/path/to/win11.iso
+
+# When Windows reaches the desktop and the FirstLogonCommands finish,
+# shut it down from the Start menu, then:
+
+# 2. Boot it headless in the background
+make windows-vm-start
+
+# 3. Install Go, Git, and MinGW inside the VM (~10 min)
+make windows-vm-setup
+```
+
+The installer is fully unattended: it picks the edition, accepts the EULA, partitions the disk, creates `testuser` (Administrators group, password `TestPass123!`), enables OpenSSH Server, opens the firewall, and installs the host's generated SSH public key. Windows 11 hardware checks (TPM, Secure Boot, RAM) are bypassed via registry keys written during the WinPE phase.
+
+### Selecting a different edition
+
+The default targets `Windows 11 Pro` with the public Pro KMS client setup key. To install another edition, override **both** variables — the key must match the edition name:
+
+```bash
+make windows-vm-create WINDOWS_ISO=... \
+  WINDOWS_IMAGE_NAME="Windows 11 Home" \
+  WINDOWS_PRODUCT_KEY=TX9XD-98N7V-6WMQ6-BX7FG-H8Q99
+```
+
+The Makefile lists the public KMS keys for Pro, Enterprise, Education, and Home in a comment near the variable definition.
+
+### Day-to-day commands
+
+| Command | Description |
+|---------|-------------|
+| `make windows-vm-start`  | Boot the VM headless in the background |
+| `make windows-vm-stop`   | Graceful shutdown via QEMU monitor |
+| `make windows-vm-status` | Show whether the VM is running |
+| `make windows-vm-ssh`    | Interactive SSH session as `testuser` |
+| `make test-windows`      | Ship the source into the VM and run `go test -tags windows ./...` |
+
+SSH listens on `localhost:2222` with key authentication via `dev/windows/id_ed25519`. The VM disk lives at `dev/windows/windows.qcow2` (40 GB thin-provisioned). `make clean` wipes all VM artifacts except the Windows ISO itself.
+
+---
+
 ## Directory layout
 
 ```
@@ -210,8 +266,11 @@ dev/
 │   ├── cernbox.toml      # reva configuration (gateway, storage, auth, WebDAV)
 │   ├── users.demo.json   # Demo user credentials and metadata
 │   └── groups.demo.json  # Demo group definitions
-└── scripts/
-    ├── eos-run.sh        # EOS container entrypoint (init + daemon launch)
-    ├── webdav.sh         # WebDAV client (list, get, put, mkdir, delete, move)
-    └── graph.sh          # LibreGraph API client (users, spaces, shares, permissions)
+├── scripts/
+│   ├── eos-run.sh        # EOS container entrypoint (init + daemon launch)
+│   ├── webdav.sh         # WebDAV client (list, get, put, mkdir, delete, move)
+│   └── graph.sh          # LibreGraph API client (users, spaces, shares, permissions)
+└── windows/
+    ├── autounattend.xml.tpl  # Unattended Windows install answer file (template)
+    └── setup.ps1             # Post-install: installs Go, Git, MinGW via Chocolatey
 ```
