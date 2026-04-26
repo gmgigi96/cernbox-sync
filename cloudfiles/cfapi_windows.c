@@ -68,6 +68,41 @@ typedef struct {
     LONG_PTR Internal;
 } CernboxCfConnectionKey;
 
+/* Placeholder metadata. Mirrors CF_FS_METADATA + FILE_BASIC_INFO from
+ * the SDK; integer-typed for ABI parity (FILETIME is 8 bytes, LARGE_INTEGER
+ * is 8 bytes). */
+typedef struct {
+    int64_t CreationTime;
+    int64_t LastAccessTime;
+    int64_t LastWriteTime;
+    int64_t ChangeTime;
+    DWORD   FileAttributes;
+} CernboxFileBasicInfo;
+
+typedef struct {
+    CernboxFileBasicInfo BasicInfo;
+    int64_t              FileSize;
+} CernboxCfFsMetadata;
+
+/* CF_PLACEHOLDER_CREATE_INFO mirror. Result is filled in by the OS after
+ * CfCreatePlaceholders so we can read per-file errors. */
+typedef struct {
+    LPCWSTR             RelativeFileName;
+    CernboxCfFsMetadata FsMetadata;
+    LPCVOID             FileIdentity;
+    DWORD               FileIdentityLength;
+    DWORD               Flags;       /* CF_PLACEHOLDER_CREATE_FLAGS */
+    HRESULT             Result;
+    int64_t             CreateUsn;
+} CernboxCfPlaceholderCreateInfo;
+
+/* Flags we use. Values come straight from the CF_PLACEHOLDER_CREATE_FLAGS
+ * and CF_UPDATE_FLAGS enums in the SDK so the bit positions match the ABI
+ * cldapi.dll expects. */
+#define CERNBOX_CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC 0x2
+#define CERNBOX_CF_UPDATE_FLAG_MARK_IN_SYNC             0x2
+#define CERNBOX_CF_UPDATE_FLAG_DEHYDRATE                0x4
+
 /* Function-pointer typedefs. We resolve these at runtime via LoadLibrary
  * because MinGW does not ship libcldapi.a. */
 typedef HRESULT (WINAPI *PFN_CfRegisterSyncRoot)(
@@ -82,10 +117,23 @@ typedef HRESULT (WINAPI *PFN_CfConnectSyncRoot)(
 
 typedef HRESULT (WINAPI *PFN_CfDisconnectSyncRoot)(CernboxCfConnectionKey);
 
+typedef HRESULT (WINAPI *PFN_CfCreatePlaceholders)(
+    PCWSTR, CernboxCfPlaceholderCreateInfo *, DWORD, DWORD, PDWORD);
+
+typedef HRESULT (WINAPI *PFN_CfUpdatePlaceholder)(
+    HANDLE, const CernboxCfFsMetadata *,
+    LPCVOID, DWORD,
+    void *, DWORD,    /* DehydrateRangeArray, count — unused */
+    DWORD,            /* CF_UPDATE_FLAGS */
+    int64_t *,        /* USN out */
+    LPOVERLAPPED);
+
 static PFN_CfRegisterSyncRoot   p_CfRegisterSyncRoot   = NULL;
 static PFN_CfUnregisterSyncRoot p_CfUnregisterSyncRoot = NULL;
 static PFN_CfConnectSyncRoot    p_CfConnectSyncRoot    = NULL;
 static PFN_CfDisconnectSyncRoot p_CfDisconnectSyncRoot = NULL;
+static PFN_CfCreatePlaceholders p_CfCreatePlaceholders = NULL;
+static PFN_CfUpdatePlaceholder  p_CfUpdatePlaceholder  = NULL;
 
 /* Lazy-load cldapi.dll on first use. Returns 0 on success, an HRESULT on
  * failure. Subsequent calls are O(1). */
@@ -103,8 +151,11 @@ static int32_t load_cldapi(void) {
     p_CfUnregisterSyncRoot = (PFN_CfUnregisterSyncRoot)(void *)GetProcAddress(h, "CfUnregisterSyncRoot");
     p_CfConnectSyncRoot    = (PFN_CfConnectSyncRoot)   (void *)GetProcAddress(h, "CfConnectSyncRoot");
     p_CfDisconnectSyncRoot = (PFN_CfDisconnectSyncRoot)(void *)GetProcAddress(h, "CfDisconnectSyncRoot");
+    p_CfCreatePlaceholders = (PFN_CfCreatePlaceholders)(void *)GetProcAddress(h, "CfCreatePlaceholders");
+    p_CfUpdatePlaceholder  = (PFN_CfUpdatePlaceholder) (void *)GetProcAddress(h, "CfUpdatePlaceholder");
     if (!p_CfRegisterSyncRoot || !p_CfUnregisterSyncRoot ||
-        !p_CfConnectSyncRoot || !p_CfDisconnectSyncRoot) {
+        !p_CfConnectSyncRoot || !p_CfDisconnectSyncRoot ||
+        !p_CfCreatePlaceholders || !p_CfUpdatePlaceholder) {
         loaded = -1;
         return E_NOTIMPL;
     }
@@ -220,5 +271,106 @@ int32_t cf_disconnect_sync_root(int64_t connection_key) {
     CernboxCfConnectionKey key;
     key.Internal = (LONG_PTR)connection_key;
     HRESULT hr = p_CfDisconnectSyncRoot(key);
+    return (int32_t)hr;
+}
+
+/* fill_metadata sets the timestamp and size fields on a CF_FS_METADATA-style
+ * struct. All four file timestamps share mtime_ft for simplicity (we don't
+ * track creation/access time separately for remote files). */
+static void fill_metadata(CernboxCfFsMetadata *md, int64_t size, int64_t mtime_ft) {
+    md->FileSize = size;
+    md->BasicInfo.CreationTime   = mtime_ft;
+    md->BasicInfo.LastAccessTime = mtime_ft;
+    md->BasicInfo.LastWriteTime  = mtime_ft;
+    md->BasicInfo.ChangeTime     = mtime_ft;
+    md->BasicInfo.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+}
+
+int32_t cf_create_placeholder(
+    const char *utf8_abs_path,
+    int64_t     size,
+    int64_t     mtime_filetime,
+    const void *file_identity,
+    int32_t     file_identity_len) {
+    int32_t loaderr = load_cldapi();
+    if (loaderr) return loaderr;
+
+    wchar_t *path = utf8_to_wide(utf8_abs_path);
+    if (!path) return E_OUTOFMEMORY;
+
+    /* Split path → base directory + relative file name. CfCreatePlaceholders
+     * only operates on direct children of BaseDirectoryPath. */
+    wchar_t *last_sep = wcsrchr(path, L'\\');
+    wchar_t *fwd_sep  = wcsrchr(path, L'/');
+    if (!last_sep || (fwd_sep && fwd_sep > last_sep)) {
+        last_sep = fwd_sep;
+    }
+    if (!last_sep || last_sep == path) {
+        free(path);
+        return E_INVALIDARG;
+    }
+    *last_sep = L'\0';
+    wchar_t *rel_name = last_sep + 1;
+
+    CernboxCfPlaceholderCreateInfo info = {0};
+    info.RelativeFileName   = rel_name;
+    info.FileIdentity       = file_identity;
+    info.FileIdentityLength = (DWORD)file_identity_len;
+    info.Flags              = CERNBOX_CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
+    fill_metadata(&info.FsMetadata, size, mtime_filetime);
+
+    DWORD processed = 0;
+    HRESULT hr = p_CfCreatePlaceholders(path, &info, 1,
+                                        0 /* CF_CREATE_FLAG_NONE */, &processed);
+    free(path);
+    if (FAILED(hr)) {
+        return (int32_t)hr;
+    }
+    /* The bulk call may succeed at the API level while individual
+     * placeholders fail — surface the per-file Result. */
+    return (int32_t)info.Result;
+}
+
+int32_t cf_update_placeholder(
+    const char *utf8_abs_path,
+    int64_t     size,
+    int64_t     mtime_filetime,
+    const void *file_identity,
+    int32_t     file_identity_len) {
+    int32_t loaderr = load_cldapi();
+    if (loaderr) return loaderr;
+
+    wchar_t *path = utf8_to_wide(utf8_abs_path);
+    if (!path) return E_OUTOFMEMORY;
+
+    /* Open the placeholder for writing metadata. FILE_FLAG_OPEN_REPARSE_POINT
+     * keeps us from triggering hydration just by opening the file. */
+    HANDLE hFile = CreateFileW(
+        path,
+        FILE_GENERIC_WRITE | FILE_GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+        NULL);
+    free(path);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    CernboxCfFsMetadata md = {0};
+    fill_metadata(&md, size, mtime_filetime);
+
+    int64_t usn = 0;
+    /* MARK_IN_SYNC only: DEHYDRATE fails with 0x8007018B on a placeholder
+     * that was never hydrated. The OS still invalidates any cached content
+     * on the next access since the metadata (size + mtime) has changed. */
+    HRESULT hr = p_CfUpdatePlaceholder(
+        hFile, &md,
+        file_identity, (DWORD)file_identity_len,
+        NULL, 0,
+        CERNBOX_CF_UPDATE_FLAG_MARK_IN_SYNC,
+        &usn, NULL);
+    CloseHandle(hFile);
     return (int32_t)hr;
 }

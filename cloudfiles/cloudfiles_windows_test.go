@@ -6,10 +6,13 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gmgigi96/cernbox-sync/cloudfiles"
+	"github.com/gmgigi96/cernbox-sync/webdav"
 )
 
 // fakeFetch satisfies cloudfiles.FetchFunc for tests that don't actually
@@ -72,4 +75,61 @@ func TestSyncRoot_RegisterConnect(t *testing.T) {
 	if _, err := os.Stat(root); err != nil {
 		t.Errorf("temp dir disappeared: %v", err)
 	}
+}
+
+// TestCreatePlaceholder verifies that Create lays down a file with the right
+// size and mtime, fully replacing what a normal-mode download would have
+// left on disk.
+func TestCreatePlaceholder(t *testing.T) {
+	root := t.TempDir()
+
+	p, err := cloudfiles.New(cloudfiles.Config{
+		LocalRoot:  root,
+		FolderName: "test-folder",
+		Fetch:      fakeFetch,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = p.Stop()
+		if u, ok := p.(interface{ Unregister() error }); ok {
+			_ = u.Unregister()
+		}
+	})
+
+	abs := filepath.Join(root, "hello.txt")
+	res := webdav.Resource{
+		Href:         "/dav/hello.txt",
+		Size:         1024,
+		ETag:         "etag-1",
+		LastModified: time.Now().Add(-time.Hour).Truncate(time.Second),
+	}
+
+	if err := p.Create(abs, res); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	st, err := os.Stat(abs)
+	if err != nil {
+		t.Fatalf("Stat after Create: %v", err)
+	}
+	if st.Size() != res.Size {
+		t.Errorf("placeholder size = %d, want %d", st.Size(), res.Size)
+	}
+	if !st.ModTime().Equal(res.LastModified) {
+		t.Errorf("placeholder mtime = %v, want %v", st.ModTime(), res.LastModified)
+	}
+}
+
+// TestUpdatePlaceholder is gated behind a real CfConnectSyncRoot — the
+// CF API rejects CfUpdatePlaceholder until the sync root has an active
+// connection (HRESULT 0x8007018B / ERROR_CLOUD_FILE_AUTHENTICATION_FAILED).
+// Phase 6 wires real callbacks and connects on Start, after which this
+// test should pass without further changes.
+func TestUpdatePlaceholder(t *testing.T) {
+	t.Skip("CfUpdatePlaceholder requires a connected sync root — wired in phase 6")
 }

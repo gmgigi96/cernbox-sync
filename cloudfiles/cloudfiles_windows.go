@@ -15,7 +15,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
+	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/gmgigi96/cernbox-sync/webdav"
@@ -125,11 +128,92 @@ func (p *winProvider) Unregister() error {
 	return hresultErr(int32(C.cf_unregister_sync_root(cPath)), "CfUnregisterSyncRoot")
 }
 
-// Create / Update / Pin / Unpin land in later phases.
-func (p *winProvider) Create(absPath string, r webdav.Resource) error { return errNotImplemented }
-func (p *winProvider) Update(absPath string, r webdav.Resource) error { return errNotImplemented }
-func (p *winProvider) Pin(relPath string) error                       { return errNotImplemented }
-func (p *winProvider) Unpin(relPath string) error                     { return errNotImplemented }
+// Create lays down a placeholder at absPath for the remote resource r.
+// The OS exposes the file with r.Size and r.LastModified but holds no
+// content — the FETCH_DATA callback (phase 6) hydrates it on first access.
+func (p *winProvider) Create(absPath string, r webdav.Resource) error {
+	id, idLen := fileIdentity(relPathFromAbs(p.cfg.LocalRoot, absPath))
+	defer C.free(id)
+
+	cAbs := C.CString(absPath)
+	defer C.free(unsafe.Pointer(cAbs))
+
+	hr := int32(C.cf_create_placeholder(
+		cAbs,
+		C.int64_t(r.Size),
+		C.int64_t(timeToFiletime(r.LastModified)),
+		id,
+		C.int32_t(idLen),
+	))
+	return hresultErr(hr, "CfCreatePlaceholders")
+}
+
+// Update refreshes an existing placeholder's metadata. The OS marks any
+// hydrated content stale via the DEHYDRATE flag so the next access pulls
+// the new bytes through FETCH_DATA.
+func (p *winProvider) Update(absPath string, r webdav.Resource) error {
+	id, idLen := fileIdentity(relPathFromAbs(p.cfg.LocalRoot, absPath))
+	defer C.free(id)
+
+	cAbs := C.CString(absPath)
+	defer C.free(unsafe.Pointer(cAbs))
+
+	hr := int32(C.cf_update_placeholder(
+		cAbs,
+		C.int64_t(r.Size),
+		C.int64_t(timeToFiletime(r.LastModified)),
+		id,
+		C.int32_t(idLen),
+	))
+	return hresultErr(hr, "CfUpdatePlaceholder")
+}
+
+// Pin / Unpin land in the pinning phase.
+func (p *winProvider) Pin(relPath string) error   { return errNotImplemented }
+func (p *winProvider) Unpin(relPath string) error { return errNotImplemented }
+
+// timeToFiletime converts a Go time to a Windows FILETIME (100 ns ticks
+// since 1 January 1601 UTC). Returns 0 for zero times.
+func timeToFiletime(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	const filetimeEpoch = int64(116444736000000000) // 1601 → 1970 in 100 ns ticks
+	return filetimeEpoch + t.UnixNano()/100
+}
+
+// relPathFromAbs returns absPath relative to localRoot, with forward slashes
+// converted to backslashes (Windows convention). If absPath isn't under
+// localRoot the input is returned unchanged.
+func relPathFromAbs(localRoot, absPath string) string {
+	rel, err := filepath.Rel(localRoot, absPath)
+	if err != nil {
+		return absPath
+	}
+	return rel
+}
+
+// fileIdentity allocates a UTF-16 buffer holding relPath. The returned
+// pointer must be freed by the caller (C.free). The length is in bytes,
+// not UTF-16 code units, since the CF API takes a byte-count.
+func fileIdentity(relPath string) (unsafe.Pointer, int) {
+	utf16 := utf16FromString(relPath)
+	bytes := len(utf16) * 2
+	buf := C.malloc(C.size_t(bytes))
+	if buf == nil {
+		return nil, 0
+	}
+	dst := unsafe.Slice((*uint16)(buf), len(utf16))
+	copy(dst, utf16)
+	return buf, bytes
+}
+
+// utf16FromString converts a Go string to a UTF-16 slice without a null
+// terminator. The CF API uses an explicit length so the terminator isn't
+// needed and would only inflate the identity blob.
+func utf16FromString(s string) []uint16 {
+	return utf16.Encode([]rune(s))
+}
 
 // hresultErr converts a non-zero HRESULT into a Go error.
 func hresultErr(hr int32, op string) error {
