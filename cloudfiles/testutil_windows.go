@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -26,7 +25,10 @@ func SyncRootTempDir(t *testing.T) string {
 	if _, err := rand.Read(buf[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	root := filepath.Join(`C:\cernbox-sync-test`, hex.EncodeToString(buf[:]))
+	// CF sync roots seem to behave best at the volume root rather than
+	// nested under another directory, so each test gets its own top-level
+	// folder. The hex suffix avoids collisions across parallel runs.
+	root := `C:\cernbox-test-` + hex.EncodeToString(buf[:])
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir sync root %q: %v", root, err)
 	}

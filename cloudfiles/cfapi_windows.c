@@ -18,6 +18,7 @@
 #include <windows.h>
 #include <objbase.h>   /* CoInitializeEx, COINIT_MULTITHREADED */
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "cfapi.h"
@@ -348,31 +349,6 @@ int32_t cf_unregister_sync_root(const char *utf8_path) {
     return (int32_t)hr;
 }
 
-int32_t cf_connect_sync_root(const char *utf8_path, int64_t *out_connection_key) {
-    int32_t loaderr = load_cldapi();
-    if (loaderr) return loaderr;
-
-    wchar_t *path = utf8_to_wide(utf8_path);
-    if (!path) {
-        return E_OUTOFMEMORY;
-    }
-
-    /* Empty callback table: only the terminator. The connection succeeds
-     * but no events fire — Phase 6 will populate this table with the
-     * FETCH_DATA handler that drives hydration. */
-    CernboxCfCallbackRegistration callbacks[] = {
-        { CERNBOX_CF_CALLBACK_TYPE_NONE, NULL },
-    };
-
-    CernboxCfConnectionKey key;
-    HRESULT hr = p_CfConnectSyncRoot(path, callbacks, NULL, 0 /* CF_CONNECT_FLAG_NONE */, &key);
-    free(path);
-    if (SUCCEEDED(hr)) {
-        *out_connection_key = (int64_t)key.Internal;
-    }
-    return (int32_t)hr;
-}
-
 int32_t cf_disconnect_sync_root(int64_t connection_key) {
     int32_t loaderr = load_cldapi();
     if (loaderr) return loaderr;
@@ -512,49 +488,11 @@ static VOID CALLBACK on_fetch_data(
         params->RequiredLength);
 }
 
-/* cf_connect_sync_root_with_callback connects with our FETCH_DATA handler
- * registered. Replaces cf_connect_sync_root for the real sync root path
- * (the older empty-callback variant is left in place for tests that just
- * want to validate the registration handshake). */
-int32_t cf_connect_sync_root_with_callback(
-    const char *utf8_path,
-    int64_t    *out_connection_key) {
-    int32_t loaderr = load_cldapi();
-    if (loaderr) return loaderr;
-
-    /* CfConnectSyncRoot requires SeManageVolumePrivilege; Administrators
-     * have it but it's not enabled by default. Without this, cldapi.dll
-     * faults internally rather than returning a clean access-denied. */
-    enable_manage_volume_privilege();
-
-    /* CfConnectSyncRoot requires the calling thread to be COM-initialized
-     * to MTA. RPC_E_CHANGED_MODE just means COM was already initialized
-     * with a different apartment model — that's fine for our purposes. */
-    HRESULT cohr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    if (FAILED(cohr) && cohr != RPC_E_CHANGED_MODE) {
-        return (int32_t)cohr;
-    }
-
-    wchar_t *path = utf8_to_wide(utf8_path);
-    if (!path) return E_OUTOFMEMORY;
-
-    /* The OS keeps a pointer to the callback table for the lifetime of the
-     * connection — a stack-allocated array would dangle as soon as we
-     * return, leading to access violations inside cldapi.dll. Static
-     * storage gives the table program-lifetime duration, which is fine
-     * because the table is process-wide and stateless. */
-    static CernboxCfCallbackRegistration g_callbacks[] = {
-        { CERNBOX_CF_CALLBACK_TYPE_FETCH_DATA, (void *)on_fetch_data },
-        { CERNBOX_CF_CALLBACK_TYPE_NONE,       NULL },
-    };
-
-    CernboxCfConnectionKey key;
-    HRESULT hr = p_CfConnectSyncRoot(path, g_callbacks, NULL, 0, &key);
-    free(path);
-    if (SUCCEEDED(hr)) {
-        *out_connection_key = (int64_t)key.Internal;
-    }
-    return (int32_t)hr;
+/* Exported accessor so the Go side can hand the callback pointer directly
+ * to CfConnectSyncRoot via syscall, without going through the cgo bridge
+ * (whose VEH integration crashes inside cldapi.dll's internal SEH path). */
+void *cf_get_fetch_data_callback(void) {
+    return (void *)on_fetch_data;
 }
 
 int32_t cf_execute_transfer(

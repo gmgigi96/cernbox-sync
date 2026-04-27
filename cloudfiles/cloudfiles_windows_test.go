@@ -29,7 +29,6 @@ func fakeFetch(_ context.Context, _ string) (io.ReadCloser, error) {
 // infrastructure component missing from this Windows 11 VM image. The
 // same code paths work on a real Windows host.
 func TestSyncRoot_RegisterConnect(t *testing.T) {
-	t.Skip("Cloud Files / Storage Provider stack incomplete in this Win11 VM; works on real hardware")
 	root := cloudfiles.SyncRootTempDir(t)
 
 	p, err := cloudfiles.New(cloudfiles.Config{
@@ -82,7 +81,6 @@ func TestSyncRoot_RegisterConnect(t *testing.T) {
 // size and mtime. Skipped in this VM — Start can't complete the WinRT sync
 // root registration here; see TestSyncRoot_RegisterConnect for the story.
 func TestCreatePlaceholder(t *testing.T) {
-	t.Skip("Cloud Files / Storage Provider stack incomplete in this Win11 VM; works on real hardware")
 	root := cloudfiles.SyncRootTempDir(t)
 
 	p, err := cloudfiles.New(cloudfiles.Config{
@@ -130,7 +128,6 @@ func TestCreatePlaceholder(t *testing.T) {
 // TestUpdatePlaceholder verifies metadata refresh on an existing
 // placeholder. Skipped in this VM — see TestSyncRoot_RegisterConnect.
 func TestUpdatePlaceholder(t *testing.T) {
-	t.Skip("Cloud Files / Storage Provider stack incomplete in this Win11 VM; works on real hardware")
 	root := cloudfiles.SyncRootTempDir(t)
 	p, err := cloudfiles.New(cloudfiles.Config{
 		LocalRoot: root, FolderName: "test", Fetch: fakeFetch,

@@ -4,7 +4,7 @@ package cloudfiles
 
 /*
 #cgo CFLAGS: -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0A00
-#cgo LDFLAGS: -lole32 -lruntimeobject
+#cgo LDFLAGS: -lole32
 
 #include <stdlib.h>
 #include "cfapi.h"
@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 	"unicode/utf16"
@@ -109,56 +110,66 @@ func (p *winProvider) syncRootID() string {
 	return providerName + "::" + p.cfg.FolderName
 }
 
-// connectWithCallback wires our FETCH_DATA handler. The empty-callback
-// variant (cf_connect_sync_root) is kept around for tests that only want
-// to validate the registration handshake.
+// connectWithCallback wires our FETCH_DATA handler. Same syscall-instead-
+// of-cgo rationale as connect(); the on_fetch_data trampoline stays in
+// the C wrapper so the OS calls back into a stable C function, which
+// then forwards into Go via the existing //export goFetchData bridge.
 func (p *winProvider) connectWithCallback() (int64, error) {
-	cPath := C.CString(p.cfg.LocalRoot)
-	defer C.free(unsafe.Pointer(cPath))
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
-	var key C.int64_t
-	hr := int32(C.cf_connect_sync_root_with_callback(cPath, &key))
-	if hr != 0 {
-		return 0, hresultErr(hr, "CfConnectSyncRoot")
+	if err := connectPrereqs(p.cfg.LocalRoot); err != nil {
+		return 0, err
 	}
-	return int64(key), nil
+	cb := []cfCallbackRegistration{
+		{Type: cfCallbackTypeFetchData, Callback: uintptr(C.cf_get_fetch_data_callback())},
+	}
+	return connectSyncRootSyscall(p.cfg.LocalRoot, cb)
 }
 
-// register registers p.cfg.LocalRoot as a Cloud Files sync root via the
-// WinRT StorageProviderSyncRootManager.Register API. Idempotent: the C
-// wrapper folds ERROR_ALREADY_EXISTS into success.
+// register installs p.cfg.LocalRoot as a Cloud Files sync root via the
+// legacy CfRegisterSyncRoot API in cldapi.dll. The WinRT path
+// (StorageProviderSyncRootManager.Register) does the same work plus
+// some metadata the registry-direct route can't reproduce, but its C++
+// vtable surface is fragile to mirror by hand. CfRegisterSyncRoot is a
+// stable C ABI and writes BOTH the SyncRootManager registry entries and
+// the IO_REPARSE_TAG_CLOUD reparse point on the directory — without the
+// reparse point CfConnectSyncRoot returns ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT.
+// Idempotent: the C wrapper folds ERROR_ALREADY_EXISTS into S_OK.
 func (p *winProvider) register() error {
 	cPath := C.CString(p.cfg.LocalRoot)
 	defer C.free(unsafe.Pointer(cPath))
-	cID := C.CString(p.syncRootID())
-	defer C.free(unsafe.Pointer(cID))
 	cName := C.CString(p.cfg.FolderName)
 	defer C.free(unsafe.Pointer(cName))
 
-	hr := int32(C.cf_winrt_register_sync_root(cPath, cID, cName))
-	return hresultErr(hr, "StorageProviderSyncRootManager.Register")
+	hr := int32(C.cf_register_sync_root(cPath, cName))
+	if hr == hresultAlreadyExists {
+		return nil
+	}
+	return hresultErr(hr, "CfRegisterSyncRoot")
 }
 
-// connect calls CfConnectSyncRoot and returns the connection key.
+// connect calls CfConnectSyncRoot and returns the connection key. Routes
+// through golang.org/x/sys/windows.LazyProc rather than cgo to avoid the
+// runtime VEH interception that crashes cldapi.dll's internal SEH path
+// (see cfapi_syscall_windows.go for the diagnostic background).
 func (p *winProvider) connect() (int64, error) {
-	cPath := C.CString(p.cfg.LocalRoot)
-	defer C.free(unsafe.Pointer(cPath))
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
-	var key C.int64_t
-	hr := int32(C.cf_connect_sync_root(cPath, &key))
-	if hr != 0 {
-		return 0, hresultErr(hr, "CfConnectSyncRoot")
+	// Trigger the C-side privilege + COM init prerequisites once.
+	if err := connectPrereqs(p.cfg.LocalRoot); err != nil {
+		return 0, err
 	}
-	return int64(key), nil
+	return connectSyncRootSyscall(p.cfg.LocalRoot, nil)
 }
 
 // Unregister tears down the sync root entirely. Used when a folder is
 // removed from the daemon's config; callers should Stop() first.
 func (p *winProvider) Unregister() error {
-	cID := C.CString(p.syncRootID())
-	defer C.free(unsafe.Pointer(cID))
-	return hresultErr(int32(C.cf_winrt_unregister_sync_root(cID)),
-		"StorageProviderSyncRootManager.Unregister")
+	cPath := C.CString(p.cfg.LocalRoot)
+	defer C.free(unsafe.Pointer(cPath))
+	return hresultErr(int32(C.cf_unregister_sync_root(cPath)), "CfUnregisterSyncRoot")
 }
 
 // Create lays down a placeholder at absPath for the remote resource r.

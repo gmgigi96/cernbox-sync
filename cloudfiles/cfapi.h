@@ -28,16 +28,11 @@ int32_t cf_register_sync_root(const char *utf8_path, const char *utf8_provider_n
 /* Reverse of cf_register_sync_root. */
 int32_t cf_unregister_sync_root(const char *utf8_path);
 
-/* Connect to the sync root identified by utf8_path. The connection key is
- * returned via out_connection_key and must be passed back to disconnect. */
-int32_t cf_connect_sync_root(const char *utf8_path, int64_t *out_connection_key);
-
-/* Connect with our FETCH_DATA callback registered. Use this in production —
- * the callback-less cf_connect_sync_root is kept around for tests that only
- * want to validate the registration handshake. */
-int32_t cf_connect_sync_root_with_callback(
-    const char *utf8_path,
-    int64_t    *out_connection_key);
+/* CfConnectSyncRoot is invoked from Go via syscall (see
+ * cfapi_syscall_windows.go) rather than a cgo wrapper, so cldapi.dll's
+ * internal SEH doesn't collide with Go's vectored exception handler.
+ * The static FETCH_DATA callback function is exported via
+ * cf_get_fetch_data_callback below. */
 
 /* Disconnect a previously connected sync root. */
 int32_t cf_disconnect_sync_root(int64_t connection_key);
@@ -90,21 +85,10 @@ int32_t cf_execute_transfer(
  * under a registered sync root. */
 int32_t cf_set_pin_state(const char *utf8_abs_path, int32_t pinned);
 
-/* Register utf8_abs_path as a Cloud Files sync root via the modern WinRT
- * StorageProviderSyncRootManager API. utf8_provider_id is the stable
- * identifier the OS uses to key the registration; utf8_display_name is
- * the user-visible label that appears in Explorer.
- *
- * The legacy CfRegisterSyncRoot path is kept around as cf_register_sync_root
- * but cldapi.dll's connect path no longer accepts roots set up that way,
- * so production code goes through this entry. */
-int32_t cf_winrt_register_sync_root(
-    const char *utf8_path,
-    const char *utf8_provider_id,
-    const char *utf8_display_name);
-
-/* Reverse of cf_winrt_register_sync_root, keyed by provider id. */
-int32_t cf_winrt_unregister_sync_root(const char *utf8_provider_id);
+/* Returns the address of the static FETCH_DATA callback function so the Go
+ * side can hand it to CfConnectSyncRoot via syscall, bypassing cgo's
+ * exception-handler interception. */
+void *cf_get_fetch_data_callback(void);
 
 #ifdef __cplusplus
 }

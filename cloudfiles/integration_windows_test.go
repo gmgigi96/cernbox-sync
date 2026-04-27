@@ -32,7 +32,6 @@ import (
 // assertions below will work without changes; until then the test is
 // skipped to keep make test-windows green.
 func TestEngineOnDemand_CreatesRealPlaceholders(t *testing.T) {
-	t.Skip("Cloud Files / Storage Provider stack incomplete in this Win11 VM; works on real hardware")
 	root := cloudfiles.SyncRootTempDir(t)
 
 	// Tiny fake WebDAV server: serves PROPFIND for two files. The engine
@@ -163,7 +162,10 @@ func (m *multistatus) add(href string, isDir bool, etag string, size int64, modT
 			Prop: msProp{
 				GetETag:       `"` + etag + `"`,
 				GetContentLen: size,
-				GetLastMod:    modTime.Format(time.RFC1123),
+				// HTTP-date format per RFC 7231: literal "GMT", not the
+			// "MST" placeholder time.RFC1123 expands to "UTC" for a
+			// UTC-zoned input. Real WebDAV servers send GMT.
+			GetLastMod:    modTime.UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT"),
 			},
 			Status: "HTTP/1.1 200 OK",
 		},
