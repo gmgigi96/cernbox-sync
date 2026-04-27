@@ -39,7 +39,7 @@ printf "Timed out waiting for SSH\n"; exit 1
 endef
 
 .PHONY: all build cli daemon test test-gui test-e2e test-e2e-watch test-all lint clean help dev-up dev-down gui gui-dev
-.PHONY: windows-vm-create windows-vm-start windows-vm-stop windows-vm-status windows-vm-ssh windows-vm-setup test-windows
+.PHONY: windows-vm-create windows-vm-start windows-vm-stop windows-vm-status windows-vm-ssh windows-vm-setup windows-vm-gui test-windows test-windows-integration
 
 all: build
 
@@ -208,6 +208,28 @@ windows-vm-setup: ## Install Go, Git, and MinGW inside the Windows VM (run once 
 	@echo "Running setup (installs Go, Git, MinGW — takes ~10 min)..."
 	$(WINDOWS_SSH_CMD) "powershell.exe -ExecutionPolicy Bypass -File C:/setup.ps1"
 
+windows-vm-gui: ## Start the Windows VM with a graphical display (SDL) — runs in the foreground
+	@test -f "$(WINDOWS_DISK)" || { echo "Error: VM disk not found — run: make windows-vm-create WINDOWS_ISO=..."; exit 1; }
+	@if [ -f "$(WINDOWS_PID)" ] && kill -0 "$$(cat $(WINDOWS_PID))" 2>/dev/null; then \
+		echo "Error: VM is already running headlessly (PID $$(cat $(WINDOWS_PID))). Stop it first with: make windows-vm-stop"; exit 1; \
+	fi
+	@echo "Starting Windows VM with graphical display (SDL)..."
+	@echo "SSH is also forwarded on localhost:2222 for make test-windows / test-windows-integration."
+	@echo "The cernbox dev server on the host is reachable from the VM at http://10.0.2.2/"
+	qemu-system-x86_64 \
+		-machine q35,accel=kvm \
+		-cpu host \
+		-m 4G \
+		-smp 4 \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(OVMF_VARS) \
+		-device ahci,id=ahci \
+		-drive id=disk,if=none,file=$(WINDOWS_DISK),format=qcow2 \
+		-device ide-hd,drive=disk,bus=ahci.0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device e1000e,netdev=net0 \
+		-display sdl
+
 test-windows: ## Build and run Windows-specific tests inside the VM
 	$(call wait-for-windows-ssh)
 	@echo "Uploading source..."
@@ -222,3 +244,21 @@ test-windows: ## Build and run Windows-specific tests inside the VM
 		. | $(WINDOWS_SSH_CMD) "tar -xzf - -C 'C:/workspace/cernbox-sync/'"
 	@echo "Running Windows tests..."
 	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; go test -tags windows ./..."
+
+# Coordinates for test-windows-integration. Default points at the host machine
+# via the QEMU user-networking gateway (10.0.2.2) so it works out of the box.
+WEBDAV_BASE ?= http://10.0.2.2/remote.php/webdav/eos/user/e/einstein
+E2E_USER    ?= einstein
+E2E_PASS    ?= relativity
+
+test-windows-integration: ## Run Windows + cernbox backend integration tests inside the VM (requires make dev-up)
+	$(call wait-for-windows-ssh)
+	@echo "Uploading source..."
+	$(WINDOWS_SSH_CMD) "if (Test-Path C:/workspace/cernbox-sync) { Remove-Item -Recurse -Force C:/workspace/cernbox-sync }; New-Item -Force -ItemType Directory C:/workspace/cernbox-sync | Out-Null"
+	@tar -czf - \
+		--exclude='.git' \
+		--exclude='$(WINDOWS_VM_DIR)/*.qcow2' \
+		--exclude='$(WINDOWS_VM_DIR)/*.iso' \
+		. | $(WINDOWS_SSH_CMD) "tar -xzf - -C 'C:/workspace/cernbox-sync/'"
+	@echo "Running Windows integration tests against $(WEBDAV_BASE)..."
+	$(WINDOWS_SSH_CMD) "\$$Env:E2E_WEBDAV='$(WEBDAV_BASE)'; \$$Env:E2E_USER='$(E2E_USER)'; \$$Env:E2E_PASS='$(E2E_PASS)'; Set-Location C:/workspace/cernbox-sync; go test -v -tags 'windows integration' -timeout 120s ./cloudfiles/..."
