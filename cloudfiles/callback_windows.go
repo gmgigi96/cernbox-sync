@@ -4,7 +4,7 @@ package cloudfiles
 
 /*
 #include <stdlib.h>
-#include "cfapi.h"
+#include "cfwrap.h"
 */
 import "C"
 
@@ -24,7 +24,7 @@ import (
 // removed in winProvider.Stop (via unregisterProvider). The map is small
 // — usually one entry per running daemon — so a global RWMutex is fine.
 var (
-	providerMu       sync.RWMutex
+	providerMu         sync.RWMutex
 	providersByConnKey = map[int64]*winProvider{}
 )
 
@@ -87,13 +87,13 @@ func handleFetch(connKey, xferKey int64, relPath string, offset, length int64) {
 	if p == nil {
 		// The provider is gone (likely a race with Stop). Tell the OS the
 		// fetch failed so the user-mode read returns instead of hanging.
-		failTransfer(connKey, xferKey, offset, length, ntStatusUnsuccessful)
+		failTransfer(connKey, xferKey, offset, ntStatusUnsuccessful)
 		return
 	}
 
 	rc, err := p.cfg.Fetch(context.Background(), relPath)
 	if err != nil {
-		failTransfer(connKey, xferKey, offset, length, ntStatusUnsuccessful)
+		failTransfer(connKey, xferKey, offset, ntStatusUnsuccessful)
 		return
 	}
 	defer rc.Close()
@@ -102,7 +102,7 @@ func handleFetch(connKey, xferKey int64, relPath string, offset, length int64) {
 	// place. The OS may ask for any byte range, not just from zero.
 	if offset > 0 {
 		if _, err := io.CopyN(io.Discard, rc, offset); err != nil {
-			failTransfer(connKey, xferKey, offset, length, ntStatusUnsuccessful)
+			failTransfer(connKey, xferKey, offset, ntStatusUnsuccessful)
 			return
 		}
 	}
@@ -117,22 +117,15 @@ func handleFetch(connKey, xferKey int64, relPath string, offset, length int64) {
 		n, err := io.ReadFull(rc, buf[:want])
 		if n > 0 {
 			cur := offset + delivered
-			hr := int32(C.cf_execute_transfer(
-				C.int64_t(connKey),
-				C.int64_t(xferKey),
-				C.int64_t(cur),
-				C.int64_t(n),
-				unsafe.Pointer(&buf[0]),
-				0, // STATUS_SUCCESS
-			))
-			if hr != 0 {
+			if xferErr := executeTransferSyscall(connKey, xferKey, cur, int64(n),
+				unsafe.Pointer(&buf[0]), 0); xferErr != nil {
 				return // OS-side already saw the partial; further chunks would re-fail.
 			}
 			delivered += int64(n)
 		}
 		if err != nil {
 			if delivered < length {
-				failTransfer(connKey, xferKey, offset+delivered, length-delivered, ntStatusUnsuccessful)
+				failTransfer(connKey, xferKey, offset+delivered, ntStatusUnsuccessful)
 			}
 			return
 		}
@@ -140,16 +133,12 @@ func handleFetch(connKey, xferKey int64, relPath string, offset, length int64) {
 }
 
 // failTransfer signals an error completion to the OS so the user-mode read
-// returns with an error instead of hanging on the placeholder.
-func failTransfer(connKey, xferKey, offset, length int64, status int32) {
-	C.cf_execute_transfer(
-		C.int64_t(connKey),
-		C.int64_t(xferKey),
-		C.int64_t(offset),
-		C.int64_t(length),
-		nil,
-		C.int32_t(status),
-	)
+// returns with an error instead of hanging on the placeholder. The CF docs
+// say Buffer and Length are ignored when CompletionStatus is non-zero, but
+// some cldapi.dll builds AV if Length > 0 with a NULL Buffer, so we always
+// pass length=0 and buffer=nil here.
+func failTransfer(connKey, xferKey, offset int64, status int32) {
+	_ = executeTransferSyscall(connKey, xferKey, offset, 0, nil, status)
 }
 
 // ntStatusUnsuccessful is STATUS_UNSUCCESSFUL — generic failure NTSTATUS.

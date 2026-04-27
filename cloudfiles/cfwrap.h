@@ -1,18 +1,35 @@
 /*
- * cfapi.h — thin C wrappers around the Windows Cloud Files API.
+ * cfwrap.h — thin C wrappers around the Windows Cloud Files API.
  *
  * Each wrapper accepts UTF-8 strings from the Go side and converts them to
  * UTF-16 internally; in return Go gets a single int32_t HRESULT it can
  * inspect (0 == success). This keeps the CGo surface small and avoids
  * leaking Win32 types up to Go.
  *
- * Phase 4 only: register / unregister / connect / disconnect. No callbacks
- * are wired yet — connect uses an empty callback table so the OS knows the
- * sync root is "live" without actually firing fetch/populate events.
+ * Types come from the official Windows SDK <cfapi.h>. The CORRELATION_VECTOR
+ * forward declaration is needed because MinGW does not ship that header.
+ *
+ * CfConnectSyncRoot and CfExecute are called from Go via syscall.SyscallN
+ * (see cfapi_syscall_windows.go) rather than cgo wrappers, so cldapi.dll's
+ * internal SEH doesn't collide with Go's vectored exception handler.
  */
-#ifndef CERNBOX_SYNC_CFAPI_H
-#define CERNBOX_SYNC_CFAPI_H
+#ifndef CERNBOX_SYNC_CFWRAP_H
+#define CERNBOX_SYNC_CFWRAP_H
 
+#include <windows.h>
+
+/* MinGW's windows.h does not define NTSTATUS or CORRELATION_VECTOR, both
+ * of which cfapi.h uses. Provide minimal forward declarations here. */
+#ifndef NTSTATUS
+typedef LONG NTSTATUS;
+#endif
+
+typedef struct CORRELATION_VECTOR {
+    CHAR Version;
+    CHAR Vector[129];
+} CORRELATION_VECTOR, *PCORRELATION_VECTOR;
+
+#include <cfapi.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -27,12 +44,6 @@ int32_t cf_register_sync_root(const char *utf8_path, const char *utf8_provider_n
 
 /* Reverse of cf_register_sync_root. */
 int32_t cf_unregister_sync_root(const char *utf8_path);
-
-/* CfConnectSyncRoot is invoked from Go via syscall (see
- * cfapi_syscall_windows.go) rather than a cgo wrapper, so cldapi.dll's
- * internal SEH doesn't collide with Go's vectored exception handler.
- * The static FETCH_DATA callback function is exported via
- * cf_get_fetch_data_callback below. */
 
 /* Disconnect a previously connected sync root. */
 int32_t cf_disconnect_sync_root(int64_t connection_key);
@@ -53,31 +64,13 @@ int32_t cf_create_placeholder(
     const void *file_identity,
     int32_t     file_identity_len);
 
-/* Update an existing placeholder's metadata. If the file was previously
- * hydrated, the OS marks it stale so the next access refetches via
- * FETCH_DATA. */
+/* Update an existing placeholder's metadata. */
 int32_t cf_update_placeholder(
     const char *utf8_abs_path,
     int64_t     size,
     int64_t     mtime_filetime,
     const void *file_identity,
     int32_t     file_identity_len);
-
-/* Deliver a chunk of file content to the OS in response to a FETCH_DATA
- * callback. transfer_key and connection_key come from the callback's
- * CF_CALLBACK_INFO; offset and length describe where the bytes belong in
- * the file; buffer holds the bytes (size == length). status is an
- * NTSTATUS — 0 means success; non-zero signals an error.
- *
- * For multi-chunk transfers, call repeatedly with rising offsets until
- * the full RequiredLength is delivered. */
-int32_t cf_execute_transfer(
-    int64_t     connection_key,
-    int64_t     transfer_key,
-    int64_t     offset,
-    int64_t     length,
-    const void *buffer,
-    int32_t     status);
 
 /* Set the pin state of a placeholder file: pinned != 0 keeps the content
  * always-local even under disk pressure; pinned == 0 reverts to the
@@ -94,4 +87,4 @@ void *cf_get_fetch_data_callback(void);
 }
 #endif
 
-#endif /* CERNBOX_SYNC_CFAPI_H */
+#endif /* CERNBOX_SYNC_CFWRAP_H */

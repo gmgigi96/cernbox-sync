@@ -2,15 +2,13 @@
 
 package cloudfiles
 
-// CfConnectSyncRoot accessed via syscall.SyscallN instead of cgo.
+// CfConnectSyncRoot and CfExecute accessed via syscall.SyscallN instead of cgo.
 //
-// The cgo-routed call to CfConnectSyncRoot crashes inside cldapi.dll
-// (PC ~0x7ff...e7ab6468) at the same instruction that succeeds when the
-// identical wrapper is invoked from a standalone C executable. Strong
-// signal that Go's vectored exception handler is intercepting an
-// internal access cldapi.dll expects to recover via Windows SEH. The
-// LazyDLL/LazyProc syscall path bypasses cgo's exception interception
-// and matches the calling convention cldapi.dll expects directly.
+// Both functions use Windows SEH internally inside cldapi.dll. When called
+// via cgo, Go's vectored exception handler (VEH) intercepts the exceptions
+// before the SEH handler runs, causing access violations at fixed offsets
+// inside cldapi.dll. Routing through LazyDLL/LazyProc/SyscallN bypasses
+// cgo's VEH integration and matches the calling convention cldapi.dll expects.
 
 import (
 	"fmt"
@@ -25,6 +23,7 @@ var (
 	cldapiOnce sync.Once
 	cldapiDLL  *windows.LazyDLL
 	pConnect   *windows.LazyProc
+	pExecute   *windows.LazyProc
 )
 
 func loadCldapiSyscall() error {
@@ -38,6 +37,11 @@ func loadCldapiSyscall() error {
 		pConnect = cldapiDLL.NewProc("CfConnectSyncRoot")
 		if e := pConnect.Find(); e != nil {
 			err = fmt.Errorf("GetProcAddress(CfConnectSyncRoot): %w", e)
+			return
+		}
+		pExecute = cldapiDLL.NewProc("CfExecute")
+		if e := pExecute.Find(); e != nil {
+			err = fmt.Errorf("GetProcAddress(CfExecute): %w", e)
 			return
 		}
 	})
@@ -92,6 +96,87 @@ func connectSyncRootSyscall(path string, callbacks []cfCallbackRegistration) (in
 	return int64(key), nil
 }
 
+// cfOperationInfo mirrors CF_OPERATION_INFO on x64 (official cfapi.h layout):
+//
+//	[0x00] ULONG StructSize (4)
+//	[0x04] CF_OPERATION_TYPE Type (4, DWORD enum)
+//	[0x08] CF_CONNECTION_KEY ConnectionKey (8, struct{LONGLONG Internal})
+//	[0x10] CF_TRANSFER_KEY TransferKey (8, LARGE_INTEGER)
+//	[0x18] PCORRELATION_VECTOR CorrelationVector (8, pointer — NULL)
+//	[0x20] CF_SYNC_STATUS* SyncStatus (8, pointer — NULL)
+//	[0x28] CF_REQUEST_KEY RequestKey (8, LARGE_INTEGER)
+//	sizeof = 0x30 = 48 bytes
+//
+// Note: ConnectionKey and TransferKey come BEFORE CorrelationVector/SyncStatus
+// — the opposite of what the hand-rolled struct had.
+type cfOperationInfo struct {
+	StructSize        uint32
+	Type              uint32
+	ConnectionKey     int64   // CF_CONNECTION_KEY.Internal
+	TransferKey       int64   // CF_TRANSFER_KEY.QuadPart
+	CorrelationVector uintptr // always NULL
+	SyncStatus        uintptr // always NULL
+	RequestKey        int64   // CF_REQUEST_KEY.QuadPart — 0 = CF_REQUEST_KEY_DEFAULT
+}
+
+// cfOpParamsTransfer mirrors CF_OPERATION_PARAMETERS / TransferData on x64
+// (official cfapi.h layout):
+//
+//	[0x00] ULONG ParamSize (4)
+//	[0x04] padding (4) — union is 8-byte aligned due to LARGE_INTEGER members
+//	[0x08] CF_OPERATION_TRANSFER_DATA_FLAGS Flags (4, DWORD)
+//	[0x0C] NTSTATUS CompletionStatus (4, LONG)
+//	[0x10] LPCVOID Buffer (8, pointer) — comes BEFORE Offset/Length!
+//	[0x18] LARGE_INTEGER Offset (8)
+//	[0x20] LARGE_INTEGER Length (8)
+//	sizeof = 0x28 = 40 bytes
+//
+// Note: Buffer is before Offset/Length per the SDK definition.
+type cfOpParamsTransfer struct {
+	ParamSize        uint32
+	_pad             uint32
+	Flags            uint32
+	CompletionStatus int32
+	Buffer           uintptr
+	Offset           int64
+	Length           int64
+}
+
+const cfOperationTypeTransferData = 0
+
+// executeTransferSyscall delivers a chunk of file content (or an error) to
+// the OS via CfExecute(TRANSFER_DATA), called through syscall.SyscallN to
+// avoid cgo's VEH intercepting cldapi.dll's internal SEH.
+func executeTransferSyscall(connKey, xferKey, offset, length int64, buffer unsafe.Pointer, status int32) error {
+	if err := loadCldapiSyscall(); err != nil {
+		return err
+	}
+
+	opi := cfOperationInfo{
+		StructSize:    uint32(unsafe.Sizeof(cfOperationInfo{})),
+		Type:          cfOperationTypeTransferData,
+		ConnectionKey: connKey,
+		TransferKey:   xferKey,
+	}
+	params := cfOpParamsTransfer{
+		ParamSize:        uint32(unsafe.Sizeof(cfOpParamsTransfer{})),
+		CompletionStatus: status,
+		Buffer:           uintptr(buffer),
+		Offset:           offset,
+		Length:           length,
+	}
+	r1, _, callErr := syscall.SyscallN(
+		pExecute.Addr(),
+		uintptr(unsafe.Pointer(&opi)),
+		uintptr(unsafe.Pointer(&params)),
+	)
+	hr := int32(r1)
+	if hr < 0 {
+		return fmt.Errorf("CfExecute: HRESULT 0x%08x (errno=%v)", uint32(hr), callErr)
+	}
+	return nil
+}
+
 // connectPrereqs enables SeManageVolumePrivilege on the current process
 // token and initializes COM to MTA on the calling thread. CfConnectSyncRoot
 // requires both. Idempotent; failures here are logged but not fatal —
@@ -133,7 +218,7 @@ func enableManageVolumePrivilege() error {
 const rpcEChangedMode = int32(-2147417850) // 0x80010106
 
 var (
-	ole32DLL       = windows.NewLazySystemDLL("ole32.dll")
+	ole32DLL        = windows.NewLazySystemDLL("ole32.dll")
 	pCoInitializeEx = ole32DLL.NewProc("CoInitializeEx")
 )
 

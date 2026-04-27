@@ -22,12 +22,7 @@ func fakeFetch(_ context.Context, _ string) (io.ReadCloser, error) {
 }
 
 // TestSyncRoot_RegisterConnect exercises the full register → connect →
-// disconnect → unregister lifecycle. Skipped in this VM: the WinRT
-// StorageProviderSyncRootManager.Register call returns
-// REGDB_E_CLASSNOTREG and the legacy CfConnectSyncRoot crashes inside
-// cldapi.dll at a fixed offset, both of which point to a Cloud Files
-// infrastructure component missing from this Windows 11 VM image. The
-// same code paths work on a real Windows host.
+// disconnect → unregister lifecycle.
 func TestSyncRoot_RegisterConnect(t *testing.T) {
 	root := cloudfiles.SyncRootTempDir(t)
 
@@ -78,8 +73,7 @@ func TestSyncRoot_RegisterConnect(t *testing.T) {
 }
 
 // TestCreatePlaceholder verifies that Create lays down a file with the right
-// size and mtime. Skipped in this VM — Start can't complete the WinRT sync
-// root registration here; see TestSyncRoot_RegisterConnect for the story.
+// size and mtime.
 func TestCreatePlaceholder(t *testing.T) {
 	root := cloudfiles.SyncRootTempDir(t)
 
@@ -125,8 +119,7 @@ func TestCreatePlaceholder(t *testing.T) {
 	}
 }
 
-// TestUpdatePlaceholder verifies metadata refresh on an existing
-// placeholder. Skipped in this VM — see TestSyncRoot_RegisterConnect.
+// TestUpdatePlaceholder verifies metadata refresh on an existing placeholder.
 func TestUpdatePlaceholder(t *testing.T) {
 	root := cloudfiles.SyncRootTempDir(t)
 	p, err := cloudfiles.New(cloudfiles.Config{
@@ -169,12 +162,7 @@ func TestUpdatePlaceholder(t *testing.T) {
 // Reading from a placeholder file should trigger our callback, which
 // streams the configured Fetch output back to the OS so the read returns
 // those bytes.
-//
-// Skipped: depends on CfConnectSyncRoot, which currently crashes inside
-// cldapi.dll for sync roots registered via the legacy CfRegisterSyncRoot
-// path. See winProvider.Start for the full story.
 func TestHydrate(t *testing.T) {
-	t.Skip("Cloud Files / Storage Provider stack incomplete in this Win11 VM; works on real hardware")
 	const content = "hello on-demand world!"
 	root := cloudfiles.SyncRootTempDir(t)
 

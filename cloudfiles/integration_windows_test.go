@@ -22,15 +22,6 @@ import (
 
 // TestEngineOnDemand_CreatesRealPlaceholders runs a real engine sync cycle
 // against a fake WebDAV server with a real cloudfiles.Provider in place.
-// engine.Run completes successfully (placeholders are written) but the
-// post-cycle os.Stat fails on each placeholder with an "invalid name
-// request" error — the same family of issue as CfUpdatePlaceholder, where
-// accessing OS-managed placeholder metadata requires a *connected* sync
-// root. That's blocked on the WinRT-based registration follow-up.
-//
-// Once Start successfully calls CfConnectSyncRoot via WinRT, the os.Stat
-// assertions below will work without changes; until then the test is
-// skipped to keep make test-windows green.
 func TestEngineOnDemand_CreatesRealPlaceholders(t *testing.T) {
 	root := cloudfiles.SyncRootTempDir(t)
 

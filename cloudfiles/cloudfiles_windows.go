@@ -7,7 +7,7 @@ package cloudfiles
 #cgo LDFLAGS: -lole32
 
 #include <stdlib.h>
-#include "cfapi.h"
+#include "cfwrap.h"
 */
 import "C"
 
