@@ -84,6 +84,12 @@ type Daemon struct {
 	debounceTimers   map[string]*time.Timer // folderName → pending debounce timer
 	debounceMu       sync.Mutex
 	debounceDuration time.Duration // how long to wait after the last event before syncing
+
+	// On-demand sync: one cloudfiles.Provider per sync folder (Windows only;
+	// nil on other platforms). Kept alive between sync cycles so the OS
+	// callback path remains connected and can hydrate placeholders at any time.
+	providerMu sync.Mutex
+	providers  map[string]cloudfiles.Provider
 }
 
 // New creates a new Daemon. interval controls how often all registered folders
@@ -106,6 +112,7 @@ func New(cfgDB *config.DB, interval time.Duration, log *slog.Logger) *Daemon {
 		debounceDuration: 2 * time.Second,
 		syncTickerReset:  make(chan time.Duration, 1),
 		bus:              newEventBus(),
+		providers:        make(map[string]cloudfiles.Provider),
 	}
 }
 
@@ -168,6 +175,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	<-ctx.Done()
 	_ = ln.Close()
 	_ = os.Remove(sockPath)
+	d.stopAllProviders()
 	d.log.Info("[daemon] stopped")
 	return nil
 }
@@ -278,6 +286,8 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	metadataStreams := d.metadataStreams
 	d.mu.Unlock()
 
+	placeholder := d.ensureProvider(f)
+
 	cfg := engine.Config{
 		Ctx:             ctx,
 		LocalRoot:       f.LocalRoot,
@@ -287,6 +297,7 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		Password:        password,
 		DBPath:          filepath.Join(f.LocalRoot, ".sync.db"),
 		FolderLog:       fl,
+		Placeholders:    placeholder,
 		SyncHiddenFiles: f.Settings.SyncHiddenFiles,
 		UploadLimiter:   uploadLimiter,
 		DownloadLimiter: downloadLimiter,
@@ -482,6 +493,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if f != nil {
 			d.removeFolderWatch(f.Name, f.LocalRoot)
 		}
+		d.stopFolderProvider(req.Name)
 		d.log.Info("[daemon] remove: removed folder", "folder", req.Name)
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderRemoved, Folder: req.Name})
 		return ok()
@@ -505,6 +517,9 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if oldFolder != nil {
 			d.removeFolderWatch(oldFolder.Name, oldFolder.LocalRoot)
 		}
+		// Stop the existing provider so it is re-created on the next sync
+		// with the updated LocalRoot / RemoteBase.
+		d.stopFolderProvider(req.Folder.Name)
 		d.updateFolderWatch(req.Folder)
 		d.log.Info("[daemon] update: updated folder", "folder", req.Folder.Name, "selected", req.Folder.Folders, "settings", fmt.Sprintf("%+v", req.Folder.Settings))
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderUpdated, FolderData: &req.Folder})
