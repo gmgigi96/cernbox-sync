@@ -1,0 +1,12 @@
+/*
+ * Resource script that embeds manifest_windows.xml into the binary as a
+ * RT_MANIFEST resource (resource ID 1, the conventional ID for executable
+ * manifests). The Windows loader picks it up at process start and applies
+ * the supportedOS / dependency declarations to the activation context.
+ *
+ * Compile with windres into manifest_windows_amd64.syso so Go's link step
+ * picks it up automatically:
+ *
+ *   x86_64-w64-mingw32-windres -i manifest_windows.rc -o manifest_windows_amd64.syso
+ */
+1 24 "manifest_windows.xml"

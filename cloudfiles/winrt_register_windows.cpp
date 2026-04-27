@@ -235,7 +235,7 @@ extern "C" int32_t cf_winrt_register_sync_root(
     const char* utf8_provider_id,
     const char* utf8_display_name) {
 
-    HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
+    HRESULT hr = RoInitialize(RO_INIT_SINGLETHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE && hr != S_FALSE) {
         return (int32_t)hr;
     }
@@ -296,7 +296,7 @@ extern "C" int32_t cf_winrt_register_sync_root(
 }
 
 extern "C" int32_t cf_winrt_unregister_sync_root(const char* utf8_provider_id) {
-    HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
+    HRESULT hr = RoInitialize(RO_INIT_SINGLETHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE && hr != S_FALSE) {
         return (int32_t)hr;
     }
