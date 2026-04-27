@@ -95,8 +95,11 @@ ICernboxStorageProviderSyncRootInfo : public IInspectable {
     virtual HRESULT STDMETHODCALLTYPE get_ShowSiblingsAsGroup(unsigned char*) = 0;
 };
 
-/* IStorageProviderSyncRootManagerStatics. */
-struct DECLSPEC_UUID("3E99FBBF-8FE3-4B40-ABC7-F6FC3D74C98E")
+/* IStorageProviderSyncRootManagerStatics — the second statics IID exposed
+ * by the SyncRootManager activation factory. The first one (3E99FBBF...)
+ * fails Register with REGDB_E_CLASSNOTREG; .NET's WinRT projection picks
+ * this newer variant which actually works. */
+struct DECLSPEC_UUID("EFB6CFEE-1374-544E-9DF1-5598D2E9CFDD")
 ICernboxStorageProviderSyncRootManagerStatics : public IInspectable {
     virtual HRESULT STDMETHODCALLTYPE Register(
         ICernboxStorageProviderSyncRootInfo*) = 0;
@@ -110,7 +113,7 @@ __CRT_UUID_DECL(ICernboxAsyncInfo,                            0x00000036, 0x0000
 __CRT_UUID_DECL(ICernboxStorageFolderStatics,                 0x08F327FF, 0x85D5, 0x48B9, 0xAE, 0xE9, 0x28, 0x51, 0x1E, 0x33, 0x9F, 0x9F)
 __CRT_UUID_DECL(ICernboxAsyncOpStorageFolder,                 0x6BE9E7D7, 0xE83A, 0x5CBC, 0x80, 0x2C, 0x17, 0x68, 0x96, 0x0B, 0x52, 0xC3)
 __CRT_UUID_DECL(ICernboxStorageProviderSyncRootInfo,          0x7C1305C4, 0x99F9, 0x41AC, 0x89, 0x04, 0xAB, 0x05, 0x5D, 0x65, 0x49, 0x26)
-__CRT_UUID_DECL(ICernboxStorageProviderSyncRootManagerStatics, 0x3E99FBBF, 0x8FE3, 0x4B40, 0xAB, 0xC7, 0xF6, 0xFC, 0x3D, 0x74, 0xC9, 0x8E)
+__CRT_UUID_DECL(ICernboxStorageProviderSyncRootManagerStatics, 0xEFB6CFEE, 0x1374, 0x544E, 0x9D, 0xF1, 0x55, 0x98, 0xD2, 0xE9, 0xCF, 0xDD)
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
