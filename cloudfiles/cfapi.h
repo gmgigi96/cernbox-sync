@@ -90,6 +90,22 @@ int32_t cf_execute_transfer(
  * under a registered sync root. */
 int32_t cf_set_pin_state(const char *utf8_abs_path, int32_t pinned);
 
+/* Register utf8_abs_path as a Cloud Files sync root via the modern WinRT
+ * StorageProviderSyncRootManager API. utf8_provider_id is the stable
+ * identifier the OS uses to key the registration; utf8_display_name is
+ * the user-visible label that appears in Explorer.
+ *
+ * The legacy CfRegisterSyncRoot path is kept around as cf_register_sync_root
+ * but cldapi.dll's connect path no longer accepts roots set up that way,
+ * so production code goes through this entry. */
+int32_t cf_winrt_register_sync_root(
+    const char *utf8_path,
+    const char *utf8_provider_id,
+    const char *utf8_display_name);
+
+/* Reverse of cf_winrt_register_sync_root, keyed by provider id. */
+int32_t cf_winrt_unregister_sync_root(const char *utf8_provider_id);
+
 #ifdef __cplusplus
 }
 #endif

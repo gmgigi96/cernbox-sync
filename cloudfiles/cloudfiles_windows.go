@@ -4,7 +4,7 @@ package cloudfiles
 
 /*
 #cgo CFLAGS: -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0A00
-#cgo LDFLAGS: -lole32
+#cgo LDFLAGS: -lole32 -lruntimeobject
 
 #include <stdlib.h>
 #include "cfapi.h"
@@ -33,6 +33,7 @@ const providerName = "cernbox-sync"
 // We treat it as success so re-registering on daemon restart is idempotent.
 const hresultAlreadyExists = int32(-2147024713) // 0x800700B7
 
+
 // errNotImplemented marks Provider methods whose Windows-side bodies will
 // be filled in by later phases (placeholder ops, callbacks, pinning).
 var errNotImplemented = errors.New("cloudfiles: not implemented yet")
@@ -60,17 +61,11 @@ func New(cfg Config) (Provider, error) {
 	return &winProvider{cfg: cfg}, nil
 }
 
-// Start registers the sync root with the OS.
-//
-// CfConnectSyncRoot — the call that wires our FETCH_DATA callback to the OS
-// — currently crashes inside cldapi.dll for sync roots registered via the
-// (deprecated) CfRegisterSyncRoot. The supported path on Win 10/11 is the
-// WinRT StorageProviderSyncRootManager.Register API, which sets up extra
-// shell metadata that CfConnectSyncRoot depends on. Wiring that requires
-// pulling in the C++/WinRT runtime and is tracked as a follow-up; until
-// then Start is register-only and the hydration tests are skipped. The
-// FETCH_DATA bridge itself (callback_windows.go + cf_execute_transfer)
-// is fully implemented and will activate as soon as connect succeeds.
+// Start registers the sync root with the OS via the WinRT
+// StorageProviderSyncRootManager API and connects the FETCH_DATA callback
+// table. The legacy CfRegisterSyncRoot is no longer used because
+// CfConnectSyncRoot rejects sync roots that weren't established through
+// the modern path.
 func (p *winProvider) Start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -80,22 +75,38 @@ func (p *winProvider) Start(ctx context.Context) error {
 	if err := p.register(); err != nil {
 		return err
 	}
+	key, err := p.connectWithCallback()
+	if err != nil {
+		_ = p.Unregister() // roll back on failure
+		return err
+	}
+	p.connKey = key
+	registerProvider(key, p)
 	p.started = true
 	return nil
 }
 
-// Stop is the symmetric counterpart to Start. Once connect is wired through
-// WinRT registration this will also call cf_disconnect_sync_root and
-// unregisterProvider; for now it just flips the started flag.
+// Stop disconnects the sync root from callbacks. The sync root remains
+// registered with the OS so the folder keeps its cloud-aware status across
+// daemon restarts.
 func (p *winProvider) Stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.started {
 		return nil
 	}
+	hr := int32(C.cf_disconnect_sync_root(C.int64_t(p.connKey)))
+	unregisterProvider(p.connKey)
 	p.started = false
 	p.connKey = 0
-	return nil
+	return hresultErr(hr, "CfDisconnectSyncRoot")
+}
+
+// syncRootID is the stable identifier we hand to the OS for this folder.
+// Format: providerName + "::" + folderName so the same sync root re-binds
+// across daemon restarts.
+func (p *winProvider) syncRootID() string {
+	return providerName + "::" + p.cfg.FolderName
 }
 
 // connectWithCallback wires our FETCH_DATA handler. The empty-callback
@@ -113,19 +124,19 @@ func (p *winProvider) connectWithCallback() (int64, error) {
 	return int64(key), nil
 }
 
-// register calls CfRegisterSyncRoot for p.cfg.LocalRoot. Returns nil if the
-// sync root is already registered.
+// register registers p.cfg.LocalRoot as a Cloud Files sync root via the
+// WinRT StorageProviderSyncRootManager.Register API. Idempotent: the C
+// wrapper folds ERROR_ALREADY_EXISTS into success.
 func (p *winProvider) register() error {
 	cPath := C.CString(p.cfg.LocalRoot)
 	defer C.free(unsafe.Pointer(cPath))
-	cName := C.CString(providerName)
+	cID := C.CString(p.syncRootID())
+	defer C.free(unsafe.Pointer(cID))
+	cName := C.CString(p.cfg.FolderName)
 	defer C.free(unsafe.Pointer(cName))
 
-	hr := int32(C.cf_register_sync_root(cPath, cName))
-	if hr == 0 || hr == hresultAlreadyExists {
-		return nil
-	}
-	return hresultErr(hr, "CfRegisterSyncRoot")
+	hr := int32(C.cf_winrt_register_sync_root(cPath, cID, cName))
+	return hresultErr(hr, "StorageProviderSyncRootManager.Register")
 }
 
 // connect calls CfConnectSyncRoot and returns the connection key.
@@ -144,9 +155,10 @@ func (p *winProvider) connect() (int64, error) {
 // Unregister tears down the sync root entirely. Used when a folder is
 // removed from the daemon's config; callers should Stop() first.
 func (p *winProvider) Unregister() error {
-	cPath := C.CString(p.cfg.LocalRoot)
-	defer C.free(unsafe.Pointer(cPath))
-	return hresultErr(int32(C.cf_unregister_sync_root(cPath)), "CfUnregisterSyncRoot")
+	cID := C.CString(p.syncRootID())
+	defer C.free(unsafe.Pointer(cID))
+	return hresultErr(int32(C.cf_winrt_unregister_sync_root(cID)),
+		"StorageProviderSyncRootManager.Unregister")
 }
 
 // Create lays down a placeholder at absPath for the remote resource r.
