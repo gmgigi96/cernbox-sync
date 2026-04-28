@@ -230,7 +230,7 @@ jobs:
           version: "~> v2"
           args: >-
             release --clean
-            ${{ inputs.version == 'nightly' && '--snapshot --skip=nfpm,changelog' || '' }}
+            ${{ inputs.version == 'nightly' && '--snapshot --skip=nfpm' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
