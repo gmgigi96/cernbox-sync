@@ -195,14 +195,14 @@ type Config struct {
 type actionKind int
 
 const (
-	download     actionKind = iota // remote → local
-	upload                         // local → remote
-	deleteLocal                    // remote was deleted; remove local
-	deleteRemote                   // local was deleted; remove remote
-	mkcolRemote                    // create remote directory
-	mkdirLocal                     // create local directory
-	conflictTake                   // conflict: server wins, rename local
-	conflictDeleteLocal            // remote deleted while local changed: rename local as conflict, then delete
+	download            actionKind = iota // remote → local
+	upload                                // local → remote
+	deleteLocal                           // remote was deleted; remove local
+	deleteRemote                          // local was deleted; remove remote
+	mkcolRemote                           // create remote directory
+	mkdirLocal                            // create local directory
+	conflictTake                          // conflict: server wins, rename local
+	conflictDeleteLocal                   // remote deleted while local changed: rename local as conflict, then delete
 )
 
 type action struct {
@@ -692,8 +692,8 @@ func execute(
 	// path, bytes done, and total size so the ticker can report sub-action
 	// progress between action completions.
 	var (
-		fileMu        sync.Mutex
-		fileProgress  = make(map[string][2]int64) // path → [bytesDone, bytesTotal]
+		fileMu       sync.Mutex
+		fileProgress = make(map[string][2]int64) // path → [bytesDone, bytesTotal]
 	)
 	setFileProgress := func(path string, bytesDone, bytesTotal int64) {
 		fileMu.Lock()

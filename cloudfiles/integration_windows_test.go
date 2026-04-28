@@ -113,15 +113,15 @@ func TestEngineOnDemand_CreatesRealPlaceholders(t *testing.T) {
 // minimal multistatus / WebDAV PROPFIND response builder.
 
 type multistatus struct {
-	XMLName   xml.Name      `xml:"D:multistatus"`
-	Xmlns     string        `xml:"xmlns:D,attr"`
-	Responses []msResponse  `xml:"D:response"`
-	mu        sync.Mutex    `xml:"-"`
+	XMLName   xml.Name     `xml:"D:multistatus"`
+	Xmlns     string       `xml:"xmlns:D,attr"`
+	Responses []msResponse `xml:"D:response"`
+	mu        sync.Mutex   `xml:"-"`
 }
 
 type msResponse struct {
-	Href     string   `xml:"D:href"`
-	Propstat msPstat  `xml:"D:propstat"`
+	Href     string  `xml:"D:href"`
+	Propstat msPstat `xml:"D:propstat"`
 }
 
 type msPstat struct {
@@ -154,9 +154,9 @@ func (m *multistatus) add(href string, isDir bool, etag string, size int64, modT
 				GetETag:       `"` + etag + `"`,
 				GetContentLen: size,
 				// HTTP-date format per RFC 7231: literal "GMT", not the
-			// "MST" placeholder time.RFC1123 expands to "UTC" for a
-			// UTC-zoned input. Real WebDAV servers send GMT.
-			GetLastMod:    modTime.UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT"),
+				// "MST" placeholder time.RFC1123 expands to "UTC" for a
+				// UTC-zoned input. Real WebDAV servers send GMT.
+				GetLastMod: modTime.UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT"),
 			},
 			Status: "HTTP/1.1 200 OK",
 		},

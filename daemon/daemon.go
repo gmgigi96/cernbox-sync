@@ -49,11 +49,11 @@ type Daemon struct {
 	cancel context.CancelFunc
 
 	mu           sync.Mutex
-	syncing      map[string]bool              // folders currently being synced
+	syncing      map[string]bool               // folders currently being synced
 	syncCancels  map[string]context.CancelFunc // cancel funcs for in-progress syncs
-	lastSync     map[string]time.Time         // time of last successful sync per folder
-	counts       map[string]ipc.FileCounts    // local file/dir counts after last sync
-	globalPaused bool                         // all syncing paused when true
+	lastSync     map[string]time.Time          // time of last successful sync per folder
+	counts       map[string]ipc.FileCounts     // local file/dir counts after last sync
+	globalPaused bool                          // all syncing paused when true
 
 	bus *eventBus // push-event broadcaster
 
@@ -301,8 +301,8 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		SyncHiddenFiles: f.Settings.SyncHiddenFiles,
 		UploadLimiter:   uploadLimiter,
 		DownloadLimiter: downloadLimiter,
-		TransferStreams:  transferStreams,
-		MetadataStreams:  metadataStreams,
+		TransferStreams: transferStreams,
+		MetadataStreams: metadataStreams,
 		OnProgress: func(done, total int, current string, uploadBps, downloadBps, bytesDone, bytesTotal int64) {
 			d.bus.publish(ipc.Event{
 				Type:   ipc.EventSyncProgress,

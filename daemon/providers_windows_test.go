@@ -170,10 +170,10 @@ func TestDaemon_ProviderReusedAcrossSyncs(t *testing.T) {
 // ── PROPFIND response builder ─────────────────────────────────────────────────
 
 type providerTestMultistatus struct {
-	XMLName   xml.Name                `xml:"D:multistatus"`
-	Xmlns     string                  `xml:"xmlns:D,attr"`
-	Responses []providerTestResponse  `xml:"D:response"`
-	mu        sync.Mutex              `xml:"-"`
+	XMLName   xml.Name               `xml:"D:multistatus"`
+	Xmlns     string                 `xml:"xmlns:D,attr"`
+	Responses []providerTestResponse `xml:"D:response"`
+	mu        sync.Mutex             `xml:"-"`
 }
 
 type providerTestResponse struct {

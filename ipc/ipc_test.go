@@ -179,7 +179,7 @@ func TestSend_WithSettingsPayload(t *testing.T) {
 		Settings: ipc.SettingsPayload{
 			SyncInterval:    "10m",
 			UploadBandwidth: 1024 * 1024,
-			TransferStreams:  4,
+			TransferStreams: 4,
 		},
 	}
 	if _, err := ipc.Send(sockPath, req); err != nil {

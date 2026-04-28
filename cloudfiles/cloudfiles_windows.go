@@ -34,7 +34,6 @@ const providerName = "cernbox-sync"
 // We treat it as success so re-registering on daemon restart is idempotent.
 const hresultAlreadyExists = int32(-2147024713) // 0x800700B7
 
-
 // errNotImplemented marks Provider methods whose Windows-side bodies will
 // be filled in by later phases (placeholder ops, callbacks, pinning).
 var errNotImplemented = errors.New("cloudfiles: not implemented yet")
