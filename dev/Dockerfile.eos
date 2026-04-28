@@ -7,8 +7,8 @@
 
 FROM gitlab-registry.cern.ch/dss/eos/eos-ci:01b30857.el9
 
+COPY --chown=daemon:daemon --chmod=400 pki/eos.key /etc/grid-security/eos.key
 COPY --chown=daemon:daemon pki/eos.crt /etc/grid-security/eos.crt
-COPY --chown=daemon:daemon pki/eos.key /etc/grid-security/eos.key
 COPY --chown=daemon:daemon pki/ca.crt /etc/grid-security/certificates/ca.crt
 COPY --chmod=+x scripts/eos-run.sh /mnt/scripts/eos-run.sh
 
