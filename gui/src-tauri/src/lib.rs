@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::ShellExt;
 
@@ -158,7 +158,7 @@ fn ipc_send(req: &IpcRequest) -> Result<IpcResponse, String> {
 
     #[cfg(windows)]
     let stream = {
-        use std::os::windows::net::UnixStream;
+        use uds_windows::UnixStream;
         UnixStream::connect(&path)
             .map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?
     };
@@ -613,7 +613,7 @@ fn run_subscriber(app: &AppHandle) -> Result<(), String> {
 
     #[cfg(windows)]
     let stream = {
-        use std::os::windows::net::UnixStream;
+        use uds_windows::UnixStream;
         UnixStream::connect(&path)
             .map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?
     };
