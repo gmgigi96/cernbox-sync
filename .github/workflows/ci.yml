@@ -8,8 +8,11 @@ on:
 
 jobs:
   unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
+    name: Unit Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -20,11 +23,27 @@ jobs:
       - name: Run unit tests
         run: go test ./...
 
+  gui-tests:
+    name: GUI Unit Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Run GUI unit tests
+        run: make test-gui
+
   integration-tests:
     name: Integration Tests
-    # eos-storage requires privileged mode and sysctls not available on
-    # GitHub-hosted runners; use a self-hosted runner that supports this.
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -56,11 +75,15 @@ jobs:
         if: always()
         run: make dev-down
 
-  gui-tests:
-    name: GUI Unit Tests
+  e2e-tests:
+    name: E2E Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - uses: actions/setup-node@v4
         with:
@@ -68,5 +91,26 @@ jobs:
           cache: npm
           cache-dependency-path: gui/package-lock.json
 
-      - name: Run GUI unit tests
-        run: make test-gui
+      - name: Install dependencies and Playwright browsers
+        run: cd gui && npm install && npx playwright install --with-deps chromium
+
+      - name: Start dev services
+        run: make dev-up
+
+      - name: Wait for revad to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://localhost/remote.php/webdav/; then
+              echo "revad is up"
+              break
+            fi
+            echo "Waiting for revad... ($i/30)"
+            sleep 10
+          done
+
+      - name: Run e2e tests
+        run: make test-e2e
+
+      - name: Stop dev services
+        if: always()
+        run: make dev-down
