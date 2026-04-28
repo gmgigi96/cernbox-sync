@@ -1,7 +1,6 @@
 package db_test
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,7 +14,7 @@ func openDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
@@ -324,13 +323,3 @@ func TestSyncState_Delete_NonExistent_NoError(t *testing.T) {
 	}
 }
 
-// ── helper: fake file on disk ─────────────────────────────────────────────────
-
-func writeTempFile(t *testing.T, dir, name string) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
-		t.Fatalf("writeTempFile: %v", err)
-	}
-	return path
-}

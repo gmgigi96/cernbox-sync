@@ -189,7 +189,7 @@ func Send(sockPath string, req Request) (*Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to daemon at %s (is cernbox-syncd running?): %w", sockPath, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return nil, fmt.Errorf("send request: %w", err)

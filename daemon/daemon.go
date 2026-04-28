@@ -131,7 +131,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	}
 
 	// Remove stale socket from a previous (crashed) run.
-	os.Remove(sockPath)
+	_ = os.Remove(sockPath)
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", sockPath, err)
@@ -165,8 +165,8 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	}()
 
 	<-ctx.Done()
-	ln.Close()
-	os.Remove(sockPath)
+	_ = ln.Close()
+	_ = os.Remove(sockPath)
 	d.log.Info("[daemon] stopped")
 	return nil
 }
@@ -265,7 +265,7 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		if err := fl.Rotate(); err != nil {
 			d.log.Error("[daemon] rotate folder log", "folder", f.Name, "err", err)
 		}
-		defer fl.Close()
+		defer func() { _ = fl.Close() }()
 	}
 
 	d.mu.Lock()
@@ -329,7 +329,7 @@ func (d *Daemon) syncFolder(f config.Folder) {
 // ── IPC handling ──────────────────────────────────────────────────────────────
 
 func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var req ipc.Request
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
@@ -817,7 +817,7 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 				continue
 			}
 			entries, err := sdb.AllConflicts()
-			sdb.Close()
+			_ = sdb.Close()
 			if err != nil {
 				d.log.Error("[daemon] list-conflicts: query", "folder", f.Name, "err", err)
 				continue
@@ -847,7 +847,7 @@ func fail(msg string) ipc.Response { return ipc.Response{OK: false, Error: msg} 
 // skipping hidden entries (those starting with ".").
 func countLocalEntries(localRoot string) ipc.FileCounts {
 	var c ipc.FileCounts
-	filepath.WalkDir(localRoot, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(localRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}

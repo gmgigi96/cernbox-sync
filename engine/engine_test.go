@@ -131,27 +131,27 @@ func (f *fakeWebDAV) servePropfind(w http.ResponseWriter, r *http.Request, relPa
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
 
-	fmt.Fprint(w, `<?xml version="1.0"?>`)
-	fmt.Fprint(w, `<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">`)
+	_, _ = fmt.Fprint(w, `<?xml version="1.0"?>`)
+	_, _ = fmt.Fprint(w, `<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">`)
 	for _, p := range paths {
 		e := f.files[p]
 		href := davBasePath
 		if p != "" {
 			href += "/" + p
 		}
-		fmt.Fprintf(w, `<d:response><d:href>%s</d:href><d:propstat><d:prop>`, href)
-		fmt.Fprintf(w, `<d:getetag>"%s"</d:getetag>`, e.etag)
-		fmt.Fprintf(w, `<d:getlastmodified>%s</d:getlastmodified>`, e.modTime.UTC().Format(httpTimeLayout))
+		_, _ = fmt.Fprintf(w, `<d:response><d:href>%s</d:href><d:propstat><d:prop>`, href)
+		_, _ = fmt.Fprintf(w, `<d:getetag>"%s"</d:getetag>`, e.etag)
+		_, _ = fmt.Fprintf(w, `<d:getlastmodified>%s</d:getlastmodified>`, e.modTime.UTC().Format(httpTimeLayout))
 		if e.isDir {
-			fmt.Fprint(w, `<d:resourcetype><d:collection/></d:resourcetype>`)
+			_, _ = fmt.Fprint(w, `<d:resourcetype><d:collection/></d:resourcetype>`)
 		} else {
-			fmt.Fprint(w, `<d:resourcetype/>`)
-			fmt.Fprintf(w, `<d:getcontentlength>%d</d:getcontentlength>`, len(e.content))
+			_, _ = fmt.Fprint(w, `<d:resourcetype/>`)
+			_, _ = fmt.Fprintf(w, `<d:getcontentlength>%d</d:getcontentlength>`, len(e.content))
 		}
-		fmt.Fprintf(w, `<oc:fileid>%s</oc:fileid>`, e.fileID)
-		fmt.Fprint(w, `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`)
+		_, _ = fmt.Fprintf(w, `<oc:fileid>%s</oc:fileid>`, e.fileID)
+		_, _ = fmt.Fprint(w, `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`)
 	}
-	fmt.Fprint(w, `</d:multistatus>`)
+	_, _ = fmt.Fprint(w, `</d:multistatus>`)
 }
 
 func (f *fakeWebDAV) serveGet(w http.ResponseWriter, r *http.Request, relPath string) {
@@ -335,7 +335,7 @@ func (e *testEnv) seedDB(entries ...db.Entry) {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	for _, entry := range entries {
 		if err := d.Upsert(entry); err != nil {
 			e.t.Fatalf("seedDB upsert %q: %v", entry.Path, err)
@@ -350,7 +350,7 @@ func (e *testEnv) dbGet(path string) *db.Entry {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	entry, err := d.Get(path)
 	if err != nil {
 		e.t.Fatalf("dbGet %q: %v", path, err)
@@ -365,7 +365,7 @@ func (e *testEnv) dbConflicts() []db.ConflictEntry {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	entries, err := d.AllConflicts()
 	if err != nil {
 		e.t.Fatalf("dbConflicts: %v", err)

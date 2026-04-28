@@ -49,7 +49,7 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	if _, err := conn.Exec(schema); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 	return &DB{conn: conn}, nil
@@ -87,7 +87,7 @@ func (d *DB) All() (map[string]*Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("db all: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[string]*Entry)
 	for rows.Next() {
@@ -137,7 +137,7 @@ func (d *DB) AllUnder(prefix string) (map[string]*Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("db allunder %q: %w", prefix, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[string]*Entry)
 	for rows.Next() {
@@ -197,7 +197,7 @@ func (d *DB) AllConflicts() ([]ConflictEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("db all conflicts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ConflictEntry
 	for rows.Next() {
 		var e ConflictEntry

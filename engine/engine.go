@@ -237,7 +237,7 @@ func Run(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 
 	// Remove conflict records whose .conflict- file has been deleted by the user.
 	if entries, err := state.AllConflicts(); err != nil {
@@ -336,9 +336,7 @@ func scanRemote(wdc *webdav.Client, folders []string, syncHiddenFiles bool, dbSt
 			result[""] = &rootEntries[0]
 		}
 		// Seed the queue with only the selected sub-folders.
-		for _, f := range folders {
-			queue = append(queue, f)
-		}
+		queue = append(queue, folders...)
 	}
 
 	for len(queue) > 0 {
@@ -885,7 +883,7 @@ func execOne(
 		if err != nil {
 			return err
 		}
-		defer rc.Close()
+		defer func() { _ = rc.Close() }()
 		f, err := os.CreateTemp(filepath.Dir(localAbs), ".tmp-sync-*")
 		if err != nil {
 			return err
@@ -897,13 +895,16 @@ func execOne(
 			src = newByteProgressReader(src, a.path, fileTotal, onByteProgress)
 		}
 		if _, err := io.Copy(f, src); err != nil {
-			f.Close()
-			os.Remove(tmpPath)
+			_ = f.Close()
+			_ = os.Remove(tmpPath)
 			return err
 		}
-		f.Close()
+		if err := f.Close(); err != nil {
+			_ = os.Remove(tmpPath)
+			return err
+		}
 		if err := os.Rename(tmpPath, localAbs); err != nil {
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 			return err
 		}
 		if !a.remote.LastModified.IsZero() {
@@ -944,7 +945,7 @@ func execOne(
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		src := newRateLimitedReader(f, uploadLimiter, uploadCounter)
 		if onByteProgress != nil && a.local.size > 0 {
 			src = newByteProgressReader(src, a.path, a.local.size, onByteProgress)

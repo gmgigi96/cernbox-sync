@@ -25,7 +25,7 @@ func newTestDaemon(t *testing.T, debounceDur time.Duration) *Daemon {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cfgDB.Close() })
+	t.Cleanup(func() { _ = cfgDB.Close() })
 
 	d := New(cfgDB, 24*time.Hour, nil) // 24h interval: periodic sync never fires
 	d.debounceDuration = debounceDur
@@ -92,7 +92,7 @@ func minimalWebDAV(t *testing.T) *httptest.Server {
 		case "PROPFIND":
 			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 			w.WriteHeader(http.StatusMultiStatus)
-			fmt.Fprintf(w,
+			_, _ = fmt.Fprintf(w,
 				`<?xml version="1.0"?>`+
 					`<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">`+
 					`<d:response><d:href>%s</d:href><d:propstat><d:prop>`+
@@ -105,7 +105,7 @@ func minimalWebDAV(t *testing.T) *httptest.Server {
 				r.URL.Path,
 			)
 		case "PUT":
-			io.ReadAll(r.Body)
+			_, _ = io.ReadAll(r.Body)
 			w.WriteHeader(http.StatusCreated)
 		case "MKCOL":
 			w.WriteHeader(http.StatusCreated)

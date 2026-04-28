@@ -104,7 +104,7 @@ func cmdAdd(args []string) {
 	localDir := fs.String("local", "", "Local directory to sync (required)")
 	remoteURL := fs.String("remote", "", "Remote WebDAV URL of the space (required)")
 	foldersRaw := fs.String("folders", "", "Comma-separated list of sub-folders to sync (omit to sync entire space)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if *name == "" || *localDir == "" || *remoteURL == "" {
 		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync add -name <n> -local <dir> -remote <url> [-folders f1,f2]\n\n")
@@ -138,7 +138,7 @@ func cmdAdd(args []string) {
 
 func cmdList(args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	resp := send(ipc.Request{Cmd: ipc.CmdList})
 	if len(resp.Folders) == 0 {
@@ -146,15 +146,15 @@ func cmdList(args []string) {
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tLOCAL\tREMOTE\tFOLDERS")
+	_, _ = fmt.Fprintln(w, "NAME\tLOCAL\tREMOTE\tFOLDERS")
 	for _, f := range resp.Folders {
 		foldersSummary := "(all)"
 		if len(f.Folders) > 0 {
 			foldersSummary = strings.Join(f.Folders, ",")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", f.Name, f.LocalRoot, f.RemoteBase, foldersSummary)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", f.Name, f.LocalRoot, f.RemoteBase, foldersSummary)
 	}
-	w.Flush()
+	_ = w.Flush()
 }
 
 // ── remove ───────────────────────────────────────────────────────────────────
@@ -162,7 +162,7 @@ func cmdList(args []string) {
 func cmdRemove(args []string) {
 	fs := flag.NewFlagSet("remove", flag.ExitOnError)
 	name := fs.String("name", "", "Name of the sync pair to remove (required)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if *name == "" {
 		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync remove -name <n>\n\n")
@@ -179,7 +179,7 @@ func cmdRemove(args []string) {
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	name := fs.String("name", "", "Name of the sync pair to run (omit to run all)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	send(ipc.Request{Cmd: ipc.CmdSync, Name: *name})
 	if *name != "" {
@@ -194,7 +194,7 @@ func cmdRun(args []string) {
 func cmdPause(args []string) {
 	fs := flag.NewFlagSet("pause", flag.ExitOnError)
 	name := fs.String("name", "", "Name of the folder to pause (omit to pause globally)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	send(ipc.Request{Cmd: ipc.CmdPause, Name: *name})
 	if *name != "" {
@@ -209,7 +209,7 @@ func cmdPause(args []string) {
 func cmdResume(args []string) {
 	fs := flag.NewFlagSet("resume", flag.ExitOnError)
 	name := fs.String("name", "", "Name of the folder to resume (omit to resume globally)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	send(ipc.Request{Cmd: ipc.CmdResume, Name: *name})
 	if *name != "" {
@@ -223,7 +223,7 @@ func cmdResume(args []string) {
 
 func cmdStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	resp := send(ipc.Request{Cmd: ipc.CmdStatus})
 	s := resp.Status
@@ -255,18 +255,18 @@ func cmdStatus(args []string) {
 
 	fmt.Println()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "FOLDER\tLAST SYNC")
+	_, _ = fmt.Fprintln(w, "FOLDER\tLAST SYNC")
 	for _, n := range names {
-		fmt.Fprintf(w, "%s\t%s\n", n, s.LastSync[n])
+		_, _ = fmt.Fprintf(w, "%s\t%s\n", n, s.LastSync[n])
 	}
-	w.Flush()
+	_ = w.Flush()
 }
 
 // ── stop ─────────────────────────────────────────────────────────────────────
 
 func cmdStop(args []string) {
 	fs := flag.NewFlagSet("stop", flag.ExitOnError)
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	send(ipc.Request{Cmd: ipc.CmdStop})
 	fmt.Println("Daemon stopped")
@@ -277,7 +277,7 @@ func cmdStop(args []string) {
 func cmdSetSettings(args []string) {
 	fs := flag.NewFlagSet("set-settings", flag.ExitOnError)
 	maxAge := fs.String("log-max-age", "", "Maximum age of per-folder log entries (e.g. 168h, 720h). Empty string disables rotation.")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	send(ipc.Request{
 		Cmd:      ipc.CmdSetSettings,
@@ -290,7 +290,7 @@ func cmdSetSettings(args []string) {
 
 func cmdGetSettings(args []string) {
 	fs := flag.NewFlagSet("get-settings", flag.ExitOnError)
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	resp := send(ipc.Request{Cmd: ipc.CmdGetSettings})
 	if resp.Settings == nil || resp.Settings.LogRotateMaxAge == "" {
@@ -305,7 +305,7 @@ func cmdGetSettings(args []string) {
 func cmdConflicts(args []string) {
 	fs := flag.NewFlagSet("conflicts", flag.ExitOnError)
 	name := fs.String("name", "", "Show conflicts for a specific folder only (omit for all)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	resp := send(ipc.Request{Cmd: ipc.CmdListConflicts, Name: *name})
 	if len(resp.Conflicts) == 0 {
@@ -314,9 +314,9 @@ func cmdConflicts(args []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "FOLDER\tFILE\tCONFLICT COPY\tDETECTED AT")
+	_, _ = fmt.Fprintln(w, "FOLDER\tFILE\tCONFLICT COPY\tDETECTED AT")
 	for _, c := range resp.Conflicts {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.Folder, c.Path, c.ConflictPath, c.CreatedAt)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.Folder, c.Path, c.ConflictPath, c.CreatedAt)
 	}
-	w.Flush()
+	_ = w.Flush()
 }

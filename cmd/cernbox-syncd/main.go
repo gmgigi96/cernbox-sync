@@ -54,7 +54,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("open config db: %v", err)
 	}
-	defer cfgDB.Close()
+	defer func() { _ = cfgDB.Close() }()
 
 	d := daemon.New(cfgDB, *interval, l)
 

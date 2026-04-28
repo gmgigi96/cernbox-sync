@@ -67,7 +67,7 @@ func (c *Client) Propfind(remotePath string, depth int) ([]Resource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("propfind request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusMultiStatus {
 		b, _ := io.ReadAll(resp.Body)
@@ -102,7 +102,7 @@ func (c *Client) Get(remotePath string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("GET %s: status %d", remotePath, resp.StatusCode)
 	}
 	return resp.Body, nil
@@ -123,7 +123,7 @@ func (c *Client) Put(remotePath string, content io.Reader, size int64) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("PUT %s: status %d: %s", remotePath, resp.StatusCode, string(b))
@@ -142,7 +142,7 @@ func (c *Client) Mkcol(remotePath string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusMethodNotAllowed {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("MKCOL %s: status %d: %s", remotePath, resp.StatusCode, string(b))
@@ -161,7 +161,7 @@ func (c *Client) Delete(remotePath string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("DELETE %s: status %d: %s", remotePath, resp.StatusCode, string(b))

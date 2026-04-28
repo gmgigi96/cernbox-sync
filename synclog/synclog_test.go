@@ -17,7 +17,7 @@ func openLogger(t *testing.T, maxAge time.Duration) (*synclog.Logger, string) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { l.Close() })
+	t.Cleanup(func() { _ = l.Close() })
 	return l, filepath.Join(dir, synclog.LogName)
 }
 
@@ -38,7 +38,7 @@ func TestOpen_CreatesLogFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	path := filepath.Join(dir, synclog.LogName)
 	if _, err := os.Stat(path); err != nil {
@@ -58,7 +58,7 @@ func TestOpen_NonExistentDir_ReturnsError(t *testing.T) {
 func TestPrintf_WritesTimestampedLine(t *testing.T) {
 	l, path := openLogger(t, 0)
 	l.Printf("downloaded %s", "file.txt")
-	l.Close()
+	_ = l.Close()
 
 	content := readLog(t, path)
 	if !strings.Contains(content, "downloaded file.txt") {
@@ -75,7 +75,7 @@ func TestPrintf_MultipleLines(t *testing.T) {
 	l.Printf("line one")
 	l.Printf("line two")
 	l.Printf("line three")
-	l.Close()
+	_ = l.Close()
 
 	content := readLog(t, path)
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
@@ -115,7 +115,7 @@ func TestRotate_RemovesOldEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	l.Printf("new entry")
 
@@ -146,7 +146,7 @@ func TestRotate_KeepsRecentEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	if err := l.Rotate(); err != nil {
 		t.Fatalf("Rotate: %v", err)
@@ -171,7 +171,7 @@ func TestRotate_UnparsableLines_AreKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	if err := l.Rotate(); err != nil {
 		t.Fatalf("Rotate: %v", err)

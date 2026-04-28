@@ -2,6 +2,7 @@ package logger_test
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -69,7 +70,7 @@ func TestNew_FiltersLevelsBelowMinimum(t *testing.T) {
 func TestNew_TraceLevel(t *testing.T) {
 	var buf bytes.Buffer
 	l := logger.New(&buf, logger.LevelTrace)
-	l.Log(nil, logger.LevelTrace, "trace message")
+	l.Log(context.TODO(), logger.LevelTrace, "trace message")
 	if !strings.Contains(buf.String(), "TRACE") {
 		t.Errorf("expected TRACE label in output, got: %q", buf.String())
 	}

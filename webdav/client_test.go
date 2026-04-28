@@ -84,7 +84,7 @@ func TestPropfind_File(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
-		fmt.Fprint(w, propfindXML([]testResource{
+		_, _ = fmt.Fprint(w, propfindXML([]testResource{
 			{href: "/report.txt", etag: "abc123", isDir: false, size: 42, modTime: modTime, fileID: "fid-1"},
 		}))
 	}), "")
@@ -121,7 +121,7 @@ func TestPropfind_Directory(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
-		fmt.Fprint(w, propfindXML([]testResource{
+		_, _ = fmt.Fprint(w, propfindXML([]testResource{
 			{href: "/docs", etag: "dir-etag", isDir: true, fileID: "fid-dir"},
 		}))
 	}), "")
@@ -145,7 +145,7 @@ func TestPropfind_MultipleResources(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
-		fmt.Fprint(w, propfindXML([]testResource{
+		_, _ = fmt.Fprint(w, propfindXML([]testResource{
 			{href: "/docs", isDir: true, etag: "e0"},
 			{href: "/docs/a.txt", isDir: false, size: 10, etag: "e1"},
 			{href: "/docs/b.txt", isDir: false, size: 20, etag: "e2"},
@@ -166,7 +166,7 @@ func TestPropfind_ETagQuotesStripped(t *testing.T) {
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
 		// Intentionally use outer quotes (the propfindXML helper adds them).
-		fmt.Fprint(w, propfindXML([]testResource{
+		_, _ = fmt.Fprint(w, propfindXML([]testResource{
 			{href: "/f.txt", etag: "quoted-etag"},
 		}))
 	}), "")
@@ -186,7 +186,7 @@ func TestPropfind_URLEncodedPath(t *testing.T) {
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
 		// href with space encoded as %20
-		fmt.Fprint(w, propfindXML([]testResource{
+		_, _ = fmt.Fprint(w, propfindXML([]testResource{
 			{href: "/my%20file.txt", etag: "e1"},
 		}))
 	}), "")
@@ -206,7 +206,7 @@ func TestPropfind_BasePath_Stripped(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
-		fmt.Fprint(w, propfindXML([]testResource{
+		_, _ = fmt.Fprint(w, propfindXML([]testResource{
 			{href: "/dav/spaces/root/notes/todo.txt", etag: "e1", size: 5},
 		}))
 	}), "/dav/spaces/root")
@@ -225,7 +225,7 @@ func TestPropfind_RootHref_EmptyPath(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
-		fmt.Fprint(w, propfindXML([]testResource{
+		_, _ = fmt.Fprint(w, propfindXML([]testResource{
 			{href: "/", isDir: true, etag: "root-etag"},
 		}))
 	}), "")
@@ -245,7 +245,7 @@ func TestPropfind_SetsBasicAuth(t *testing.T) {
 		user, pass, _ = r.BasicAuth()
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
-		fmt.Fprint(w, propfindXML(nil))
+		_, _ = fmt.Fprint(w, propfindXML(nil))
 	}), "")
 
 	_, _ = c.Propfind("", 0)
@@ -260,7 +260,7 @@ func TestPropfind_SetsDepthHeader(t *testing.T) {
 		depth = r.Header.Get("Depth")
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusMultiStatus)
-		fmt.Fprint(w, propfindXML(nil))
+		_, _ = fmt.Fprint(w, propfindXML(nil))
 	}), "")
 
 	_, _ = c.Propfind("", 1)
@@ -289,14 +289,14 @@ func TestGet_Success(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "hello world")
+		_, _ = fmt.Fprint(w, "hello world")
 	}), "")
 
 	rc, err := c.Get("hello.txt")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	body, _ := io.ReadAll(rc)
 	if string(body) != "hello world" {
 		t.Errorf("body: got %q", string(body))
@@ -312,7 +312,7 @@ func TestGet_SetsBasicAuth(t *testing.T) {
 
 	rc, _ := c.Get("f.txt")
 	if rc != nil {
-		rc.Close()
+		_ = rc.Close()
 	}
 	if user != "user" || pass != "secret" {
 		t.Errorf("basic auth: got user=%q pass=%q", user, pass)
@@ -354,7 +354,7 @@ func TestPut_Success_Created(t *testing.T) {
 
 func TestPut_Success_NoContent(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusNoContent)
 	}), "")
 
@@ -365,7 +365,7 @@ func TestPut_Success_NoContent(t *testing.T) {
 
 func TestPut_Success_OK(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusOK)
 	}), "")
 
@@ -380,7 +380,7 @@ func TestPut_SetsContentTypeAndLength(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ct = r.Header.Get("Content-Type")
 		cl = r.ContentLength
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusCreated)
 	}), "")
 
@@ -395,7 +395,7 @@ func TestPut_SetsContentTypeAndLength(t *testing.T) {
 
 func TestPut_ErrorStatus_ReturnsError(t *testing.T) {
 	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 		http.Error(w, "server error", http.StatusInternalServerError)
 	}), "")
 

@@ -40,7 +40,7 @@ func (d *Daemon) processWatchEvents(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			d.watcher.Close()
+			_ = d.watcher.Close()
 			return
 
 		case event, ok := <-d.watcher.Events:

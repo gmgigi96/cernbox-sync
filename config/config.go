@@ -110,7 +110,7 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("open config db: %w", err)
 	}
 	if _, err := conn.Exec(schema); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("create config schema: %w", err)
 	}
 	// Migration: add folders column if it does not exist yet (added in v2).
@@ -177,7 +177,7 @@ func (d *DB) All() ([]Folder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list folders: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var result []Folder
 	for rows.Next() {
@@ -302,7 +302,7 @@ func (d *DB) GetSettings() (Settings, error) {
 	if err != nil {
 		return Settings{}, fmt.Errorf("get settings: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var s Settings
 	for rows.Next() {

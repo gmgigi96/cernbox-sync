@@ -53,14 +53,14 @@ func startFakeServer(t *testing.T, sockPath string, handle func(ipc.Request) ipc
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		var req ipc.Request
 		if err := json.NewDecoder(conn).Decode(&req); err != nil {
 			return

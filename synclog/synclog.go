@@ -44,7 +44,7 @@ func (l *Logger) Close() error { return l.f.Close() }
 func (l *Logger) Printf(format string, args ...any) {
 	ts := time.Now().Format(time.RFC3339)
 	line := fmt.Sprintf(format, args...)
-	fmt.Fprintf(l.f, "%s %s\n", ts, line)
+	_, _ = fmt.Fprintf(l.f, "%s %s\n", ts, line)
 }
 
 // Rotate removes log entries older than maxAge. It is a no-op when maxAge
@@ -77,12 +77,12 @@ func (l *Logger) Rotate() error {
 		return fmt.Errorf("create rotate tmp: %w", err)
 	}
 	for _, line := range kept {
-		fmt.Fprintln(tf, line)
+		_, _ = fmt.Fprintln(tf, line)
 	}
-	tf.Close()
+	_ = tf.Close()
 
 	if err := os.Rename(tmp, l.path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		l.f, _ = os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		return fmt.Errorf("rename rotate tmp: %w", err)
 	}
@@ -105,7 +105,7 @@ func filterLines(path string, cutoff time.Time) ([]string, error) {
 		}
 		return nil, fmt.Errorf("open log for rotate: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var kept []string
 	scanner := bufio.NewScanner(f)

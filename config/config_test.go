@@ -14,7 +14,7 @@ func openDB(t *testing.T) *config.DB {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
@@ -81,13 +81,10 @@ func TestAdd_NilFolders(t *testing.T) {
 	if err := d.Add(f); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	got, err := d.Get("nilfolders")
-	if err != nil {
+	if _, err := d.Get("nilfolders"); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Folders == nil {
-		// nil is fine — marshalled as []
-	}
+	// nil Folders is fine — marshalled as []
 }
 
 func TestAdd_DuplicateName_ReturnsError(t *testing.T) {
