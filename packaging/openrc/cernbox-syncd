@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+
+name="cernbox-syncd"
+description="CernBox Sync Daemon"
+command="/usr/bin/cernbox-syncd"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.log"
+
+# Set command_user to run as a specific user, e.g.:
+#   command_user="alice"
+# Or leave unset to run as root (not recommended for a personal sync tool).
+
+depend() {
+    need net
+    use logger
+}

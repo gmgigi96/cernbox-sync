@@ -1,0 +1,95 @@
+version: 2
+
+project_name: cernbox-sync
+
+snapshot:
+  version_template: "nightly"
+
+builds:
+  - id: cernbox-sync
+    main: .
+    binary: cernbox-sync
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+
+  - id: cernbox-syncd
+    main: ./cmd/cernbox-syncd
+    binary: cernbox-syncd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - ids:
+      - cernbox-sync
+      - cernbox-syncd
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+nfpms:
+  - ids:
+      - cernbox-sync
+      - cernbox-syncd
+    package_name: cernbox-sync
+    vendor: CERN
+    homepage: https://github.com/gmgigi96/cernbox-sync
+    maintainer: Gianmaria Del Monte <gianmaria.del.monte@cern.ch>
+    description: |
+      CERNBox sync daemon and CLI.
+      Synchronizes local folders with CERNBox.
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+    contents:
+      - src: packaging/systemd/cernbox-syncd.service
+        dst: /usr/lib/systemd/user/cernbox-syncd.service
+        packager: deb
+      - src: packaging/systemd/cernbox-syncd.service
+        dst: /usr/lib/systemd/user/cernbox-syncd.service
+        packager: rpm
+      - src: packaging/systemd/cernbox-syncd.service
+        dst: /usr/lib/systemd/user/cernbox-syncd.service
+        packager: archlinux
+      - src: packaging/openrc/cernbox-syncd
+        dst: /etc/init.d/cernbox-syncd
+        file_info:
+          mode: 0755
+        packager: apk
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  prerelease: auto
+  make_latest: true

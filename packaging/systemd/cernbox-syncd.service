@@ -1,0 +1,13 @@
+[Unit]
+Description=CernBox Sync Daemon
+Documentation=https://github.com/gmgigi96/cernbox-sync
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cernbox-syncd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

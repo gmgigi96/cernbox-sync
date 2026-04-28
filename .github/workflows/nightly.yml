@@ -1,0 +1,21 @@
+name: Nightly
+
+on:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build.yml
+    with:
+      publish: true
+      version: nightly
+      prerelease: true
+    secrets: inherit

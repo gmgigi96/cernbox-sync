@@ -1,6 +1,6 @@
 # Binary
-cernbox-sync
-cernbox-syncd
+/cernbox-sync
+/cernbox-syncd
 
 # Sync database
 *.db

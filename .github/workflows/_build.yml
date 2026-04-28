@@ -1,0 +1,379 @@
+name: _build
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Build artifacts and publish a release"
+        type: boolean
+        default: false
+      version:
+        description: "Release version (e.g. nightly or v1.2.3)"
+        type: string
+        default: ""
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: false
+
+jobs:
+  # ── Lint ─────────────────────────────────────────────────────────────────────
+  lint-go:
+    name: Lint Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          install-mode: goinstall
+
+  lint-gui:
+    name: Lint GUI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Install GUI dependencies
+        run: cd gui && npm ci
+
+      - name: TypeScript type-check
+        run: cd gui && ./node_modules/.bin/tsc --noEmit
+
+  # ── Build check (compilation only) ───────────────────────────────────────────
+  build-check:
+    name: Build check (${{ matrix.os }})
+    needs: [lint-go, lint-gui]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Go binaries
+        run: |
+          go build -o cernbox-sync .
+          go build -o cernbox-syncd ./cmd/cernbox-syncd
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Install GUI dependencies
+        run: cd gui && npm ci
+
+      - name: Build GUI frontend
+        run: cd gui && npm run build
+
+  # ── Tests ─────────────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests (${{ matrix.os }})
+    needs: [build-check]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run unit tests
+        run: go test ./...
+
+  gui-tests:
+    name: GUI Unit Tests (${{ matrix.os }})
+    needs: [build-check]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Run GUI unit tests
+        run: make test-gui
+
+  integration-tests:
+    name: Integration Tests
+    needs: [build-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        run: make build
+
+      - name: Start dev services
+        run: make dev-up
+
+      - name: Wait for revad to be ready
+        run: |
+          for i in $(seq 1 30); do
+            sleep 10
+            if curl -sf -o /dev/null http://localhost/status.php; then
+              echo "revad is up"
+              break
+            fi
+            echo "Waiting for revad... ($i/30)"
+          done
+
+      - name: Run integration tests
+        run: make test-integration
+
+      - name: Stop dev services
+        if: always()
+        run: make dev-down
+
+  e2e-tests:
+    name: E2E Tests
+    needs: [build-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Install dependencies and Playwright browsers
+        run: cd gui && npm install && npx playwright install --with-deps chromium
+
+      - name: Start dev services
+        run: make dev-up
+
+      - name: Wait for revad to be ready
+        run: |
+          for i in $(seq 1 30); do
+            sleep 5
+            if curl -sf -o /dev/null http://localhost/status.php; then
+              echo "revad is up"
+              break
+            fi
+            echo "Waiting for revad... ($i/30)"
+          done
+
+      - name: Run e2e tests
+        run: make test-e2e
+
+      - name: Stop dev services
+        if: always()
+        run: make dev-down
+
+  # ── GoReleaser — Go binaries + Linux packages + release ──────────────────────
+  goreleaser:
+    name: GoReleaser
+    if: inputs.publish
+    needs: [unit-tests, gui-tests, integration-tests, e2e-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Move nightly tag to current commit
+        if: inputs.version == 'nightly'
+        run: |
+          git tag -f nightly
+          git push origin nightly --force
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: >-
+            release --clean
+            ${{ inputs.version == 'nightly' && '--snapshot --skip=nfpm,changelog' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish nightly pre-release
+        if: inputs.version == 'nightly'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          prerelease: true
+          make_latest: false
+          body: "Built from commit ${{ github.sha }}"
+          files: dist/**/*
+
+  # ── GUI installers (Tauri) ────────────────────────────────────────────────────
+  build-gui:
+    name: Build GUI (${{ matrix.platform }})
+    if: inputs.publish
+    needs: [unit-tests, gui-tests, integration-tests, e2e-tests]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-22.04
+            goos: linux
+            goarch: amd64
+            rust_triple: x86_64-unknown-linux-gnu
+          - platform: macos
+            runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            rust_triple: aarch64-apple-darwin
+          - platform: windows
+            runner: windows-latest
+            goos: windows
+            goarch: amd64
+            rust_triple: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build daemon sidecar (Windows)
+        if: matrix.platform == 'windows'
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries
+          go build -ldflags="-s -w" `
+            -o gui/src-tauri/binaries/cernbox-syncd-${{ matrix.rust_triple }}.exe `
+            ./cmd/cernbox-syncd
+
+      - name: Create sidecar placeholder (Linux/macOS)
+        if: matrix.platform != 'windows'
+        run: |
+          mkdir -p gui/src-tauri/binaries
+          touch gui/src-tauri/binaries/cernbox-syncd-${{ matrix.rust_triple }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          args: --verbose
+
+      - name: Upload GUI artifacts (Linux)
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-linux
+          path: |
+            gui/src-tauri/target/release/bundle/deb/*.deb
+            gui/src-tauri/target/release/bundle/rpm/*.rpm
+            gui/src-tauri/target/release/bundle/appimage/*.AppImage
+
+      - name: Upload GUI artifacts (macOS)
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-macos
+          path: |
+            gui/src-tauri/target/release/bundle/dmg/*.dmg
+            gui/src-tauri/target/release/bundle/macos/*.app.tar.gz
+
+      - name: Upload GUI artifacts (Windows)
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-windows
+          path: |
+            gui/src-tauri/target/release/bundle/msi/*.msi
+            gui/src-tauri/target/release/bundle/nsis/*.exe
+
+  # ── Upload GUI artifacts to the release ──────────────────────────────────────
+  upload-gui:
+    name: Upload GUI artifacts
+    if: inputs.publish
+    needs: [goreleaser, build-gui]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download GUI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gui-*
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          files: artifacts/**/*
