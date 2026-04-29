@@ -479,7 +479,7 @@ export function FolderDetail({ folder, daemon, account, onBack, onRemove, onFold
                     daemon.updateFolder(updated).then(() => onFolderUpdated(updated));
                   }}
                 />
-                <SyncModeRow />
+                <SyncModeRow onDemand={folder.Settings?.on_demand ?? false} />
               </div>
 
 
@@ -583,21 +583,18 @@ const sr: Record<string, React.CSSProperties> = {
 
 // ── SyncModeRow ────────────────────────────────────────────────────────────────
 
-function SyncModeRow() {
+function SyncModeRow({ onDemand }: { onDemand: boolean }) {
   return (
     <div style={sr.row}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.125rem" }}>
           <p style={{ ...sr.label, marginBottom: 0 }}>Sync mode</p>
-          <span style={{ fontSize: "0.5625rem", fontWeight: 700, letterSpacing: "0.06em", color: "var(--tertiary)", background: "rgba(255,181,150,0.15)", padding: "0.1rem 0.375rem", borderRadius: "var(--radius-full)" }}>
-            SOON
-          </span>
         </div>
-        <p style={sr.desc}>Choose how files are kept locally</p>
+        <p style={sr.desc}>Set when the folder was added — cannot be changed</p>
       </div>
       <div style={smr.segmented}>
-        <div style={{ ...smr.option, ...smr.optionActive }}>Mirror</div>
-        <div style={{ ...smr.option, ...smr.optionDisabled }}>On-demand</div>
+        <div style={{ ...smr.option, ...(onDemand ? smr.optionDisabled : smr.optionActive) }}>Mirror</div>
+        <div style={{ ...smr.option, ...(onDemand ? smr.optionActive : smr.optionDisabled) }}>On-demand</div>
       </div>
     </div>
   );

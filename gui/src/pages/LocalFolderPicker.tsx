@@ -9,6 +9,7 @@ import {
   AlertCircle,
   Check,
   ChevronUp,
+  Cloud,
   X,
 } from "lucide-react";
 import { ipc } from "../ipc";
@@ -59,6 +60,7 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
   const [syncName, setSyncName] = useState(existingFolder?.Name ?? space.name);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [onDemand, setOnDemand] = useState(false);
   const [newFolderActive, setNewFolderActive] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [newFolderError, setNewFolderError] = useState<string | null>(null);
@@ -133,6 +135,7 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
           LocalRoot: selected,
           RemoteBase: remoteBase,
           Folders: relativeFolders,
+          Settings: { on_demand: onDemand },
         });
       }
       onDone();
@@ -331,6 +334,29 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
               Short identifier for this sync pair
             </p>
           </div>
+
+          {!existingFolder && (
+            <div style={s.sideCard}>
+              <p style={s.sideCardLabel}>SYNC MODE</p>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: "0.5rem", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={onDemand}
+                  onChange={(e) => setOnDemand(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.8125rem", color: "var(--on-surface)", fontWeight: 500 }}>
+                    <Cloud size={13} strokeWidth={1.5} style={{ color: "var(--outline)" }} />
+                    On-demand
+                  </span>
+                  <span style={{ fontSize: "0.6875rem", color: "var(--outline)", lineHeight: 1.4 }}>
+                    Files appear as placeholders and download on access (Windows only). Cannot be changed later.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
 
           {submitError && (
             <div style={s.errorBox}>

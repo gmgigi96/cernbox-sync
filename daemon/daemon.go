@@ -286,7 +286,10 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	metadataStreams := d.metadataStreams
 	d.mu.Unlock()
 
-	placeholder := d.ensureProvider(f)
+	var placeholder engine.PlaceholderFS
+	if f.Settings.OnDemand {
+		placeholder = d.ensureProvider(f)
+	}
 
 	cfg := engine.Config{
 		Ctx:             ctx,
