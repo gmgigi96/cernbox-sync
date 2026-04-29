@@ -17,6 +17,11 @@ if (-not (Get-Command rustc -ErrorAction SilentlyContinue)) {
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $repo
 
+# Kill any stale daemon from a previous run — it would hold an exclusive
+# lock on the sidecar .exe and cause `go build` / tauri-build to fail
+# with "Access is denied" (PermissionDenied / OS error 5).
+Get-Process -Name cernbox-syncd -ErrorAction SilentlyContinue | Stop-Process -Force
+
 $triple = ((rustc -vV | Select-String '^host:') -replace 'host:\s*','').Trim()
 New-Item -Force -ItemType Directory gui\src-tauri\binaries | Out-Null
 
