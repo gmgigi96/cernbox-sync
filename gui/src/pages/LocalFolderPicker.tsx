@@ -31,12 +31,21 @@ interface LocalFolderPickerProps {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function parentPath(path: string): string | null {
-  const sep = path.includes("/") ? "/" : "\\";
-  const parts = path.split(sep).filter(Boolean);
-  if (parts.length === 0) return null;
-  parts.pop();
-  const parent = sep + parts.join(sep);
-  return parent === sep ? sep : parent;
+  if (!path) return null;
+  // Windows drive root — "C:\", "C:/" or "C:" has no parent.
+  if (/^[A-Za-z]:[\\\/]?$/.test(path)) return null;
+  // POSIX root.
+  if (path === "/") return null;
+  // Strip trailing separators so "/foo/" and "C:\foo\" behave like "/foo" and "C:\foo".
+  const trimmed = path.replace(/[\\\/]+$/, "");
+  const lastSep = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+  if (lastSep < 0) return null;
+  const parent = trimmed.slice(0, lastSep);
+  // Parent of "C:\Users" is "C:\" — keep the separator so the path stays absolute.
+  if (/^[A-Za-z]:$/.test(parent)) return parent + "\\";
+  // Parent of "/foo" is "/".
+  if (parent === "") return "/";
+  return parent;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -66,14 +75,11 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
         // Resolve the actual path from the first non-".." entry, or keep the requested path
         if (path) setCurrentPath(path);
         else {
-          // Home dir — derive from entries
+          // Home dir — derive from a child entry by stripping its last path component.
           const first = result.find((e) => e.name !== "..");
           if (first) {
-            const p = first.path;
-            const sep = p.includes("/") ? "/" : "\\";
-            const parts = p.split(sep).filter(Boolean);
-            parts.pop();
-            setCurrentPath(sep + parts.join(sep));
+            const parent = parentPath(first.path);
+            if (parent) setCurrentPath(parent);
           }
         }
       })
