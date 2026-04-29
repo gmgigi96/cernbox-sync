@@ -39,7 +39,7 @@ printf "Timed out waiting for SSH\n"; exit 1
 endef
 
 .PHONY: all build cli daemon test test-gui test-e2e test-e2e-watch test-all lint clean help dev-up dev-down gui gui-dev
-.PHONY: windows-vm-create windows-vm-start windows-vm-stop windows-vm-status windows-vm-ssh windows-vm-setup windows-vm-gui windows-vm-gui-dev test-windows test-windows-integration
+.PHONY: windows-vm-create windows-vm-start windows-vm-stop windows-vm-status windows-vm-ssh windows-vm-setup windows-vm-gui test-windows test-windows-integration
 
 all: build
 
@@ -208,14 +208,17 @@ windows-vm-setup: ## Install Go, Git, and MinGW inside the Windows VM (run once 
 	@echo "Running setup (installs Go, Git, MinGW — takes ~10 min)..."
 	$(WINDOWS_SSH_CMD) "powershell.exe -ExecutionPolicy Bypass -File C:/setup.ps1"
 
-windows-vm-gui: ## Start the Windows VM with a graphical display (SDL) — runs in the foreground
+windows-vm-gui: ## Start the Windows VM with a graphical display + repo mounted as Z: drive
 	@test -f "$(WINDOWS_DISK)" || { echo "Error: VM disk not found — run: make windows-vm-create WINDOWS_ISO=..."; exit 1; }
+	@command -v smbd >/dev/null 2>&1 || { echo "Error: smbd not found — install samba (Arch: pacman -S samba)"; exit 1; }
 	@if [ -f "$(WINDOWS_PID)" ] && kill -0 "$$(cat $(WINDOWS_PID))" 2>/dev/null; then \
 		echo "Error: VM is already running headlessly (PID $$(cat $(WINDOWS_PID))). Stop it first with: make windows-vm-stop"; exit 1; \
 	fi
 	@echo "Starting Windows VM with graphical display (SDL)..."
 	@echo "SSH is also forwarded on localhost:2222 for make test-windows / test-windows-integration."
 	@echo "The cernbox dev server on the host is reachable from the VM at http://10.0.2.2/"
+	@echo "The host repo is mounted inside the VM as drive Z: (\\\\10.0.2.4\\qemu)."
+	@echo "To run the GUI: open PowerShell in the VM and run  Z:\\dev\\windows\\run-dev.ps1"
 	qemu-system-x86_64 \
 		-machine q35,accel=kvm \
 		-cpu host \
@@ -226,29 +229,9 @@ windows-vm-gui: ## Start the Windows VM with a graphical display (SDL) — runs 
 		-device ahci,id=ahci \
 		-drive id=disk,if=none,file=$(WINDOWS_DISK),format=qcow2 \
 		-device ide-hd,drive=disk,bus=ahci.0 \
-		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22,smb=$(CURDIR) \
 		-device e1000e,netdev=net0 \
 		-display sdl
-
-windows-vm-gui-dev: ## Run the GUI in dev mode inside the Windows VM (start the VM first with `make windows-vm-gui` so you can see the desktop)
-	$(call wait-for-windows-ssh)
-	@echo "Uploading source (gui/node_modules and gui/src-tauri/target are preserved across runs to keep iteration fast)..."
-	$(WINDOWS_SSH_CMD) "New-Item -Force -ItemType Directory C:/workspace/cernbox-sync | Out-Null"
-	@tar -czf - \
-		--exclude='.git' \
-		--exclude='node_modules' \
-		--exclude='gui/dist' \
-		--exclude='gui/src-tauri/target' \
-		--exclude='gui/src-tauri/binaries' \
-		--exclude='$(WINDOWS_VM_DIR)/*.qcow2' \
-		--exclude='$(WINDOWS_VM_DIR)/*.iso' \
-		. | $(WINDOWS_SSH_CMD) "tar -xzf - -C 'C:/workspace/cernbox-sync/'"
-	@echo "Building cernbox-syncd.exe for Tauri's externalBin..."
-	$(WINDOWS_SSH_CMD) "\$$Env:Path = (Join-Path \$$Env:USERPROFILE '.cargo\bin') + ';' + \$$Env:Path; if (-not (Get-Command rustc -ErrorAction SilentlyContinue)) { Write-Error 'rustc not found — run: make windows-vm-setup'; exit 1 }; Set-Location C:/workspace/cernbox-sync; \$$triple = ((rustc -vV | Select-String '^host:') -replace 'host:\s*','').Trim(); New-Item -Force -ItemType Directory gui/src-tauri/binaries | Out-Null; go build -ldflags='-s -w' -o ('gui/src-tauri/binaries/cernbox-syncd-' + \$$triple + '.exe') ./cmd/cernbox-syncd"
-	@echo "Starting 'npm run tauri dev' inside the VM. The GUI window appears on the VM's desktop. Press Ctrl-C here to stop."
-	@# Invoke npm.cmd explicitly: PowerShell's PATHEXT prefers npm.ps1, which
-	@# is blocked by the default ExecutionPolicy on a fresh Windows install.
-	$(WINDOWS_SSH_CMD) "\$$Env:Path = (Join-Path \$$Env:USERPROFILE '.cargo\bin') + ';' + \$$Env:Path; Set-Location C:/workspace/cernbox-sync/gui; npm.cmd install; if (\$$LASTEXITCODE -ne 0) { exit \$$LASTEXITCODE }; npm.cmd run tauri dev"
 
 test-windows: ## Build and run Windows-specific tests inside the VM
 	$(call wait-for-windows-ssh)

@@ -1,7 +1,9 @@
 # Allow PowerShell scripts to run for the current user. Without this, the
 # default Restricted policy blocks npm.ps1 / Tauri's helper scripts when
-# `make windows-vm-gui-dev` invokes them over SSH.
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+# `make windows-vm-gui-dev` invokes them over SSH. Use Unrestricted (not
+# RemoteSigned) so scripts on the QEMU SMB share at Z: — which Windows
+# tags as the Internet zone — also run without manual unblocking.
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted -Force
 
 # Install Chocolatey
 Set-ExecutionPolicy Bypass -Scope Process -Force
@@ -51,8 +53,48 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';
             [System.Environment]::GetEnvironmentVariable('Path', 'User') + ';' +
             (Join-Path $env:USERPROFILE '.cargo\bin')
 
-# Workspace directory for source code
-New-Item -Force -ItemType Directory -Path 'C:\workspace\cernbox-sync' | Out-Null
+# Make Windows compatible with QEMU's built-in SMB share (\\10.0.2.4\qemu):
+#  1. Allow unauthenticated guest auth — QEMU's smbd only offers guest, but
+#     Windows 10/11 block insecure guest by default.
+#  2. Don't require SMB packet signing — Windows 11 24H2 enforces signing
+#     for outbound connections by default; QEMU's smbd doesn't support it,
+#     so the tree-connect fails with error 0xC04A2003.
+reg add 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f | Out-Null
+Set-SmbClientConfiguration -RequireSecuritySignature $false -Confirm:$false
+Set-SmbClientConfiguration -EnableSecuritySignature $false -Confirm:$false
+
+# Map the host repo (exposed via QEMU's built-in SMB at \\10.0.2.4\qemu)
+# as Z: on every desktop logon. We can't rely on /persistent:yes here
+# because setup.ps1 runs over SSH (a non-interactive session) while the
+# SMB share is only attached when the VM is launched with `make
+# windows-vm-gui`. A startup .cmd in the Startup folder runs at each
+# interactive logon, when the share is guaranteed to be reachable.
+$startup = [Environment]::GetFolderPath('Startup')
+New-Item -Force -ItemType Directory $startup | Out-Null
+@'
+@echo off
+net use Z: \\10.0.2.4\qemu >nul 2>&1
+'@ | Set-Content -Encoding ASCII (Join-Path $startup 'mount-qemu-share.cmd')
+
+# Also try to mount it now (will silently fail if SMB share not yet attached;
+# the startup script will pick it up the next time the user logs in).
+cmd /c 'net use Z: /delete /yes' 2>$null | Out-Null
+cmd /c 'net use Z: \\10.0.2.4\qemu' 2>$null | Out-Null
+
+# Forward localhost:80 inside the VM to the host's 10.0.2.2:80 (QEMU's
+# slirp gateway). The cernbox dev environment listens on the host's
+# localhost:80, so this lets the same `http://localhost/` URL work
+# unchanged in the VM — no need to remember 10.0.2.2.
+netsh interface portproxy delete v4tov4 listenport=80 listenaddress=127.0.0.1 2>$null | Out-Null
+netsh interface portproxy add v4tov4 listenport=80 listenaddress=127.0.0.1 connectport=80 connectaddress=10.0.2.2
+
+# Cargo's target/ has tens of thousands of small object files; over the
+# slirp+SMB share that would be unbearable. Pin it to local NTFS instead
+# (machine-wide so every shell sees it). Source still lives on Z:.
+$cargoTargetDir = 'C:\dev-cache\cargo-target'
+New-Item -Force -ItemType Directory $cargoTargetDir | Out-Null
+[System.Environment]::SetEnvironmentVariable('CARGO_TARGET_DIR', $cargoTargetDir, 'Machine')
+$env:CARGO_TARGET_DIR = $cargoTargetDir
 
 Write-Host ""
 Write-Host "Setup complete."
