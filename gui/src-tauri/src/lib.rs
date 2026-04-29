@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
 // ── IPC types (must mirror the Go structs) ────────────────────────────────────
@@ -16,6 +17,8 @@ pub struct FolderSettings {
     pub auto_sync_on_change: bool,
     #[serde(default)]
     pub paused: bool,
+    #[serde(default)]
+    pub on_demand: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -191,15 +194,32 @@ fn start_daemon(app: &AppHandle) -> Result<(), String> {
         .sidecar("cernbox-syncd")
         .map_err(|e| format!("Failed to prepare sidecar: {e}"))?;
 
-    let (_rx, child) = sidecar_command
+    let (mut rx, child) = sidecar_command
         .spawn()
         .map_err(|e| format!("Failed to spawn daemon: {e}"))?;
 
     let handle = tauri::async_runtime::spawn(async move {
         // Keep the child handle alive for the lifetime of the app.
         // Dropping it would kill the process on some platforms.
-        let _ = child;
-        std::future::pending::<()>().await;
+        let _child = child;
+        // Forward the daemon's stdout/stderr to our own so they show up in
+        // the `npm run tauri dev` console. Without this, the receiver is
+        // dropped and the daemon's logs are silently discarded.
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                CommandEvent::Stdout(line) => {
+                    println!("[syncd] {}", String::from_utf8_lossy(&line).trim_end());
+                }
+                CommandEvent::Stderr(line) => {
+                    eprintln!("[syncd] {}", String::from_utf8_lossy(&line).trim_end());
+                }
+                CommandEvent::Terminated(payload) => {
+                    eprintln!("[syncd] terminated: {:?}", payload);
+                    break;
+                }
+                _ => {}
+            }
+        }
     });
 
     app.state::<DaemonState>().child.lock().unwrap().replace(handle);
@@ -231,7 +251,7 @@ fn ipc_list() -> Result<Vec<Folder>, String> {
 }
 
 #[tauri::command]
-fn ipc_add(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>, auto_sync_on_change: Option<bool>) -> Result<(), String> {
+fn ipc_add(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>, auto_sync_on_change: Option<bool>, on_demand: Option<bool>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "add".into(),
         folder: Some(Folder {
@@ -243,6 +263,7 @@ fn ipc_add(name: String, local_root: String, remote_base: String, folders: Optio
                 sync_hidden_files: sync_hidden_files.unwrap_or(false),
                 auto_sync_on_change: auto_sync_on_change.unwrap_or(false),
                 paused: false,
+                on_demand: on_demand.unwrap_or(false),
             },
         }),
         name: None,
@@ -293,7 +314,7 @@ fn ipc_remove(name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn ipc_update(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>, auto_sync_on_change: Option<bool>) -> Result<(), String> {
+fn ipc_update(name: String, local_root: String, remote_base: String, folders: Option<Vec<String>>, sync_hidden_files: Option<bool>, auto_sync_on_change: Option<bool>, on_demand: Option<bool>) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "update".into(),
         folder: Some(Folder {
@@ -305,6 +326,7 @@ fn ipc_update(name: String, local_root: String, remote_base: String, folders: Op
                 sync_hidden_files: sync_hidden_files.unwrap_or(false),
                 auto_sync_on_change: auto_sync_on_change.unwrap_or(false),
                 paused: false,
+                on_demand: on_demand.unwrap_or(false),
             },
         }),
         name: None,
