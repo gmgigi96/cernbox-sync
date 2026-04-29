@@ -11,6 +11,7 @@ import "C"
 import (
 	"context"
 	"io"
+	"log/slog"
 	"sync"
 	"unicode/utf16"
 	"unsafe"
@@ -51,6 +52,25 @@ func lookupProvider(connKey int64) *winProvider {
 // stream big files steadily without ballooning memory.
 const chunkSize = 1 << 20 // 1 MiB
 
+// goFetchPlaceholders is the C → Go bridge for CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS.
+// We populate the namespace fully via the engine, so we never have anything
+// to add here — we just acknowledge the request with the "disable further
+// on-demand population" flag so Windows stops asking. The acknowledgement
+// runs on a worker goroutine to keep the callback thread free.
+//
+//export goFetchPlaceholders
+func goFetchPlaceholders(connectionKey C.int64_t, transferKey C.int64_t) {
+	connKey := int64(connectionKey)
+	xferKey := int64(transferKey)
+	slog.Info("cloudfiles: FETCH_PLACEHOLDERS callback", "connKey", connKey)
+	go func() {
+		if err := executeTransferPlaceholdersAck(connKey, xferKey); err != nil {
+			slog.Warn("cloudfiles: TRANSFER_PLACEHOLDERS ack failed",
+				"connKey", connKey, "err", err)
+		}
+	}()
+}
+
 // goFetchData is the C → Go bridge for CF_CALLBACK_TYPE_FETCH_DATA. The OS
 // invokes it (indirectly, via on_fetch_data in cfapi_windows.c) on a Win32
 // thread-pool thread. The body returns immediately after spawning a worker
@@ -75,6 +95,7 @@ func goFetchData(
 	off := int64(requiredOffset)
 	length := int64(requiredLength)
 
+	slog.Info("cloudfiles: FETCH_DATA callback", "connKey", connKey, "rel", identity, "offset", off, "length", length)
 	go handleFetch(connKey, xferKey, identity, off, length)
 }
 

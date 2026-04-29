@@ -152,6 +152,11 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	// Filesystem watcher for auto-sync on change.
 	d.startWatcher(ctx)
 
+	// Connect cloudfiles providers for on-demand folders eagerly so the OS
+	// has a callback target the moment the user opens an Explorer window —
+	// otherwise placeholder access would time out until the next sync cycle.
+	d.connectOnDemandProviders()
+
 	// Periodic sync loop.
 	go d.syncLoop(ctx)
 
@@ -197,6 +202,25 @@ func (d *Daemon) syncLoop(ctx context.Context) {
 			d.log.Info("[daemon] sync interval updated", "interval", newInterval)
 		case <-t.C:
 			d.syncAll()
+		}
+	}
+}
+
+// connectOnDemandProviders calls ensureProvider for every registered folder
+// whose Settings.OnDemand is true, so the CF API callback table is wired up
+// before any Explorer access can happen. Errors are logged inside
+// ensureProvider; this function never blocks the caller for long because
+// Provider.Start is intended to be quick (registry + connect, no I/O).
+// On non-Windows builds ensureProvider is a no-op.
+func (d *Daemon) connectOnDemandProviders() {
+	folders, err := d.cfgDB.All()
+	if err != nil {
+		d.log.Error("[daemon] list folders for on-demand startup", "err", err)
+		return
+	}
+	for _, f := range folders {
+		if f.Settings.OnDemand {
+			d.ensureProvider(f)
 		}
 	}
 }
@@ -473,6 +497,11 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		d.log.Info("[daemon] add: registered folder", "folder", req.Folder.Name)
 		d.updateFolderWatch(req.Folder)
+		// Connect the cloudfiles provider eagerly so Explorer access works
+		// before the first sync runs. No-op on non-Windows.
+		if req.Folder.Settings.OnDemand {
+			d.ensureProvider(req.Folder)
+		}
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderAdded, FolderData: &req.Folder})
 		return ok()
 
@@ -520,10 +549,14 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if oldFolder != nil {
 			d.removeFolderWatch(oldFolder.Name, oldFolder.LocalRoot)
 		}
-		// Stop the existing provider so it is re-created on the next sync
-		// with the updated LocalRoot / RemoteBase.
+		// Stop the existing provider so it is re-created with the updated
+		// LocalRoot / RemoteBase. Then reconnect eagerly if the folder is
+		// still on-demand, so Explorer access keeps working.
 		d.stopFolderProvider(req.Folder.Name)
 		d.updateFolderWatch(req.Folder)
+		if req.Folder.Settings.OnDemand {
+			d.ensureProvider(req.Folder)
+		}
 		d.log.Info("[daemon] update: updated folder", "folder", req.Folder.Name, "selected", req.Folder.Folders, "settings", fmt.Sprintf("%+v", req.Folder.Settings))
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderUpdated, FolderData: &req.Folder})
 		return ok()

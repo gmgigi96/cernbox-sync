@@ -47,6 +47,7 @@ func (d *Daemon) ensureProvider(f config.Folder) cloudfiles.Provider {
 // picked up without restarting the provider.
 func (d *Daemon) makeFetch(f config.Folder) cloudfiles.FetchFunc {
 	return func(_ context.Context, relPath string) (io.ReadCloser, error) {
+		d.log.Info("[daemon] fetch placeholder", "folder", f.Name, "rel", relPath)
 		d.mu.Lock()
 		cfg := engine.Config{
 			RemoteBase:      f.RemoteBase,

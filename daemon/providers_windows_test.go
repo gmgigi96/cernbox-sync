@@ -55,6 +55,7 @@ func TestDaemon_OnDemandSync(t *testing.T) {
 		Name:       "ondemand-test",
 		LocalRoot:  root,
 		RemoteBase: srv.URL + "/dav",
+		Settings:   config.FolderSettings{OnDemand: true},
 	}
 	if err := d.cfgDB.Add(f); err != nil {
 		t.Fatalf("cfgDB.Add: %v", err)
@@ -104,7 +105,7 @@ func TestDaemon_ProviderStopsOnFolderRemove(t *testing.T) {
 
 	d := newTestDaemon(t, time.Hour)
 	root := cloudfiles.SyncRootTempDir(t)
-	f := config.Folder{Name: "remove-test", LocalRoot: root, RemoteBase: srv.URL + "/dav"}
+	f := config.Folder{Name: "remove-test", LocalRoot: root, RemoteBase: srv.URL + "/dav", Settings: config.FolderSettings{OnDemand: true}}
 	if err := d.cfgDB.Add(f); err != nil {
 		t.Fatalf("cfgDB.Add: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestDaemon_ProviderReusedAcrossSyncs(t *testing.T) {
 
 	d := newTestDaemon(t, time.Hour)
 	root := cloudfiles.SyncRootTempDir(t)
-	f := config.Folder{Name: "reuse-test", LocalRoot: root, RemoteBase: srv.URL + "/dav"}
+	f := config.Folder{Name: "reuse-test", LocalRoot: root, RemoteBase: srv.URL + "/dav", Settings: config.FolderSettings{OnDemand: true}}
 	if err := d.cfgDB.Add(f); err != nil {
 		t.Fatalf("cfgDB.Add: %v", err)
 	}

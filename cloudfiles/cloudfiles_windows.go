@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -83,6 +84,17 @@ func (p *winProvider) Start(ctx context.Context) error {
 	p.connKey = key
 	registerProvider(key, p)
 	p.started = true
+	// Tell the OS the provider is online and idle. Without this call Windows
+	// keeps the sync root in a "provider unknown" state, which manifests as
+	// sticky OFFLINE + RECALL_ON_DATA_ACCESS attributes on the sync-root
+	// directory and a "cloud operation timed out" dialog on every access.
+	// Best-effort: a failure here doesn't take down the provider — FETCH_DATA
+	// still works on the open connection — so log via the default slog and
+	// keep going.
+	if hr := int32(C.cf_update_provider_status_idle(C.int64_t(key))); hr != 0 {
+		slog.Warn("cloudfiles: CfUpdateSyncProviderStatus(IDLE) failed",
+			"folder", p.cfg.FolderName, "hresult", fmt.Sprintf("0x%08x", uint32(hr)))
+	}
 	return nil
 }
 
@@ -122,6 +134,7 @@ func (p *winProvider) connectWithCallback() (int64, error) {
 	}
 	cb := []cfCallbackRegistration{
 		{Type: cfCallbackTypeFetchData, Callback: uintptr(C.cf_get_fetch_data_callback())},
+		{Type: cfCallbackTypeFetchPlaceholders, Callback: uintptr(C.cf_get_fetch_placeholders_callback())},
 	}
 	return connectSyncRootSyscall(p.cfg.LocalRoot, cb)
 }
@@ -246,15 +259,28 @@ func timeToFiletime(t time.Time) int64 {
 	return filetimeEpoch + t.UnixNano()/100
 }
 
-// relPathFromAbs returns absPath relative to localRoot, with forward slashes
-// converted to backslashes (Windows convention). If absPath isn't under
-// localRoot the input is returned unchanged.
+// relPathFromAbs returns absPath relative to localRoot, normalized to use
+// forward slashes regardless of platform. The result is stored in the CF
+// FileIdentity blob and round-tripped back to us through the FETCH_DATA
+// callback; from there it goes straight into a WebDAV URL, where any
+// backslash would be percent-encoded as %5C and the GET would 404. Keeping
+// the stored form portable means a subdirectory placeholder like
+//
+//	C:\sync\pictures\vacation\italy\captions.txt
+//
+// hydrates against
+//
+//	<remote-base>/pictures/vacation/italy/captions.txt
+//
+// instead of the encoded backslash variant.
+//
+// If absPath isn't under localRoot the input is returned unchanged.
 func relPathFromAbs(localRoot, absPath string) string {
 	rel, err := filepath.Rel(localRoot, absPath)
 	if err != nil {
 		return absPath
 	}
-	return rel
+	return filepath.ToSlash(rel)
 }
 
 // fileIdentity allocates a UTF-16 buffer holding relPath. The returned

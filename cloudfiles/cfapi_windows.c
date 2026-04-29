@@ -30,6 +30,9 @@ typedef HRESULT (WINAPI *PFN_CfUnregisterSyncRoot)(PCWSTR);
 
 typedef HRESULT (WINAPI *PFN_CfDisconnectSyncRoot)(CF_CONNECTION_KEY);
 
+typedef HRESULT (WINAPI *PFN_CfUpdateSyncProviderStatus)(
+    CF_CONNECTION_KEY, CF_SYNC_PROVIDER_STATUS);
+
 typedef HRESULT (WINAPI *PFN_CfCreatePlaceholders)(
     PCWSTR, CF_PLACEHOLDER_CREATE_INFO *, DWORD, CF_CREATE_FLAGS, PDWORD);
 
@@ -45,6 +48,7 @@ typedef HRESULT (WINAPI *PFN_CfSetPinState)(
 static PFN_CfRegisterSyncRoot   p_CfRegisterSyncRoot   = NULL;
 static PFN_CfUnregisterSyncRoot p_CfUnregisterSyncRoot = NULL;
 static PFN_CfDisconnectSyncRoot p_CfDisconnectSyncRoot = NULL;
+static PFN_CfUpdateSyncProviderStatus p_CfUpdateSyncProviderStatus = NULL;
 static PFN_CfCreatePlaceholders p_CfCreatePlaceholders = NULL;
 static PFN_CfUpdatePlaceholder  p_CfUpdatePlaceholder  = NULL;
 static PFN_CfSetPinState        p_CfSetPinState        = NULL;
@@ -64,11 +68,12 @@ static int32_t load_cldapi(void) {
     p_CfRegisterSyncRoot   = (PFN_CfRegisterSyncRoot)  (void *)GetProcAddress(h, "CfRegisterSyncRoot");
     p_CfUnregisterSyncRoot = (PFN_CfUnregisterSyncRoot)(void *)GetProcAddress(h, "CfUnregisterSyncRoot");
     p_CfDisconnectSyncRoot = (PFN_CfDisconnectSyncRoot)(void *)GetProcAddress(h, "CfDisconnectSyncRoot");
+    p_CfUpdateSyncProviderStatus = (PFN_CfUpdateSyncProviderStatus)(void *)GetProcAddress(h, "CfUpdateSyncProviderStatus");
     p_CfCreatePlaceholders = (PFN_CfCreatePlaceholders)(void *)GetProcAddress(h, "CfCreatePlaceholders");
     p_CfUpdatePlaceholder  = (PFN_CfUpdatePlaceholder) (void *)GetProcAddress(h, "CfUpdatePlaceholder");
     p_CfSetPinState        = (PFN_CfSetPinState)       (void *)GetProcAddress(h, "CfSetPinState");
     if (!p_CfRegisterSyncRoot || !p_CfUnregisterSyncRoot ||
-        !p_CfDisconnectSyncRoot ||
+        !p_CfDisconnectSyncRoot || !p_CfUpdateSyncProviderStatus ||
         !p_CfCreatePlaceholders || !p_CfUpdatePlaceholder ||
         !p_CfSetPinState) {
         loaded = -1;
@@ -125,11 +130,32 @@ int32_t cf_register_sync_root(const char *utf8_path, const char *utf8_provider_n
     CF_SYNC_POLICIES policies = {0};
     policies.StructSize              = sizeof(policies);
     policies.Hydration.Primary       = CF_HYDRATION_POLICY_PARTIAL;
-    policies.Population.Primary      = CF_POPULATION_POLICY_FULL;
+    /* PARTIAL (not FULL) so Windows calls our FETCH_PLACEHOLDERS callback
+     * during directory enumeration. With FULL the OS skips the callback
+     * entirely yet still keeps the OFFLINE/RECALL flags on the sync root,
+     * which left every `dir`/Explorer access waiting on the cloud filter
+     * with no one to answer it. The stub callback answers "done, disable
+     * further population" so Windows lets the enumeration through after
+     * the first call. */
+    policies.Population.Primary      = CF_POPULATION_POLICY_PARTIAL;
     policies.InSync                  = CF_INSYNC_POLICY_TRACK_ALL;
     policies.HardLink                = CF_HARDLINK_POLICY_NONE;
 
-    HRESULT hr = p_CfRegisterSyncRoot(path, &reg, &policies, CF_REGISTER_FLAG_NONE);
+    /* MARK_IN_SYNC_ON_ROOT tells the OS the directory namespace is already
+     * up to date so it doesn't slap OFFLINE + RECALL_ON_DATA_ACCESS on the
+     * sync-root directory. Without this flag every Explorer-shell path that
+     * goes through the cloud filter (cmd `dir`, Get-ChildItem, Explorer
+     * itself) waits the full recall timeout for a fetch we never get
+     * asked to satisfy.
+     *
+     * DISABLE_ON_DEMAND_POPULATION_ON_ROOT keeps the OS from calling our
+     * FETCH_PLACEHOLDERS at the root level — child placeholders still get
+     * populated by the engine, and we don't expose any deeper-than-root
+     * directories as on-demand. */
+    CF_REGISTER_FLAGS flags = (CF_REGISTER_FLAGS)(
+        CF_REGISTER_FLAG_MARK_IN_SYNC_ON_ROOT |
+        CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT);
+    HRESULT hr = p_CfRegisterSyncRoot(path, &reg, &policies, flags);
     free(path);
     free(provider);
     return (int32_t)hr;
@@ -153,6 +179,16 @@ int32_t cf_disconnect_sync_root(int64_t connection_key) {
     CF_CONNECTION_KEY key;
     key.Internal = (LONGLONG)connection_key;
     HRESULT hr = p_CfDisconnectSyncRoot(key);
+    return (int32_t)hr;
+}
+
+int32_t cf_update_provider_status_idle(int64_t connection_key) {
+    int32_t loaderr = load_cldapi();
+    if (loaderr) return loaderr;
+
+    CF_CONNECTION_KEY key;
+    key.Internal = (LONGLONG)connection_key;
+    HRESULT hr = p_CfUpdateSyncProviderStatus(key, CF_PROVIDER_STATUS_IDLE);
     return (int32_t)hr;
 }
 
@@ -297,4 +333,27 @@ static VOID CALLBACK on_fetch_data(
  * (whose VEH integration crashes inside cldapi.dll's internal SEH path). */
 void *cf_get_fetch_data_callback(void) {
     return (void *)on_fetch_data;
+}
+
+/* ── FETCH_PLACEHOLDERS callback bridge ─────────────────────────────────────
+ *
+ * Even though we register sync roots with CF_POPULATION_POLICY_FULL — meaning
+ * we tell Windows we've populated every placeholder ahead of time — Windows
+ * has been observed calling FETCH_PLACEHOLDERS on the sync root the first
+ * time Explorer opens it. If no handler is registered, the OS waits the full
+ * timeout and surfaces "cloud operation not completed" to the user.
+ *
+ * This stub responds with TRANSFER_PLACEHOLDERS / no entries / SUCCESS /
+ * STOP_ON_DEMAND_POPULATION so Windows is satisfied and won't ask again. */
+static VOID CALLBACK on_fetch_placeholders(
+    const CF_CALLBACK_INFO       *info,
+    const CF_CALLBACK_PARAMETERS *params) {
+    (void)params;
+    goFetchPlaceholders(
+        info->ConnectionKey.Internal,
+        info->TransferKey.QuadPart);
+}
+
+void *cf_get_fetch_placeholders_callback(void) {
+    return (void *)on_fetch_placeholders;
 }

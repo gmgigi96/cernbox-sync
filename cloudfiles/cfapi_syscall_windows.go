@@ -58,8 +58,9 @@ type cfCallbackRegistration struct {
 }
 
 const (
-	cfCallbackTypeFetchData = 0
-	cfCallbackTypeNone      = -1
+	cfCallbackTypeFetchData         = 0
+	cfCallbackTypeFetchPlaceholders = 2
+	cfCallbackTypeNone              = -1
 )
 
 // connectSyncRootSyscall calls CfConnectSyncRoot via the Go syscall machinery.
@@ -142,7 +143,68 @@ type cfOpParamsTransfer struct {
 	Length           int64
 }
 
-const cfOperationTypeTransferData = 0
+const (
+	cfOperationTypeTransferData         = 0
+	cfOperationTypeTransferPlaceholders = 4
+)
+
+// cfOpParamsTransferPlaceholders mirrors CF_OPERATION_PARAMETERS /
+// TransferPlaceholders on x64 (cfapi.h):
+//
+//	[0x00] ULONG ParamSize (4)
+//	[0x04] CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS Flags (4)
+//	[0x08] LARGE_INTEGER PlaceholderTotalCount (8)
+//	[0x10] CF_PLACEHOLDER_CREATE_INFO* PlaceholderArray (8)
+//	[0x18] ULONG PlaceholderCount (4)
+//	[0x1C] ULONG EntriesProcessed (4)
+//	[0x20] NTSTATUS CompletionStatus (4)
+//	[0x24] padding (4)
+//	sizeof = 0x28 = 40 bytes
+type cfOpParamsTransferPlaceholders struct {
+	ParamSize             uint32
+	Flags                 uint32
+	PlaceholderTotalCount int64
+	PlaceholderArray      uintptr
+	PlaceholderCount      uint32
+	EntriesProcessed      uint32
+	CompletionStatus      int32
+	_pad                  uint32
+}
+
+// cfOperationTransferPlaceholdersFlagDisable tells the OS not to ask us to
+// populate this directory again — equivalent to
+// CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION.
+const cfOperationTransferPlaceholdersFlagDisable = 1
+
+// executeTransferPlaceholdersAck answers a FETCH_PLACEHOLDERS callback with
+// "I have nothing more to add — disable further population requests for this
+// directory." Used by the stub callback handler to keep Windows from waiting
+// on enumeration when our population policy is FULL.
+func executeTransferPlaceholdersAck(connKey, xferKey int64) error {
+	if err := loadCldapiSyscall(); err != nil {
+		return err
+	}
+	opi := cfOperationInfo{
+		StructSize:    uint32(unsafe.Sizeof(cfOperationInfo{})),
+		Type:          cfOperationTypeTransferPlaceholders,
+		ConnectionKey: connKey,
+		TransferKey:   xferKey,
+	}
+	params := cfOpParamsTransferPlaceholders{
+		ParamSize: uint32(unsafe.Sizeof(cfOpParamsTransferPlaceholders{})),
+		Flags:     cfOperationTransferPlaceholdersFlagDisable,
+	}
+	r1, _, callErr := syscall.SyscallN(
+		pExecute.Addr(),
+		uintptr(unsafe.Pointer(&opi)),
+		uintptr(unsafe.Pointer(&params)),
+	)
+	hr := int32(r1)
+	if hr < 0 {
+		return fmt.Errorf("CfExecute(TRANSFER_PLACEHOLDERS): HRESULT 0x%08x (errno=%v)", uint32(hr), callErr)
+	}
+	return nil
+}
 
 // executeTransferSyscall delivers a chunk of file content (or an error) to
 // the OS via CfExecute(TRANSFER_DATA), called through syscall.SyscallN to

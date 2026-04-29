@@ -48,6 +48,14 @@ int32_t cf_unregister_sync_root(const char *utf8_path);
 /* Disconnect a previously connected sync root. */
 int32_t cf_disconnect_sync_root(int64_t connection_key);
 
+/* Tell the OS that the provider is online and idle on the given connection.
+ * Without this call, Windows leaves the sync root in a "provider unknown"
+ * state — Explorer then treats every access as a recall that times out
+ * because no callback target is acknowledged.
+ *
+ * Should be called once after CfConnectSyncRoot returns successfully. */
+int32_t cf_update_provider_status_idle(int64_t connection_key);
+
 /* Create a placeholder for utf8_abs_path. mtime_filetime is the file's
  * modification time as a Windows FILETIME (100 ns ticks since 1601 UTC).
  *
@@ -82,6 +90,11 @@ int32_t cf_set_pin_state(const char *utf8_abs_path, int32_t pinned);
  * side can hand it to CfConnectSyncRoot via syscall, bypassing cgo's
  * exception-handler interception. */
 void *cf_get_fetch_data_callback(void);
+
+/* Returns the address of the static FETCH_PLACEHOLDERS callback. Used to
+ * satisfy Windows when it asks us to enumerate the namespace, even under
+ * CF_POPULATION_POLICY_FULL. */
+void *cf_get_fetch_placeholders_callback(void);
 
 #ifdef __cplusplus
 }
