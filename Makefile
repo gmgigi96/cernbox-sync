@@ -243,7 +243,7 @@ windows-vm-gui: ## Start the Windows VM with a graphical display + repo mounted 
 		-chardev spicevmc,id=spicechannel0,name=vdagent \
 		-display spice-app
 
-test-windows: ## Build and run Windows-specific tests inside the VM (cloudfiles via MSIX harness, others via plain go test)
+test-windows: ## Build and run Windows-specific tests inside the VM (plain go test; cernbox-cf.dll must be on PATH)
 	$(call wait-for-windows-ssh)
 	@echo "Uploading source..."
 	@# Wipe the workspace first so files removed locally also disappear in
@@ -255,16 +255,15 @@ test-windows: ## Build and run Windows-specific tests inside the VM (cloudfiles 
 		--exclude='$(WINDOWS_VM_DIR)/*.qcow2' \
 		--exclude='$(WINDOWS_VM_DIR)/*.iso' \
 		. | $(WINDOWS_SSH_CMD) "tar -xzf - -C 'C:/workspace/cernbox-sync/'"
-	@# Phase 2 split: the cloudfiles tests now require MSIX package
-	@# identity (StorageProviderSyncRootManager.Register won't run
-	@# unpackaged), so they go through run-tests-msix.ps1 which compiles
-	@# them, stages them inside a tests-only AppxPackage, and invokes them
-	@# via an uap5:AppExecutionAlias. Everything else (engine, daemon, db,
-	@# ipc, ...) doesn't need identity, so we run those via plain `go test`.
-	@echo "Running non-cloudfiles tests inside VM (plain go test)..."
-	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; \$$pkgs = (go list ./... | Where-Object { \$$_ -notmatch '/cloudfiles$$' -and \$$_ -notmatch '/cloudfiles/winrt' }); go test -tags windows \$$pkgs"
-	@echo "Running cloudfiles tests inside VM (MSIX harness)..."
-	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; powershell.exe -ExecutionPolicy Bypass -File dev/windows/run-tests-msix.ps1"
+	@# Build the WinRT shim DLL first so cloudfiles/daemon tests can load
+	@# it via LazyDLL. Tests skip cleanly (requireCfShim) if the DLL is
+	@# missing, but we want them to actually run, so building is part of
+	@# the recipe. The DLL lands in gui/src-tauri/binaries/; we surface it
+	@# on PATH for the go test invocation that follows.
+	@echo "Building cernbox-cf.dll inside VM (MSVC + Windows SDK)..."
+	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; powershell.exe -ExecutionPolicy Bypass -File cloudfiles/winrt/build.ps1"
+	@echo "Running Windows tests inside VM (plain go test)..."
+	$(WINDOWS_SSH_CMD) "\$$Env:Path = 'C:\workspace\cernbox-sync\gui\src-tauri\binaries;' + \$$Env:Path; Set-Location C:/workspace/cernbox-sync; go test -tags windows ./..."
 
 # Coordinates for test-windows-integration. Default points at the host machine
 # via the QEMU user-networking gateway (10.0.2.2) so it works out of the box.
@@ -274,11 +273,18 @@ E2E_PASS    ?= relativity
 
 # ── MSIX packaging ────────────────────────────────────────────────────────────
 #
-# The modern Cloud Files registration API (StorageProviderSyncRootManager.Register)
-# requires the calling process to have package identity, so the daemon must
-# run from inside an MSIX-installed package. These targets build a signed
-# Desktop Bridge MSIX inside the Windows VM, pulling the artefact back to
-# dev/windows/out/ on the host.
+# MSIX is the production install format for the Tauri GUI app on Windows -
+# it gives Start-menu integration, an upgrade story, and the right deployment
+# story for a CERN-signed shippable artefact.
+#
+# It is NOT required to call StorageProviderSyncRootManager.Register: the
+# working ownCloud client registers from a plain unpackaged Win32 process
+# (vfs_win.cpp ::registerFolder), and we follow that approach. Tests run
+# unpackaged via plain `go test`; the MSIX targets here exist purely for
+# end-to-end packaging verification of the GUI install bundle.
+#
+# These targets build a signed Desktop Bridge MSIX inside the Windows VM,
+# pulling the artefact back to dev/windows/out/ on the host.
 #
 # Prereqs:
 #   - VM created and set up: make windows-vm-create && make windows-vm-setup

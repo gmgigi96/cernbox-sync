@@ -65,12 +65,14 @@ var _ = (func(string, bool) error)(SetPinState)
 const providerName = "cernbox-sync"
 
 // SyncRootIDFor returns the canonical StorageProviderSyncRootInfo.Id for
-// folderName. Stable across daemon restarts so re-registration is
-// idempotent and Unregister can find the entry by name alone.
+// the sync root rooted at localRoot. Stable across daemon restarts so
+// re-registration is idempotent and Unregister can find the entry from
+// the path alone.
+//
 // Implemented per-platform: see cloudfiles_windows.go (the real one,
-// which embeds the calling user's SID per Microsoft's documented
-// `<provider>!<sid>!<account>` format) and cloudfiles_other.go (a
-// trivial stub since non-Windows builds have no Cloud Files concept).
+// which builds `<provider>!<sid>!<base64-sha1(localRoot)>` mirroring
+// the working ownCloud client implementation) and cloudfiles_other.go
+// (a trivial stub since non-Windows builds have no Cloud Files concept).
 
 // Provider owns one CF-API sync root and exposes the placeholder operations
 // used by the engine (engine.PlaceholderFS) plus lifecycle and pinning.

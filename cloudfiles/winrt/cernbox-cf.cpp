@@ -9,6 +9,20 @@
 //   support. A small shim DLL compiled with MSVC sidesteps that, and the
 //   Go side loads it via syscall.SyscallN - no cgo dependency, same pattern
 //   as cfapi_syscall_windows.go uses for cldapi.dll.
+//
+// Field-set rationale:
+//   The set of StorageProviderSyncRootInfo fields below mirrors the working
+//   ownCloud desktop client (src/plugins/vfs/win/vfs_win.cpp ::registerFolder
+//   in github.com/owncloud/client). Microsoft's own docs are misleading on
+//   several points - in particular ProviderId() and RecycleBinUri() trigger
+//   AccessViolations on Win11 24H2+ when called, despite both being
+//   documented as legitimate setters. ownCloud's working code documents
+//   this explicitly with a "// Disabled because using the ProviderId
+//   getter/setter causes crashes" comment. We mirror that omission.
+//   DisplayNameResource and IconResource are likewise plain strings here
+//   (a literal display name and a path to the running .exe) - the
+//   `@module,-resourceid` MS-resource-string format the docs insist on
+//   pushed our previous attempts into a separate failure mode.
 
 #define CERNBOX_CF_EXPORTS
 #include "cernbox-cf.h"
@@ -19,7 +33,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.Provider.h>
-#include <winrt/Windows.Storage.Streams.h>  // InMemoryRandomAccessStream / IBuffer for Context
+#include <winrt/Windows.Storage.Streams.h>  // DataWriter / IBuffer for Context
 
 using namespace winrt;
 using namespace Windows::Storage;
@@ -104,11 +118,16 @@ extern "C" int32_t cernbox_cf_register_sync_root(
     const wchar_t *localRoot,
     const wchar_t *displayName,
     const wchar_t *providerVersion,
-    const GUID    *providerId,
+    const GUID    * /*providerId*/,
     const wchar_t *iconResource) {
 
     trace(L"register_sync_root: enter");
-    if (!id || !localRoot || !displayName || !providerVersion || !providerId) {
+    // providerId is intentionally ignored. ownCloud's working code documents
+    // that the ProviderId setter crashes on recent Windows builds; we match
+    // that by never calling info.ProviderId(...). The signature still takes
+    // it so future Windows builds (or Microsoft fixing the API) can re-enable
+    // it without churning the Go-side ABI.
+    if (!id || !localRoot || !displayName || !providerVersion) {
         trace(L"register_sync_root: E_INVALIDARG");
         return E_INVALIDARG;
     }
@@ -135,64 +154,65 @@ extern "C" int32_t cernbox_cf_register_sync_root(
         info.Id(hstring(id));
         info.Path(folder);
 
-        // DisplayNameResource and IconResource MUST be in the
-        // `@dll-path,-resourceid` format (per Microsoft docs and the
-        // CloudMirror sample). A plain string fails Register with
-        // E_INVALIDARG. If the caller passed plain names ("test-folder"
-        // etc.) we substitute a generic shell32 cloud-folder resource
-        // reference - the directory's own name is what users actually
-        // see in Explorer; DisplayNameResource is just for the
-        // SyncRootManager registry entries we don't expose.
-        const wchar_t* defaultRes = L"@%SystemRoot%\\System32\\shell32.dll,-2783";
-        const wchar_t* dn = (displayName && displayName[0] == L'@') ? displayName : defaultRes;
-        info.DisplayNameResource(hstring(dn));
-        const wchar_t* ir = (iconResource && iconResource[0] == L'@') ? iconResource : defaultRes;
-        info.IconResource(hstring(ir));
+        // Plain string for DisplayNameResource - NOT the documented
+        // `@module,-resourceid` MS-resource format. ownCloud confirmed
+        // by experiment that the literal-string form works on Win10/11
+        // and the resource-ref form is brittle. The OS uses this for
+        // the SyncRootManager registry entry; the directory's own name
+        // is what users see in Explorer, so a plain product-name string
+        // is fine here.
+        info.DisplayNameResource(hstring(displayName));
 
-        // Hydration / Population / InSync policies. Match the policy set
-        // Microsoft's CloudMirror sample uses verbatim - the previous
-        // attempt used Partial+AlwaysFull (which is what the legacy
-        // CfRegisterSyncRoot path used) but that combo gets rejected by
-        // StorageProviderSyncRootManager.Register with E_FAIL on Win11
-        // 24H2+. Full+AutoDehydrationAllowed gives effectively the same
-        // user-visible behaviour: files are placeholders, hydrated on
-        // read, and dehydrated when stale - the OS just doesn't draw
-        // the "cloud-only" badge until first access.
+        // IconResource: plain path to an icon-bearing file (e.g. our shim
+        // DLL or the daemon .exe). Empty -> use a sensible default. Same
+        // rationale as DisplayNameResource above.
+        if (iconResource && iconResource[0]) {
+            info.IconResource(hstring(iconResource));
+        } else {
+            info.IconResource(hstring(L"%SystemRoot%\\System32\\imageres.dll"));
+        }
+
+        // Hydration / Population / InSync policies. Mirrors the working
+        // ownCloud config: Full + ValidationRequired|AutoDehydrationAllowed,
+        // PopulationPolicy::AlwaysFull, InSyncPolicy::FileLastWriteTime.
+        // Earlier attempts with PopulationPolicy::Full + multiple InSync
+        // bits got rejected with E_FAIL on Win11 24H2+; this combination
+        // is what's known to register cleanly there.
         info.HydrationPolicy(StorageProviderHydrationPolicy::Full);
         info.HydrationPolicyModifier(
+            StorageProviderHydrationPolicyModifier::ValidationRequired |
             StorageProviderHydrationPolicyModifier::AutoDehydrationAllowed);
-        info.PopulationPolicy(StorageProviderPopulationPolicy::Full);
-        info.InSyncPolicy(
-            StorageProviderInSyncPolicy::FileCreationTime |
-            StorageProviderInSyncPolicy::DirectoryCreationTime);
+        info.PopulationPolicy(StorageProviderPopulationPolicy::AlwaysFull);
+        info.InSyncPolicy(StorageProviderInSyncPolicy::FileLastWriteTime);
 
         info.HardlinkPolicy(StorageProviderHardlinkPolicy::None);
         info.Version(hstring(providerVersion));
-        info.ShowSiblingsAsGroup(false);
-        info.ProviderId(*providerId);
 
-        // ProtectionMode + AllowPinning are documented as optional, but
-        // in practice on Win11 24H2+ leaving them unset makes Register
-        // access-violate inside the deployment service. Set explicit
-        // defaults: Unknown (no DRM) and Allowed (so Pin/Unpin works).
+        // ShowSiblingsAsGroup(true) lets Explorer collapse multiple folders
+        // registered by the same provider into one group entry. ownCloud
+        // sets this to true; we match.
+        info.ShowSiblingsAsGroup(true);
+
+        // ProviderId: NOT set. See note at function head and the matching
+        // comment in ownCloud's vfs_win.cpp.
+
+        // ProtectionMode + AllowPinning are documented as optional and
+        // ProtectionMode::Unknown is the documented default; setting
+        // AllowPinning(true) makes Pin/Unpin available to the user. Both
+        // are safe to call (unlike ProviderId / RecycleBinUri).
         info.ProtectionMode(StorageProviderProtectionMode::Unknown);
         info.AllowPinning(true);
 
-        // RecycleBinUri is documented optional but Microsoft's CloudMirror
-        // sample sets it (with a non-functional placeholder URL) and
-        // omitting it makes Register fail with E_FAIL on this Win11 build.
-        // We don't currently surface a recycle bin to the user; this is
-        // a placeholder that satisfies the validation. Phase 4 polish
-        // can wire up a real one.
-        info.RecycleBinUri(
-            Windows::Foundation::Uri(L"https://cernbox.cern.ch/.recyclebin"));
+        // RecycleBinUri: NOT set. Same crash class as ProviderId per
+        // ownCloud's testing.
 
         // Context: opaque IBuffer the OS hands back to us on certain
-        // callbacks. Microsoft's CloudMirror sample sets this with a
-        // single ASCII char, which we mimic - leaving it unset (or
-        // empty) provokes E_FAIL on Win11 24H2+.
+        // callbacks. ownCloud writes the provider name (UTF-16) here. The
+        // OS treats it as opaque, so any non-empty content satisfies the
+        // validation; the textual content matters only if our callback
+        // code ever cares to read it back.
         Streams::DataWriter ctxWriter;
-        ctxWriter.WriteByte(0x01);
+        ctxWriter.WriteString(hstring(L"cernbox-sync"));
         info.Context(ctxWriter.DetachBuffer());
 
         trace(L"register_sync_root: StorageProviderSyncRootManager::Register");

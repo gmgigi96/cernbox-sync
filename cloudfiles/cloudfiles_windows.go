@@ -13,6 +13,8 @@ import "C"
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,25 +29,31 @@ import (
 	"github.com/gmgigi96/cernbox-sync/webdav"
 )
 
-// SyncRootIDFor returns the StorageProviderSyncRootInfo.Id for folderName.
+// SyncRootIDFor returns the StorageProviderSyncRootInfo.Id for the sync
+// root at localRoot.
 //
-// Format: "<provider>!<sid>!<folder>" - the modern Cloud Files API
-// (StorageProviderSyncRootManager.Register) validates the id against
-// Microsoft's documented `<storage_provider_id>!<windows_sid>!<account_id>`
-// shape; an id missing the SID component fails with E_INVALIDARG.
-// We use the calling user's SID (so the same provider can register
-// distinct sync roots for each user on a shared box) and folderName as
-// the per-account discriminator.
+// Format: "<provider>!<sid>!<base64-sha1(localRoot)>" - this mirrors
+// what the ownCloud desktop client uses (vfs_win.cpp ::registerFolder),
+// which is the only known-working configuration on Win11 24H2+. The
+// modern Cloud Files API validates ids against the documented
+// `<storage_provider_id>!<windows_sid>!<account_id>` shape, but in
+// practice rejects anything that isn't structured exactly like this.
+// The third component is a hash of the local path rather than a
+// human-readable name so the same provider can register multiple
+// sync roots for the same user without collisions, and so the id
+// stays valid for any path the user picks (no character-set
+// surprises in the registry key).
 //
 // If the SID lookup fails - which would be a deeply unusual condition,
-// since the SID lives in the process token - we fall back to the
-// shorter format. The Register call will then surface E_INVALIDARG and
-// the daemon's ensureProvider will log it.
-func SyncRootIDFor(folderName string) string {
+// since the SID lives in the process token - we fall back to a
+// two-part id and let Register surface the error.
+func SyncRootIDFor(localRoot string) string {
+	sum := sha1.Sum([]byte(filepath.Clean(localRoot)))
+	hash := base64.StdEncoding.EncodeToString(sum[:])
 	if u, err := user.Current(); err == nil && u.Uid != "" {
-		return providerName + "!" + u.Uid + "!" + folderName
+		return providerName + "!" + u.Uid + "!" + hash
 	}
-	return providerName + "!" + folderName
+	return providerName + "!" + hash
 }
 
 // providerVersionString is stamped into the StorageProviderSyncRootInfo.
@@ -134,7 +142,7 @@ func (p *winProvider) Stop() error {
 // syncRootID is the stable identifier we hand to the OS for this folder.
 // Delegates to the package-level helper so the format stays in one place.
 func (p *winProvider) syncRootID() string {
-	return SyncRootIDFor(p.cfg.FolderName)
+	return SyncRootIDFor(p.cfg.LocalRoot)
 }
 
 // connectWithCallback wires our FETCH_DATA handler. Same syscall-instead-
@@ -158,10 +166,11 @@ func (p *winProvider) connectWithCallback() (int64, error) {
 // register installs p.cfg.LocalRoot as a sync root via the modern
 // StorageProviderSyncRootManager.Register WinRT API, called through the
 // cernbox-cf.dll shim (cloudfiles/winrt/cernbox-cf.cpp). Replaces the
-// legacy CfRegisterSyncRoot path; on-demand sync now requires the daemon
-// to run with MSIX package identity. ErrShimNotFound is returned when
-// the shim DLL isn't reachable - typically a sign the daemon was
-// launched from a non-packaged dev build.
+// legacy CfRegisterSyncRoot path. Works from packaged and unpackaged
+// processes alike (mirrors ownCloud's working VFS plugin behaviour).
+// ErrShimNotFound is returned when the shim DLL isn't reachable -
+// typically a sign cloudfiles/winrt/build.ps1 hasn't been run, or the
+// resulting DLL isn't on PATH alongside the daemon executable.
 func (p *winProvider) register() error {
 	return RegisterSyncRootWinRT(
 		p.syncRootID(),

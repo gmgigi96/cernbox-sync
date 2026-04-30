@@ -32,8 +32,8 @@ func UnregisterSyncRoot(_ string) error { return nil }
 // registration happens) but we keep the function so daemon code can
 // call it portably and log it if needed. Not the SID-aware format the
 // Windows build uses - that has no meaning here.
-func SyncRootIDFor(folderName string) string {
-	return providerName + "!" + folderName
+func SyncRootIDFor(localRoot string) string {
+	return providerName + "!" + localRoot
 }
 
 // stubProvider is here for reference only — it is not constructible. Its

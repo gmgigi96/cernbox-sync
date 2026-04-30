@@ -198,16 +198,15 @@ Pass `-v` before the command to print the HTTP method and URL.
 
 ## Windows VM (for testing Windows-specific code)
 
-The Windows-specific code paths — Cloud Files API integration for on-demand sync, the Tauri GUI on Windows, and the MSIX packaging that the modern WinRT registration API requires — are built and tested inside a local QEMU/KVM Windows VM. The Makefile provisions, runs, and tears it down.
+The Windows-specific code paths — Cloud Files API integration for on-demand sync, the Tauri GUI on Windows, and the MSIX packaging used as the production install format — are built and tested inside a local QEMU/KVM Windows VM. The Makefile provisions, runs, and tears it down.
 
-### Why MSIX (the on-demand path requires package identity)
+### Cloud Files registration (no MSIX required)
 
-Phase 2 of the on-demand work migrates from the legacy `CfRegisterSyncRoot` (`cldapi.dll`) to the modern `StorageProviderSyncRootManager.Register` (WinRT). The WinRT call refuses to run unless the calling process has MSIX package identity (it throws `E_NO_PACKAGE_IDENTITY` otherwise). That has two consequences for development:
+Phase 2 of the on-demand work migrates from the legacy `CfRegisterSyncRoot` (`cldapi.dll`) to the modern `StorageProviderSyncRootManager.Register` (WinRT). Microsoft's docs claim the WinRT call requires MSIX package identity, but the working **ownCloud desktop client** (`src/plugins/vfs/win/vfs_win.cpp ::registerFolder`) registers fine from a plain unpackaged Win32 process — and so do we. Tests run unpackaged via plain `go test`. MSIX is still produced as the GUI's distribution format (Start menu integration, signed bundle, upgrade story), but it is no longer a precondition for the API.
 
-- **The daemon must be packaged** to register sync roots. We ship a Desktop Bridge MSIX containing the Tauri GUI and the daemon as two declared `<Application>` entries (so the OS grants execute ACLs to both — without that the GUI's CreateProcess on the daemon fails with `ERROR_ACCESS_DENIED`).
-- **The cloudfiles tests must run packaged too**. `make test-windows` therefore stages the test binary inside its own throwaway MSIX (different identity from the GUI package) and invokes it via an `uap5:AppExecutionAlias` so stdout/stderr/exitcode pipe through normally.
+The actual WinRT call lives in **`cernbox-cf.dll`** (`cloudfiles/winrt/cernbox-cf.cpp`), a tiny C++/WinRT shim that the Go side loads via `LazyDLL` — same pattern `cfapi_syscall_windows.go` uses for `cldapi.dll`. C++/WinRT requires MSVC (MinGW's projection support is incomplete), so the VM has both toolchains: MinGW for cgo and the daemon, MSVC for the shim. The shim links `WindowsApp.lib`, the umbrella that exposes WinRT to unpackaged Win32 callers.
 
-The actual WinRT call lives in **`cernbox-cf.dll`** (`cloudfiles/winrt/cernbox-cf.cpp`), a tiny C++/WinRT shim that the Go side loads via `LazyDLL` — same pattern `cfapi_syscall_windows.go` uses for `cldapi.dll`. C++/WinRT requires MSVC (MinGW's projection support is incomplete), so the VM has both toolchains: MinGW for cgo and the daemon, MSVC for the shim.
+The set of `StorageProviderSyncRootInfo` fields we set in the shim mirrors ownCloud's working configuration. Two of the documented setters (`ProviderId` and `RecycleBinUri`) are known crashers on Win11 24H2+ and are deliberately not called — see comments in `cloudfiles/winrt/cernbox-cf.cpp`.
 
 ### Prerequisites (Arch Linux)
 
@@ -243,7 +242,7 @@ make windows-vm-setup
 
 The installer is fully unattended: it picks the edition, accepts the EULA, partitions the disk, creates `testuser` (Administrators group, password `TestPass123!`), enables OpenSSH Server, opens the firewall, and installs the host's generated SSH public key. Windows 11 hardware checks (TPM, Secure Boot, RAM) are bypassed via registry keys written during the WinPE phase.
 
-> **Developer Mode** must be enabled in the guest for `Add-AppxPackage -Register` against an unpacked folder layout, which both `gui-msix-dev` and `test-windows` rely on. `setup.ps1` does not toggle this; if you hit `HRESULT 0x80073CFF` ("a Sideload Solution is required") during registration, enable it in `Settings → Privacy & security → For developers → Developer Mode`.
+> **Developer Mode** must be enabled in the guest for `Add-AppxPackage -Register` against an unpacked folder layout, which `gui-msix-dev` relies on (tests no longer need this since they run unpackaged). `setup.ps1` does not toggle this; if you hit `HRESULT 0x80073CFF` ("a Sideload Solution is required") during registration, enable it in `Settings → Privacy & security → For developers → Developer Mode`.
 
 ### Selecting a different Windows edition
 
@@ -275,7 +274,7 @@ When started with `make windows-vm-gui`, the host repo is mounted at `Z:\` insid
 
 There are three flows, ranked from fastest iteration to most production-faithful:
 
-#### Inner loop — Tauri dev mode (no MSIX, no on-demand)
+#### Inner loop — Tauri dev mode (no MSIX)
 
 ```bash
 make windows-vm-gui            # SPICE viewer launches
@@ -283,7 +282,7 @@ make windows-vm-gui            # SPICE viewer launches
 Z:\dev\windows\run-dev.ps1     # npm run tauri dev with hot reload
 ```
 
-Hot-reloads frontend changes in milliseconds, rebuilds the daemon and Rust shell on save. **No package identity, so on-demand sync is disabled** — the daemon logs `on-demand sync requires MSIX install` and falls back to plain download/upload sync. Use this for everything that isn't on-demand-specific (UI work, sync algorithm, daemon logic, WebDAV client, etc.).
+Hot-reloads frontend changes in milliseconds, rebuilds the daemon and Rust shell on save. On-demand sync works here too — the registration API doesn't need package identity. The only thing the dev-mode loop skips is the production install bundle (Start-menu entries, signed `.msix`).
 
 #### Middle loop — fast MSIX iteration (Add-AppxPackage -Register)
 
@@ -343,27 +342,14 @@ The build script auto-detects MSVC via `vswhere`, sources the x64 dev environmen
 make test-windows
 ```
 
-Runs in two halves:
+Runs in two steps:
 
-1. **Plain `go test -tags windows`** for everything under `./...` *except* the cloudfiles package — engine, daemon, db, ipc, etc. None of those need package identity.
-2. **`run-tests-msix.ps1`** for the cloudfiles package. The script:
-   - Builds `cernbox-cf.dll` (skip with `-NoCfDll`)
-   - Compiles the test binary: `go test -c -tags windows ./cloudfiles -o cloudfiles.test.exe`
-   - Stages it inside `C:\cernbox-sync-tests-stage\` with a tests-only `AppxManifest.xml` (identity `ch.cern.cernbox-sync-tests`, distinct from the GUI MSIX so test runs don't collide with a registered dev install)
-   - The manifest declares an `uap5:AppExecutionAlias` named `cernbox-cloudfiles-test.exe`. After `Add-AppxPackage -Register`, that alias appears at `%LOCALAPPDATA%\Microsoft\WindowsApps\` and behaves like any other console exe — except it carries package identity, so the WinRT registration code paths actually work.
-   - Runs the alias with `-test.v -test.timeout=300s`, captures the exit code, then `Remove-AppxPackage` in a `finally` block (no leaked stale registrations even on failure).
-   - Auto-versions the manifest per run so re-registration always succeeds without manual bumps.
+1. Build `cernbox-cf.dll` via MSVC (`cloudfiles/winrt/build.ps1`) so the cloudfiles/daemon tests can `LazyDLL`-load the WinRT shim. The output lands in `gui/src-tauri/binaries/`.
+2. Run `go test -tags windows ./...` with that binaries directory prepended to `PATH` so the daemon's tests find the DLL. Tests gate on the DLL being loadable via `requireCfShim`/`HasPackageIdentity`; if the build failed they `t.Skip` rather than failing.
 
-Directly inside the VM:
+There is **no MSIX harness** for tests. We register sync roots from a plain unpackaged Win32 process, the same way ownCloud does. Earlier iterations stood up an `AppExecutionAlias`-based MSIX-test harness because we believed package identity was a hard requirement; it isn't.
 
-```powershell
-Z:\dev\windows\run-tests-msix.ps1                              # full run
-Z:\dev\windows\run-tests-msix.ps1 -NoCfDll -NoBuild            # just re-run existing binary
-Z:\dev\windows\run-tests-msix.ps1 -test.run TestSyncRoot_RegisterConnect
-Z:\dev\windows\run-tests-msix.ps1 -Timeout 600s                # for the e2e test
-```
-
-The integration test harness (`make test-windows-integration`) runs the build-tagged `// +build windows && integration` tests against the local revad. It currently still uses plain `go test`; once Phase 2 is verified working it'll be migrated to the MSIX harness too.
+The integration test harness (`make test-windows-integration`) runs the build-tagged `// +build windows && integration` tests against the local revad with plain `go test`.
 
 ### Cleaning up stale sync roots
 
@@ -400,7 +386,6 @@ What ends up where, and why:
 | `C:\dev-cache\cargo-target\` | persistent | cargo build cache | `setup.ps1` |
 | `C:\cernbox-sync-cert\` | persistent | dev signing cert (`.pfx` + `.cer`) | `make windows-dev-cert` |
 | `C:\cernbox-sync-msix-stage\` | persistent | unpacked MSIX layout, registered as `ch.cern.cernbox-sync` | `register-msix-dev.ps1` |
-| `C:\cernbox-sync-tests-stage\` | per-run | unpacked test MSIX, `ch.cern.cernbox-sync-tests` | `run-tests-msix.ps1` (cleaned up at end) |
 | `dev/windows/out/*.msix` | persistent (host) | signed MSIX artefacts pulled back from `make gui-msix` | `make gui-msix` |
 
 ---
@@ -432,7 +417,5 @@ dev/
     ├── run-build.ps1              # Release build (daemon + cernbox-cf.dll + tauri build)
     ├── new-dev-cert.ps1           # Self-signed code-signing cert for MSIX dev builds
     ├── make-msix.ps1              # MakeAppx pack + signtool sign (signed `.msix` artefact)
-    ├── register-msix-dev.ps1      # Add-AppxPackage -Register against unpacked layout (fast loop)
-    ├── run-tests-msix.ps1         # Stages cloudfiles test binary as MSIX, runs via AppExecutionAlias
-    └── tests-AppxManifest.tpl     # Manifest for the tests-only package
+    └── register-msix-dev.ps1      # Add-AppxPackage -Register against unpacked layout (fast loop)
 ```

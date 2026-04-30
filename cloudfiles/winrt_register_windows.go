@@ -12,10 +12,6 @@ package cloudfiles
 // cgo. So we ship a tiny MSVC-built shim DLL alongside the daemon and call
 // it via the same syscall.SyscallN pattern cfapi_syscall_windows.go uses
 // for cldapi.dll.
-//
-// Currently NOT yet wired into winProvider.register / .Unregister - that
-// swap happens in the next step, after the DLL is verified to compile in
-// the VM. Until then the legacy CfRegisterSyncRoot path stays active.
 
 import (
 	"errors"
@@ -37,19 +33,20 @@ import (
 const cfShimDLLName = "cernbox-cf.dll"
 
 var (
-	cfShimOnce       sync.Once
-	cfShimErr        error
-	cfShimDLL        *windows.LazyDLL
-	pHasPackageId    *windows.LazyProc
-	pRegisterRoot    *windows.LazyProc
-	pUnregisterRoot  *windows.LazyProc
+	cfShimOnce      sync.Once
+	cfShimErr       error
+	cfShimDLL       *windows.LazyDLL
+	pHasPackageId   *windows.LazyProc
+	pRegisterRoot   *windows.LazyProc
+	pUnregisterRoot *windows.LazyProc
 )
 
 // loadCfShim resolves cernbox-cf.dll lazily on first call. Errors are
 // cached so repeated callers don't re-attempt LoadLibrary on a missing
 // DLL. Returns ErrShimNotFound specifically when the DLL isn't reachable
-// (e.g., running unpackaged from a dev tree without the shim built),
-// other errors for malformed DLLs / missing exports.
+// (e.g., running from a dev tree without the shim built or with the
+// build output not on PATH), other errors for malformed DLLs / missing
+// exports.
 func loadCfShim() error {
 	cfShimOnce.Do(func() {
 		cfShimDLL = windows.NewLazyDLL(cfShimDLLName)
@@ -61,9 +58,9 @@ func loadCfShim() error {
 		pRegisterRoot = cfShimDLL.NewProc("cernbox_cf_register_sync_root")
 		pUnregisterRoot = cfShimDLL.NewProc("cernbox_cf_unregister_sync_root")
 		for name, proc := range map[string]*windows.LazyProc{
-			"cernbox_cf_has_package_identity":  pHasPackageId,
-			"cernbox_cf_register_sync_root":    pRegisterRoot,
-			"cernbox_cf_unregister_sync_root":  pUnregisterRoot,
+			"cernbox_cf_has_package_identity": pHasPackageId,
+			"cernbox_cf_register_sync_root":   pRegisterRoot,
+			"cernbox_cf_unregister_sync_root": pUnregisterRoot,
 		} {
 			if err := proc.Find(); err != nil {
 				cfShimErr = fmt.Errorf("GetProcAddress(%s): %w", name, err)
@@ -75,25 +72,19 @@ func loadCfShim() error {
 }
 
 // ErrShimNotFound is returned when cernbox-cf.dll can't be located at
-// runtime - typically because the daemon is running from a dev build that
-// hasn't compiled the shim yet, or because the file was excluded from the
-// MSIX staging step. The daemon treats this as a hard error: on-demand
-// sync is MSIX-only from this version onwards, so a missing shim means
-// on-demand can't proceed.
+// runtime - typically because the daemon is running from a dev build
+// that hasn't compiled the shim yet (run cloudfiles/winrt/build.ps1)
+// or because the build output isn't on PATH / co-located with the
+// daemon executable.
 var ErrShimNotFound = errors.New("cloudfiles: cernbox-cf.dll not found")
 
 // HasPackageIdentity reports whether the calling process has MSIX package
-// identity. StorageProviderSyncRootManager.Register requires identity;
-// without it the WinRT call throws E_NO_PACKAGE_IDENTITY. The daemon
-// checks this once at startup and refuses to set up on-demand if false
-// (the engine falls back to plain download/upload sync).
-//
-// Implemented in cernbox-cf.dll because GetCurrentPackageFamilyName lives
-// in kernel32 and is callable directly via syscall, but co-locating it
-// with the registration helpers keeps the "is this build packaged?" check
-// tied to the same DLL-loaded state - if the shim isn't reachable, on-
-// demand can't run anyway, so reporting "no identity" is the right
-// fallback.
+// identity. Microsoft's docs claim StorageProviderSyncRootManager.Register
+// requires identity, but in practice (per the working ownCloud client and
+// our own testing) it works fine from an unpackaged Win32 process linked
+// against WindowsApp.lib. We still expose this helper so callers that
+// want to differentiate packaged vs unpackaged installs can do so, and
+// because it doubles as a "shim DLL is loadable" health check.
 func HasPackageIdentity() (bool, error) {
 	if err := loadCfShim(); err != nil {
 		return false, err
@@ -103,22 +94,24 @@ func HasPackageIdentity() (bool, error) {
 }
 
 // RegisterSyncRootWinRT registers a sync root via the modern Cloud Files /
-// WinRT API. Replaces the legacy CfRegisterSyncRoot path; only callable
-// from a process with MSIX package identity (HasPackageIdentity must be
-// true).
+// WinRT API. Replaces the legacy CfRegisterSyncRoot path. Works from an
+// unpackaged Win32 process - MSIX package identity is not required (see
+// the ownCloud desktop client's vfs_win.cpp for prior art).
 //
-//   id              Stable, opaque sync-root identifier. Used by the OS as
-//                   the registry key name and as the Unregister handle.
-//                   Format we use: "<provider>!<account>!<folder>".
-//   localRoot       Absolute path to the local sync directory.
-//   displayName     User-facing folder name.
-//   providerVersion e.g. "1.0.0".
-//   providerId      Provider GUID; matches kProviderGuid in cfapi_windows.c
-//                   so registry tooling that filters by ProviderId still
-//                   matches our entries.
-//   iconResource    Optional Windows resource path for the namespace icon
-//                   (e.g. "<install-dir>\cernbox-cf.dll,-101"). Empty means
-//                   use the OS default cloud-folder icon.
+//	id              Stable, opaque sync-root identifier. Used by the OS as
+//	                the registry key name and as the Unregister handle.
+//	                Format we use: "<provider>!<sid>!<base64-sha1(path)>".
+//	localRoot       Absolute path to the local sync directory.
+//	displayName     User-facing folder name.
+//	providerVersion e.g. "1.0.0".
+//	providerId      Provider GUID. Currently IGNORED inside the shim
+//	                because the StorageProviderSyncRootInfo.ProviderId
+//	                setter has a known crash on Win11 24H2+ (documented
+//	                by ownCloud's vfs_win.cpp). Still threaded through
+//	                the ABI for forward compatibility.
+//	iconResource    Optional Windows resource path for the namespace icon
+//	                (e.g. "<install-dir>\cernbox-cf.dll,-101"). Empty means
+//	                use the OS default cloud-folder icon.
 func RegisterSyncRootWinRT(
 	id, localRoot, displayName, providerVersion string,
 	providerId *windows.GUID,

@@ -24,25 +24,12 @@ func (d *Daemon) ensureProvider(f config.Folder) cloudfiles.Provider {
 		return p
 	}
 
-	// Gate on MSIX package identity: the modern registration API
-	// (StorageProviderSyncRootManager.Register, via cernbox-cf.dll) throws
-	// E_NO_PACKAGE_IDENTITY when called from an unpackaged process. Bail
-	// here with a clear log line so the engine falls back to plain
-	// download/upload sync for this folder. ErrShimNotFound is folded
-	// into the same "unavailable" path - typically signals a dev tree
-	// without the shim built, where on-demand can't run anyway.
-	hasIdentity, err := cloudfiles.HasPackageIdentity()
-	if err != nil {
-		d.log.Warn("[daemon] on-demand sync unavailable",
-			"folder", f.Name, "reason", "cernbox-cf.dll not loadable", "err", err)
-		return nil
-	}
-	if !hasIdentity {
-		d.log.Warn("[daemon] on-demand sync requires MSIX install",
-			"folder", f.Name,
-			"hint", "install the signed .msix or run via Add-AppxPackage -Register")
-		return nil
-	}
+	// MSIX package identity used to be a hard precondition here because
+	// Microsoft's docs claim StorageProviderSyncRootManager.Register
+	// requires it. The working ownCloud client (vfs_win.cpp) registers
+	// from a plain unpackaged Win32 process and disproves that, so we
+	// no longer gate on it. The daemon talks to the WinRT API via
+	// cernbox-cf.dll regardless of how it was launched.
 
 	p, err := cloudfiles.New(cloudfiles.Config{
 		LocalRoot:  f.LocalRoot,
@@ -114,16 +101,15 @@ func (d *Daemon) stopFolderProvider(name string) {
 // gone, so the alternative would be a half-removed folder the user
 // can't retry.
 //
-// localRoot is accepted for parity with the non-Windows stub signature
-// (and to keep call sites consistent) but ignored here - the WinRT
-// Unregister takes only the sync-root id, which we derive from name.
+// localRoot is the absolute path that was registered as the sync root;
+// the id we hand to Unregister is derived from it via SyncRootIDFor
+// (which hashes the path together with the calling user's SID).
 func (d *Daemon) removeFolderProvider(name, localRoot string) {
-	_ = localRoot // unused on Windows since the WinRT API uses the id, not the path
 	d.stopFolderProvider(name)
-	if name == "" {
+	if localRoot == "" {
 		return
 	}
-	if err := cloudfiles.UnregisterSyncRoot(cloudfiles.SyncRootIDFor(name)); err != nil {
+	if err := cloudfiles.UnregisterSyncRoot(cloudfiles.SyncRootIDFor(localRoot)); err != nil {
 		d.log.Warn("[daemon] cloudfiles unregister",
 			"folder", name, "err", err)
 	}

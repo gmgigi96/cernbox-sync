@@ -19,20 +19,15 @@ import (
 	"github.com/gmgigi96/cernbox-sync/ipc"
 )
 
-// requirePackageIdentity skips the test when running outside an MSIX
-// package context. The on-demand registration path now goes through
-// StorageProviderSyncRootManager.Register (cernbox-cf.dll) which throws
-// E_NO_PACKAGE_IDENTITY in unpackaged processes, so daemon.ensureProvider
-// returns nil and any test that asserts on a cached provider can't
-// proceed. Run under dev/windows/run-tests-msix.ps1 to exercise these.
-func requirePackageIdentity(t *testing.T) {
+// requireCfShim skips the test when cernbox-cf.dll isn't loadable. The
+// shim is built by cloudfiles/winrt/build.ps1 and lives next to the
+// daemon; without it the WinRT registration call can't go through.
+// Tests that don't need a real Register (just placeholder ops on
+// already-registered roots) shouldn't gate on this.
+func requireCfShim(t *testing.T) {
 	t.Helper()
-	id, err := cloudfiles.HasPackageIdentity()
-	if err != nil {
-		t.Skipf("cloudfiles shim not loadable (%v); run via dev/windows/run-tests-msix.ps1", err)
-	}
-	if !id {
-		t.Skip("requires MSIX package identity; run via dev/windows/run-tests-msix.ps1")
+	if _, err := cloudfiles.HasPackageIdentity(); err != nil {
+		t.Skipf("cernbox-cf.dll not loadable (%v); run cloudfiles/winrt/build.ps1 and ensure the DLL is on PATH", err)
 	}
 }
 
@@ -41,7 +36,7 @@ func requirePackageIdentity(t *testing.T) {
 // and that reading a placeholder triggers hydration via the daemon's Fetch
 // callback.
 func TestDaemon_OnDemandSync(t *testing.T) {
-	requirePackageIdentity(t)
+	requireCfShim(t)
 	const content = "on-demand content from fake server"
 
 	now := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
@@ -112,7 +107,7 @@ func TestDaemon_OnDemandSync(t *testing.T) {
 // TestDaemon_ProviderStopsOnFolderRemove verifies that the provider is evicted
 // when a folder is removed via IPC so no callbacks fire afterwards.
 func TestDaemon_ProviderStopsOnFolderRemove(t *testing.T) {
-	requirePackageIdentity(t)
+	requireCfShim(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "PROPFIND" {
 			w.Header().Set("Content-Type", "application/xml; charset=\"utf-8\"")
@@ -155,7 +150,7 @@ func TestDaemon_ProviderStopsOnFolderRemove(t *testing.T) {
 // TestDaemon_ProviderReusedAcrossSyncs verifies that the same provider
 // instance is reused across successive sync cycles (not re-created each time).
 func TestDaemon_ProviderReusedAcrossSyncs(t *testing.T) {
-	requirePackageIdentity(t)
+	requireCfShim(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "PROPFIND" {
 			w.Header().Set("Content-Type", "application/xml; charset=\"utf-8\"")
