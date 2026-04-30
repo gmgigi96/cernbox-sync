@@ -172,15 +172,31 @@ extern "C" int32_t cernbox_cf_register_sync_root(
             info.IconResource(hstring(L"%SystemRoot%\\System32\\imageres.dll"));
         }
 
-        // Hydration / Population / InSync policies. Mirrors the working
-        // ownCloud config: Full + ValidationRequired|AutoDehydrationAllowed,
-        // PopulationPolicy::AlwaysFull, InSyncPolicy::FileLastWriteTime.
-        // Earlier attempts with PopulationPolicy::Full + multiple InSync
-        // bits got rejected with E_FAIL on Win11 24H2+; this combination
-        // is what's known to register cleanly there.
+        // Hydration / Population / InSync policies.
+        //
+        // ValidationRequired (which ownCloud sets) requires a VALIDATE_DATA
+        // callback to be wired on the connection before hydration; without
+        // it reads time out after ~60s with "The cloud operation was not
+        // completed before the time-out period expired." We only register
+        // FETCH_DATA + FETCH_PLACEHOLDERS, so leave ValidationRequired off.
+        //
+        // PopulationPolicy::AlwaysFull declares that the provider will
+        // populate the entire sync-root tree itself (the daemon's engine
+        // creates placeholders for every remote entry on each sync cycle).
+        // It is the WinRT equivalent of the legacy
+        // CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT flag,
+        // which is what stops the OS from marking the sync-root directory
+        // FILE_ATTRIBUTE_OFFLINE + FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.
+        // Without it every Explorer / cmd `dir` against a fresh root hangs
+        // on the recall timeout (regression test:
+        // TestSyncRoot_ListAndReadDoNotHang). The OS may still issue
+        // FETCH_PLACEHOLDERS for nested directories the daemon hasn't
+        // populated yet; our callback handles that.
+        //
+        // InSyncPolicy::FileLastWriteTime mirrors ownCloud and is what the
+        // engine compares when deciding whether to re-upload.
         info.HydrationPolicy(StorageProviderHydrationPolicy::Full);
         info.HydrationPolicyModifier(
-            StorageProviderHydrationPolicyModifier::ValidationRequired |
             StorageProviderHydrationPolicyModifier::AutoDehydrationAllowed);
         info.PopulationPolicy(StorageProviderPopulationPolicy::AlwaysFull);
         info.InSyncPolicy(StorageProviderInSyncPolicy::FileLastWriteTime);
