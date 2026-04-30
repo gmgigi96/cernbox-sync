@@ -34,6 +34,18 @@ Invoke-WebRequest -UseBasicParsing `
 Start-Process -FilePath $spiceTools -ArgumentList '/S' -Wait -NoNewWindow
 Remove-Item $spiceTools
 
+# Enable Developer Mode. Required for Add-AppxPackage -Register against
+# unsigned package layouts (gui-msix-dev, run-tests-msix.ps1) - without
+# it the registration fails with HRESULT 0x80073CFF "a sideloading
+# solution is required". The registry write is idempotent and lasts
+# across reboots; equivalent to toggling Settings > Privacy & security >
+# For developers > Developer Mode in the Windows UI.
+$devModeKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+if (-not (Test-Path $devModeKey)) {
+    New-Item -Path $devModeKey -Force | Out-Null
+}
+Set-ItemProperty -Path $devModeKey -Name 'AllowDevelopmentWithoutDevLicense' -Value 1 -Type DWord -Force
+
 # Visual Studio Build Tools 2022 + C++/WinRT toolchain. Required by the
 # Cloud Files registration shim (cloudfiles/winrt/cernbox-cf.dll) which
 # calls StorageProviderSyncRootManager.Register - a WinRT API that only

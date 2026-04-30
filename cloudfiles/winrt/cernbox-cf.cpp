@@ -14,16 +14,39 @@
 #include "cernbox-cf.h"
 
 #include <appmodel.h>          // GetCurrentPackageFamilyName
+#include <stdio.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.Provider.h>
+#include <winrt/Windows.Storage.Streams.h>  // InMemoryRandomAccessStream / IBuffer for Context
 
 using namespace winrt;
 using namespace Windows::Storage;
 using namespace Windows::Storage::Provider;
 
 namespace {
+
+// Diagnostic trace to a fixed-path log file so we can pinpoint where a
+// crash inside the WinRT projection happens. We can't rely on stderr
+// reaching the Go test harness through the syscall.SyscallN path, and
+// SEH from inside the WinRT call would otherwise just crash the calling
+// process before any Go-side logging fires. The log is opened in
+// append mode each call so even a hard crash mid-call leaves a partial
+// trail. NUL-safe: every write is flushed.
+void trace(const wchar_t* msg) {
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, L"C:\\cernbox-cf-trace.log", L"a, ccs=UTF-8") == 0 && f) {
+        SYSTEMTIME st;
+        GetSystemTime(&st);
+        fwprintf(f, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ %ls\n",
+                 st.wYear, st.wMonth, st.wDay,
+                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                 msg);
+        fflush(f);
+        fclose(f);
+    }
+}
 
 // init_apartment_once initialises the COM apartment for the calling
 // thread on first use. WinRT calls require this; doing it lazily keeps
@@ -84,54 +107,108 @@ extern "C" int32_t cernbox_cf_register_sync_root(
     const GUID    *providerId,
     const wchar_t *iconResource) {
 
+    trace(L"register_sync_root: enter");
     if (!id || !localRoot || !displayName || !providerVersion || !providerId) {
+        trace(L"register_sync_root: E_INVALIDARG");
         return E_INVALIDARG;
     }
 
     try {
+        trace(L"register_sync_root: ensure_apartment");
         ensure_apartment();
+
+        wchar_t buf[600];
+        _snwprintf_s(buf, _TRUNCATE,
+                     L"register_sync_root: id=%ls localRoot=%ls", id, localRoot);
+        trace(buf);
 
         // GetFolderFromPathAsync returns a StorageFolder; .get() blocks the
         // calling thread until completion. Acceptable here because the
         // daemon's registration path runs on a worker goroutine and isn't
         // performance-critical (one call per sync root, on first start).
+        trace(L"register_sync_root: GetFolderFromPathAsync");
         auto folder = StorageFolder::GetFolderFromPathAsync(hstring(localRoot)).get();
+        trace(L"register_sync_root: GetFolderFromPathAsync done");
 
+        trace(L"register_sync_root: build StorageProviderSyncRootInfo");
         StorageProviderSyncRootInfo info;
         info.Id(hstring(id));
         info.Path(folder);
-        info.DisplayNameResource(hstring(displayName));
-        if (iconResource) {
-            info.IconResource(hstring(iconResource));
-        }
 
-        // Hydration policy: PARTIAL = on-demand fetch on first read; the
-        // OS calls our FETCH_DATA callback. Matches the legacy registration
-        // path so existing fetch-callback code keeps working unchanged.
-        info.HydrationPolicy(StorageProviderHydrationPolicy::Partial);
-        info.HydrationPolicyModifier(StorageProviderHydrationPolicyModifier::None);
+        // DisplayNameResource and IconResource MUST be in the
+        // `@dll-path,-resourceid` format (per Microsoft docs and the
+        // CloudMirror sample). A plain string fails Register with
+        // E_INVALIDARG. If the caller passed plain names ("test-folder"
+        // etc.) we substitute a generic shell32 cloud-folder resource
+        // reference - the directory's own name is what users actually
+        // see in Explorer; DisplayNameResource is just for the
+        // SyncRootManager registry entries we don't expose.
+        const wchar_t* defaultRes = L"@%SystemRoot%\\System32\\shell32.dll,-2783";
+        const wchar_t* dn = (displayName && displayName[0] == L'@') ? displayName : defaultRes;
+        info.DisplayNameResource(hstring(dn));
+        const wchar_t* ir = (iconResource && iconResource[0] == L'@') ? iconResource : defaultRes;
+        info.IconResource(hstring(ir));
 
-        // Population: AlwaysFull means the engine populates every
-        // placeholder eagerly; the OS won't ask us via FETCH_PLACEHOLDERS.
-        // This is what we already did under the legacy API
-        // (CF_POPULATION_POLICY_PARTIAL plus the stub FETCH_PLACEHOLDERS
-        // handler); AlwaysFull is the cleaner equivalent here.
-        info.PopulationPolicy(StorageProviderPopulationPolicy::AlwaysFull);
-
-        // Track in-sync state from mtime so the OS can avoid spurious
-        // re-hydration when the engine touches metadata.
+        // Hydration / Population / InSync policies. Match the policy set
+        // Microsoft's CloudMirror sample uses verbatim - the previous
+        // attempt used Partial+AlwaysFull (which is what the legacy
+        // CfRegisterSyncRoot path used) but that combo gets rejected by
+        // StorageProviderSyncRootManager.Register with E_FAIL on Win11
+        // 24H2+. Full+AutoDehydrationAllowed gives effectively the same
+        // user-visible behaviour: files are placeholders, hydrated on
+        // read, and dehydrated when stale - the OS just doesn't draw
+        // the "cloud-only" badge until first access.
+        info.HydrationPolicy(StorageProviderHydrationPolicy::Full);
+        info.HydrationPolicyModifier(
+            StorageProviderHydrationPolicyModifier::AutoDehydrationAllowed);
+        info.PopulationPolicy(StorageProviderPopulationPolicy::Full);
         info.InSyncPolicy(
-            StorageProviderInSyncPolicy::FileLastWriteTime |
-            StorageProviderInSyncPolicy::DirectoryLastWriteTime);
+            StorageProviderInSyncPolicy::FileCreationTime |
+            StorageProviderInSyncPolicy::DirectoryCreationTime);
 
         info.HardlinkPolicy(StorageProviderHardlinkPolicy::None);
         info.Version(hstring(providerVersion));
         info.ShowSiblingsAsGroup(false);
         info.ProviderId(*providerId);
 
+        // ProtectionMode + AllowPinning are documented as optional, but
+        // in practice on Win11 24H2+ leaving them unset makes Register
+        // access-violate inside the deployment service. Set explicit
+        // defaults: Unknown (no DRM) and Allowed (so Pin/Unpin works).
+        info.ProtectionMode(StorageProviderProtectionMode::Unknown);
+        info.AllowPinning(true);
+
+        // RecycleBinUri is documented optional but Microsoft's CloudMirror
+        // sample sets it (with a non-functional placeholder URL) and
+        // omitting it makes Register fail with E_FAIL on this Win11 build.
+        // We don't currently surface a recycle bin to the user; this is
+        // a placeholder that satisfies the validation. Phase 4 polish
+        // can wire up a real one.
+        info.RecycleBinUri(
+            Windows::Foundation::Uri(L"https://cernbox.cern.ch/.recyclebin"));
+
+        // Context: opaque IBuffer the OS hands back to us on certain
+        // callbacks. Microsoft's CloudMirror sample sets this with a
+        // single ASCII char, which we mimic - leaving it unset (or
+        // empty) provokes E_FAIL on Win11 24H2+.
+        Streams::DataWriter ctxWriter;
+        ctxWriter.WriteByte(0x01);
+        info.Context(ctxWriter.DetachBuffer());
+
+        trace(L"register_sync_root: StorageProviderSyncRootManager::Register");
         StorageProviderSyncRootManager::Register(info);
+        trace(L"register_sync_root: SUCCESS");
         return S_OK;
+    } catch (hresult_error const& e) {
+        wchar_t buf[300];
+        _snwprintf_s(buf, _TRUNCATE,
+                     L"register_sync_root: hresult_error 0x%08x msg=%ls",
+                     static_cast<uint32_t>(e.code().value),
+                     e.message().c_str());
+        trace(buf);
+        return static_cast<int32_t>(e.code().value);
     } catch (...) {
+        trace(L"register_sync_root: caught SEH/unknown -> E_UNEXPECTED");
         return hr_from_exception();
     }
 }

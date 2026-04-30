@@ -19,11 +19,29 @@ import (
 	"github.com/gmgigi96/cernbox-sync/ipc"
 )
 
+// requirePackageIdentity skips the test when running outside an MSIX
+// package context. The on-demand registration path now goes through
+// StorageProviderSyncRootManager.Register (cernbox-cf.dll) which throws
+// E_NO_PACKAGE_IDENTITY in unpackaged processes, so daemon.ensureProvider
+// returns nil and any test that asserts on a cached provider can't
+// proceed. Run under dev/windows/run-tests-msix.ps1 to exercise these.
+func requirePackageIdentity(t *testing.T) {
+	t.Helper()
+	id, err := cloudfiles.HasPackageIdentity()
+	if err != nil {
+		t.Skipf("cloudfiles shim not loadable (%v); run via dev/windows/run-tests-msix.ps1", err)
+	}
+	if !id {
+		t.Skip("requires MSIX package identity; run via dev/windows/run-tests-msix.ps1")
+	}
+}
+
 // TestDaemon_OnDemandSync verifies that syncFolder wires up a cloudfiles
 // provider so the engine creates placeholders instead of downloading files,
 // and that reading a placeholder triggers hydration via the daemon's Fetch
 // callback.
 func TestDaemon_OnDemandSync(t *testing.T) {
+	requirePackageIdentity(t)
 	const content = "on-demand content from fake server"
 
 	now := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
@@ -94,6 +112,7 @@ func TestDaemon_OnDemandSync(t *testing.T) {
 // TestDaemon_ProviderStopsOnFolderRemove verifies that the provider is evicted
 // when a folder is removed via IPC so no callbacks fire afterwards.
 func TestDaemon_ProviderStopsOnFolderRemove(t *testing.T) {
+	requirePackageIdentity(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "PROPFIND" {
 			w.Header().Set("Content-Type", "application/xml; charset=\"utf-8\"")
@@ -136,6 +155,7 @@ func TestDaemon_ProviderStopsOnFolderRemove(t *testing.T) {
 // TestDaemon_ProviderReusedAcrossSyncs verifies that the same provider
 // instance is reused across successive sync cycles (not re-created each time).
 func TestDaemon_ProviderReusedAcrossSyncs(t *testing.T) {
+	requirePackageIdentity(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "PROPFIND" {
 			w.Header().Set("Content-Type", "application/xml; charset=\"utf-8\"")

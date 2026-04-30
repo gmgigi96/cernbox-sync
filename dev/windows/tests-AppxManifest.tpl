@@ -27,7 +27,8 @@
   xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
-  IgnorableNamespaces="uap uap5 rescap desktop">
+  xmlns:desktop3="http://schemas.microsoft.com/appx/manifest/desktop/windows10/3"
+  IgnorableNamespaces="uap uap5 rescap desktop desktop3">
 
   <Identity Name="ch.cern.cernbox-sync-tests"
             Publisher="CN=CERN Box Sync Dev"
@@ -51,6 +52,12 @@
   </Resources>
 
   <Applications>
+    <!--
+      One Application per Go-test binary that needs package identity. Each
+      gets its own uap5:AppExecutionAlias so it's invocable from the host
+      shell as a normal command. Package identity is granted at activation
+      time, so each alias spawn becomes a new packaged process.
+    -->
     <Application Id="CloudfilesTests"
                  Executable="cloudfiles.test.exe"
                  EntryPoint="Windows.FullTrustApplication">
@@ -59,14 +66,56 @@
         Description="Test runner for the cloudfiles package"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png"
-        AppListEntry="none" />
+        Square44x44Logo="Assets\Square44x44Logo.png" />
       <Extensions>
+        <!-- windows.cloudFiles declares that this Application can act as
+             a cloud-files sync provider. Without it,
+             StorageProviderSyncRootManager.Register fails with E_FAIL
+             (0x80004005). The IconResource here is the package-default
+             icon shown on the sync root in Explorer; Phase 4 polish
+             work can replace it with a per-folder cernbox-branded icon. -->
+        <!-- Microsoft's CloudMirror sample uses the desktop3 namespace
+             for windows.cloudFiles (the alternative cloudfiles/windows10
+             namespace is outdated/unsupported on Win11 24H2+). The empty
+             <CloudFiles/> element is the minimum the schema accepts; the
+             CustomStateHandler / ThumbnailProvider / ContextMenu COM
+             classes are all optional. -->
+        <desktop3:Extension Category="windows.cloudFiles">
+          <desktop3:CloudFiles />
+        </desktop3:Extension>
         <uap5:Extension Category="windows.appExecutionAlias"
                         Executable="cloudfiles.test.exe"
                         EntryPoint="Windows.FullTrustApplication">
           <uap5:AppExecutionAlias>
-            <desktop:ExecutionAlias Alias="cernbox-cloudfiles-test.exe" />
+            <uap5:ExecutionAlias Alias="cernbox-cloudfiles-test.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+    <Application Id="DaemonTests"
+                 Executable="daemon.test.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="cernbox-sync daemon tests"
+        Description="Test runner for the daemon package"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- Microsoft's CloudMirror sample uses the desktop3 namespace
+             for windows.cloudFiles (the alternative cloudfiles/windows10
+             namespace is outdated/unsupported on Win11 24H2+). The empty
+             <CloudFiles/> element is the minimum the schema accepts; the
+             CustomStateHandler / ThumbnailProvider / ContextMenu COM
+             classes are all optional. -->
+        <desktop3:Extension Category="windows.cloudFiles">
+          <desktop3:CloudFiles />
+        </desktop3:Extension>
+        <uap5:Extension Category="windows.appExecutionAlias"
+                        Executable="daemon.test.exe"
+                        EntryPoint="Windows.FullTrustApplication">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="cernbox-daemon-test.exe" />
           </uap5:AppExecutionAlias>
         </uap5:Extension>
       </Extensions>

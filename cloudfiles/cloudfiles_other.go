@@ -28,6 +28,14 @@ func SetPinState(_ string, _ bool) error {
 // is invoked unconditionally with the result of SyncRootIDFor.
 func UnregisterSyncRoot(_ string) error { return nil }
 
+// SyncRootIDFor on non-Windows is a stub: the value isn't used (no
+// registration happens) but we keep the function so daemon code can
+// call it portably and log it if needed. Not the SID-aware format the
+// Windows build uses - that has no meaning here.
+func SyncRootIDFor(folderName string) string {
+	return providerName + "!" + folderName
+}
+
 // stubProvider is here for reference only — it is not constructible. Its
 // purpose is to ensure the Provider interface stays implementable across
 // platforms (compile-time check below).

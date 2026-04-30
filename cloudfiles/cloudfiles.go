@@ -60,21 +60,17 @@ type Config struct {
 var _ = (func(string, bool) error)(SetPinState)
 
 // providerName is the brand stamped on every sync root we register. Kept
-// portable (here, not in cloudfiles_windows.go) so SyncRootIDFor is
-// usable from non-Windows callers - they need to compute the id to feed
-// to UnregisterSyncRoot, which is itself a no-op stub on non-Windows.
+// portable (here, not in cloudfiles_windows.go) so SyncRootIDFor's
+// platform-specific implementations have a single source of truth.
 const providerName = "cernbox-sync"
 
 // SyncRootIDFor returns the canonical StorageProviderSyncRootInfo.Id for
 // folderName. Stable across daemon restarts so re-registration is
 // idempotent and Unregister can find the entry by name alone.
-//
-// Format: "<providerName>!<folderName>". The ! separator is what
-// CfRegisterSyncRoot historically used for auto-generated IDs, kept here
-// so any external tooling that pattern-matches on that shape still works.
-func SyncRootIDFor(folderName string) string {
-	return providerName + "!" + folderName
-}
+// Implemented per-platform: see cloudfiles_windows.go (the real one,
+// which embeds the calling user's SID per Microsoft's documented
+// `<provider>!<sid>!<account>` format) and cloudfiles_other.go (a
+// trivial stub since non-Windows builds have no Cloud Files concept).
 
 // Provider owns one CF-API sync root and exposes the placeholder operations
 // used by the engine (engine.PlaceholderFS) plus lifecycle and pinning.

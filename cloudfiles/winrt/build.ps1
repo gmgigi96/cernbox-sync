@@ -15,9 +15,11 @@
 param(
     [string]$RepoRoot,
     [string]$OutDir,
-    [string]$Configuration = 'Release',
-    [switch]$Verbose
+    [string]$Configuration = 'Release'
 )
+# Note: PowerShell's [CmdletBinding()] auto-adds a -Verbose common parameter,
+# so this script gains one for free. Don't redeclare it in param() - that
+# fails with "A parameter with the name 'Verbose' was defined multiple times".
 
 $ErrorActionPreference = 'Stop'
 
@@ -71,17 +73,21 @@ $dll = Join-Path $OutDir     'cernbox-cf.dll'
 $obj = Join-Path $env:TEMP   "cernbox-cf-$([guid]::NewGuid().ToString('N')).obj"
 
 # /std:c++17       C++/WinRT requires C++17 minimum.
-# /EHsc            Standard C++ exception handling.
+# /EHa             Asynchronous (SEH) + C++ exception handling. /EHsc
+#                  alone leaves SEH (e.g. STATUS_ACCESS_VIOLATION 0xC0000005
+#                  from a misuse inside the WinRT projection) uncatchable
+#                  from `catch (...)`, which means the Go syscall sees a
+#                  raw access violation and crashes the test process.
+#                  /EHa lets our outer catch handle them and return an
+#                  HRESULT instead.
 # /MD              Link the DLL CRT (required for inter-DLL ABI compatibility).
 # /LD              Build a DLL.
 # /O2              Optimised build (no need to debug the shim itself).
 # /permissive-     Strict standards conformance - C++/WinRT depends on it.
 # /Zc:__cplusplus  Make __cplusplus actually report C++17, not 199711L.
-# /await           Required for co_await syntax (we don't use it directly,
-#                  but C++/WinRT's projection types are coroutine-aware).
 $clFlags = @(
     '/std:c++17'
-    '/EHsc'
+    '/EHa'
     '/MD'
     '/LD'
     if ($Configuration -eq 'Debug') { '/Od', '/Zi' } else { '/O2' }

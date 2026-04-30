@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -25,6 +26,27 @@ import (
 
 	"github.com/gmgigi96/cernbox-sync/webdav"
 )
+
+// SyncRootIDFor returns the StorageProviderSyncRootInfo.Id for folderName.
+//
+// Format: "<provider>!<sid>!<folder>" - the modern Cloud Files API
+// (StorageProviderSyncRootManager.Register) validates the id against
+// Microsoft's documented `<storage_provider_id>!<windows_sid>!<account_id>`
+// shape; an id missing the SID component fails with E_INVALIDARG.
+// We use the calling user's SID (so the same provider can register
+// distinct sync roots for each user on a shared box) and folderName as
+// the per-account discriminator.
+//
+// If the SID lookup fails - which would be a deeply unusual condition,
+// since the SID lives in the process token - we fall back to the
+// shorter format. The Register call will then surface E_INVALIDARG and
+// the daemon's ensureProvider will log it.
+func SyncRootIDFor(folderName string) string {
+	if u, err := user.Current(); err == nil && u.Uid != "" {
+		return providerName + "!" + u.Uid + "!" + folderName
+	}
+	return providerName + "!" + folderName
+}
 
 // providerVersionString is stamped into the StorageProviderSyncRootInfo.
 // User-invisible but the API requires a non-empty value.

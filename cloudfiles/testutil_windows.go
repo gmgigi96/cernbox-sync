@@ -7,28 +7,37 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
-// SyncRootTempDir creates a top-level test directory suitable for use as a
-// Cloud Files sync root. The OS rejects sync-root paths under AppData
-// (which is where t.TempDir() places them) with an "invalid path" error
-// from GetFolderFromPathAsync, so tests must point somewhere else.
+// SyncRootTempDir creates a test directory suitable for use as a Cloud
+// Files sync root. The path is under the calling user's home directory
+// (e.g. C:\Users\testuser\cernbox-test-<hex>) because the modern WinRT
+// registration API (StorageProviderSyncRootManager.Register) refuses
+// paths outside the user profile with HRESULT 0x80004005 (E_FAIL),
+// even when the calling MSIX has runFullTrust + cloudFiles capabilities.
+// We previously rooted these at C:\... for the legacy CfRegisterSyncRoot
+// path; that's no longer accepted under Phase 2's WinRT path.
 //
-// The directory is created under C:\cernbox-sync-test\<random> and removed
-// in a t.Cleanup. Callers that exercise registration should remember to
-// also unregister the sync root before letting the cleanup remove the
-// directory.
+// Note that the actual path must NOT be under user library locations
+// (Documents, Pictures, ...) either - those raise the same E_FAIL. A
+// plain home-dir subdirectory works.
+//
+// The directory is removed in a t.Cleanup. Callers that exercise
+// registration should remember to also unregister the sync root before
+// letting the cleanup remove the directory.
 func SyncRootTempDir(t *testing.T) string {
 	t.Helper()
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	// CF sync roots seem to behave best at the volume root rather than
-	// nested under another directory, so each test gets its own top-level
-	// folder. The hex suffix avoids collisions across parallel runs.
-	root := `C:\cernbox-test-` + hex.EncodeToString(buf[:])
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	root := filepath.Join(home, "cernbox-test-"+hex.EncodeToString(buf[:]))
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir sync root %q: %v", root, err)
 	}
