@@ -522,10 +522,18 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err := d.cfgDB.Remove(req.Name); err != nil {
 			return fail(err.Error())
 		}
+		// localRoot drives both the fsnotify watch teardown and the
+		// OS-level sync-root unregister. Folder lookup may legitimately
+		// return f == nil (e.g., already-removed entry); in that case we
+		// have no path to feed cloudfiles.UnregisterSyncRoot, so we just
+		// drop the cached provider and stop. The OS-level registration —
+		// if any — has to be cleaned up out-of-band in that edge case.
+		var localRoot string
 		if f != nil {
+			localRoot = f.LocalRoot
 			d.removeFolderWatch(f.Name, f.LocalRoot)
 		}
-		d.stopFolderProvider(req.Name)
+		d.removeFolderProvider(req.Name, localRoot)
 		d.log.Info("[daemon] remove: removed folder", "folder", req.Name)
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderRemoved, Folder: req.Name})
 		return ok()

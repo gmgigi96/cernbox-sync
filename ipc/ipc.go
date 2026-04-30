@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/gmgigi96/cernbox-sync/config"
 )
@@ -170,16 +171,33 @@ type Status struct {
 //
 //   - Linux/other: $XDG_RUNTIME_DIR/cernbox-sync.sock, falling back to
 //     $XDG_CACHE_HOME/cernbox-sync/sync.sock
-//   - macOS / Windows: <UserCacheDir>/cernbox-sync/sync.sock
+//   - macOS:       <UserCacheDir>/cernbox-sync/sync.sock
+//   - Windows:     %TEMP%/cernbox-sync/sync.sock
+//
+// Windows uses TEMP rather than LOCALAPPDATA (which os.UserCacheDir reports)
+// because MSIX-packaged apps virtualize writes to LOCALAPPDATA: os.MkdirAll
+// silently redirects directory creation to the package's LocalCache, but the
+// AF_UNIX bind() call resolves the path at a layer below the file-system
+// filter and fails with WSAEINVAL because the unredirected directory does not
+// exist. TEMP is not subject to that virtualization for full-trust Desktop
+// Bridge apps, so MkdirAll and bind() agree on the same physical path.
 func SocketPath() (string, error) {
 	// On Linux, prefer XDG_RUNTIME_DIR (RAM-backed, cleaned on logout).
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
 		return filepath.Join(xdg, "cernbox-sync.sock"), nil
 	}
-	// Fall back to the user cache directory — available on Linux, macOS, Windows.
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine cache directory: %w", err)
+	var base string
+	if runtime.GOOS == "windows" {
+		// os.TempDir reads %TMP%/%TEMP%/%USERPROFILE% in that order. Inside
+		// MSIX containers it returns the per-user TEMP that's accessible to
+		// AF_UNIX without going through file virtualization.
+		base = os.TempDir()
+	} else {
+		var err error
+		base, err = os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine cache directory: %w", err)
+		}
 	}
 	dir := filepath.Join(base, "cernbox-sync")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

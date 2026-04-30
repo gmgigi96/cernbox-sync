@@ -39,7 +39,7 @@ printf "Timed out waiting for SSH\n"; exit 1
 endef
 
 .PHONY: all build cli daemon test test-gui test-e2e test-e2e-watch test-all lint clean help dev-up dev-down gui gui-dev
-.PHONY: windows-vm-create windows-vm-start windows-vm-stop windows-vm-status windows-vm-ssh windows-vm-setup windows-vm-gui test-windows test-windows-integration
+.PHONY: windows-vm-create windows-vm-start windows-vm-stop windows-vm-status windows-vm-ssh windows-vm-setup windows-vm-gui test-windows test-windows-integration windows-dev-cert gui-msix gui-msix-dev
 
 all: build
 
@@ -211,14 +211,20 @@ windows-vm-setup: ## Install Go, Git, and MinGW inside the Windows VM (run once 
 windows-vm-gui: ## Start the Windows VM with a graphical display + repo mounted as Z: drive
 	@test -f "$(WINDOWS_DISK)" || { echo "Error: VM disk not found — run: make windows-vm-create WINDOWS_ISO=..."; exit 1; }
 	@command -v smbd >/dev/null 2>&1 || { echo "Error: smbd not found — install samba (Arch: pacman -S samba)"; exit 1; }
+	@command -v remote-viewer >/dev/null 2>&1 || { echo "Error: remote-viewer not found — install virt-viewer (Arch: pacman -S virt-viewer)"; exit 1; }
 	@if [ -f "$(WINDOWS_PID)" ] && kill -0 "$$(cat $(WINDOWS_PID))" 2>/dev/null; then \
 		echo "Error: VM is already running headlessly (PID $$(cat $(WINDOWS_PID))). Stop it first with: make windows-vm-stop"; exit 1; \
 	fi
-	@echo "Starting Windows VM with graphical display (SDL)..."
+	@echo "Starting Windows VM with graphical display (SPICE)..."
 	@echo "SSH is also forwarded on localhost:2222 for make test-windows / test-windows-integration."
 	@echo "The cernbox dev server on the host is reachable from the VM at http://10.0.2.2/"
 	@echo "The host repo is mounted inside the VM as drive Z: (\\\\10.0.2.4\\qemu)."
 	@echo "To run the GUI: open PowerShell in the VM and run  Z:\\dev\\windows\\run-dev.ps1"
+	@# SPICE display + vdagent channel: enables host<->guest clipboard
+	@# sharing and dynamic resize once spice-guest-tools is installed in
+	@# the guest (windows-vm-setup does that). -display spice-app auto-
+	@# launches remote-viewer; replace with `-display none` if you'd
+	@# rather connect manually with `remote-viewer spice://localhost:5930`.
 	qemu-system-x86_64 \
 		-machine q35,accel=kvm \
 		-cpu host \
@@ -231,7 +237,11 @@ windows-vm-gui: ## Start the Windows VM with a graphical display + repo mounted 
 		-device ide-hd,drive=disk,bus=ahci.0 \
 		-netdev user,id=net0,hostfwd=tcp::2222-:22,smb=$(CURDIR) \
 		-device e1000e,netdev=net0 \
-		-display sdl
+		-device virtio-serial-pci \
+		-spice port=5930,disable-ticketing=on \
+		-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
+		-chardev spicevmc,id=spicechannel0,name=vdagent \
+		-display spice-app
 
 test-windows: ## Build and run Windows-specific tests inside the VM
 	$(call wait-for-windows-ssh)
@@ -253,6 +263,72 @@ test-windows: ## Build and run Windows-specific tests inside the VM
 WEBDAV_BASE ?= http://10.0.2.2/remote.php/webdav/eos/user/e/einstein
 E2E_USER    ?= einstein
 E2E_PASS    ?= relativity
+
+# ── MSIX packaging ────────────────────────────────────────────────────────────
+#
+# The modern Cloud Files registration API (StorageProviderSyncRootManager.Register)
+# requires the calling process to have package identity, so the daemon must
+# run from inside an MSIX-installed package. These targets build a signed
+# Desktop Bridge MSIX inside the Windows VM, pulling the artefact back to
+# dev/windows/out/ on the host.
+#
+# Prereqs:
+#   - VM created and set up: make windows-vm-create && make windows-vm-setup
+#   - VM running:            make windows-vm-start  (or make windows-vm-gui)
+#   - Tauri build present in the VM (gui/src-tauri/target/release). The
+#     gui-msix target uploads the source tree and builds the bundle as a
+#     prerequisite — same pattern as test-windows.
+#   - One-time signing cert: make windows-dev-cert  (generates a self-signed
+#     code-signing cert in the VM under dev/windows/cert/).
+
+# Persistent VM-side location for the dev signing cert. Lives outside
+# C:/workspace/cernbox-sync because gui-msix wipes that tree each run; we
+# don't want to re-generate the cert (and re-trust it) on every build.
+WINDOWS_VM_CERT_DIR := C:/cernbox-sync-cert
+
+# Backend URL baked into the GUI bundle (vite VITE_SERVER_URL). Defaults to
+# the local revad reachable from the VM (setup.ps1 forwards localhost:80 to
+# the host's 10.0.2.2:80 via netsh portproxy). For a production-pointing
+# bundle, override:  make gui-msix MSIX_SERVER_URL=https://cernbox.cern.ch
+MSIX_SERVER_URL ?= http://localhost
+
+windows-dev-cert: ## Generate a self-signed dev code-signing cert inside the VM (one-time)
+	$(call wait-for-windows-ssh)
+	@echo "Uploading new-dev-cert.ps1..."
+	$(WINDOWS_SCP_CMD) $(WINDOWS_VM_DIR)/new-dev-cert.ps1 testuser@localhost:C:/new-dev-cert.ps1
+	$(WINDOWS_SSH_CMD) "powershell.exe -ExecutionPolicy Bypass -File C:/new-dev-cert.ps1 -OutDir $(WINDOWS_VM_CERT_DIR)"
+	@echo "Pulling cert back to host (public .cer only; .pfx stays in VM)..."
+	@mkdir -p $(WINDOWS_VM_DIR)/cert
+	$(WINDOWS_SCP_CMD) testuser@localhost:$(WINDOWS_VM_CERT_DIR)/cernbox-sync-dev.cer $(WINDOWS_VM_DIR)/cert/cernbox-sync-dev.cer
+
+gui-msix-dev: ## Stage + Add-AppxPackage -Register inside the VM (fast MSIX iteration; no pack/sign)
+	$(call wait-for-windows-ssh)
+	@echo "Uploading source..."
+	$(WINDOWS_SSH_CMD) "if (Test-Path C:/workspace/cernbox-sync) { Remove-Item -Recurse -Force C:/workspace/cernbox-sync }; New-Item -Force -ItemType Directory C:/workspace/cernbox-sync | Out-Null"
+	@tar -czf - \
+		--exclude='.git' \
+		--exclude='$(WINDOWS_VM_DIR)/*.qcow2' \
+		--exclude='$(WINDOWS_VM_DIR)/*.iso' \
+		. | $(WINDOWS_SSH_CMD) "tar -xzf - -C 'C:/workspace/cernbox-sync/'"
+	@echo "Building + registering staged MSIX inside VM (VITE_SERVER_URL=$(MSIX_SERVER_URL))..."
+	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; powershell.exe -ExecutionPolicy Bypass -File dev/windows/register-msix-dev.ps1 -ServerUrl '$(MSIX_SERVER_URL)'"
+
+gui-msix: ## Build a signed MSIX of the Tauri app inside the VM
+	$(call wait-for-windows-ssh)
+	@echo "Uploading source..."
+	$(WINDOWS_SSH_CMD) "if (Test-Path C:/workspace/cernbox-sync) { Remove-Item -Recurse -Force C:/workspace/cernbox-sync }; New-Item -Force -ItemType Directory C:/workspace/cernbox-sync | Out-Null"
+	@tar -czf - \
+		--exclude='.git' \
+		--exclude='$(WINDOWS_VM_DIR)/*.qcow2' \
+		--exclude='$(WINDOWS_VM_DIR)/*.iso' \
+		. | $(WINDOWS_SSH_CMD) "tar -xzf - -C 'C:/workspace/cernbox-sync/'"
+	@echo "Running Tauri build inside VM (VITE_SERVER_URL=$(MSIX_SERVER_URL))..."
+	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; powershell.exe -ExecutionPolicy Bypass -File dev/windows/run-build.ps1 -ServerUrl '$(MSIX_SERVER_URL)'"
+	@echo "Packaging MSIX inside VM..."
+	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; powershell.exe -ExecutionPolicy Bypass -File dev/windows/make-msix.ps1 -PfxPath $(WINDOWS_VM_CERT_DIR)/cernbox-sync-dev.pfx"
+	@echo "Pulling .msix back to host..."
+	@mkdir -p $(WINDOWS_VM_DIR)/out
+	$(WINDOWS_SCP_CMD) -r 'testuser@localhost:C:/workspace/cernbox-sync/dev/windows/out/*.msix' $(WINDOWS_VM_DIR)/out/
 
 test-windows-integration: ## Run Windows + cernbox backend integration tests inside the VM (requires make dev-up)
 	$(call wait-for-windows-ssh)

@@ -78,6 +78,32 @@ func (d *Daemon) stopFolderProvider(name string) {
 	}
 }
 
+// removeFolderProvider stops the provider for name (if any) and then
+// unregisters the OS-level sync root at localRoot. Distinct from
+// stopFolderProvider — which preserves the registration so the folder
+// keeps its cloud-aware status across daemon restarts — in that this
+// fully tears down the OS integration. Used when a folder is removed
+// from the daemon's config (CmdRemove); shutdown still uses
+// stopFolderProvider/stopAllProviders so re-launching the daemon
+// re-attaches to the same sync roots without re-registration.
+//
+// Unregister is best-effort: if the OS reports the registration is
+// already gone (HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), folded into
+// nil by cloudfiles.UnregisterSyncRoot) we proceed silently. Other
+// failures are logged but don't abort the IPC handler — the config DB
+// row is already gone, so the alternative would be a half-removed
+// folder the user can't retry.
+func (d *Daemon) removeFolderProvider(name, localRoot string) {
+	d.stopFolderProvider(name)
+	if localRoot == "" {
+		return
+	}
+	if err := cloudfiles.UnregisterSyncRoot(localRoot); err != nil {
+		d.log.Warn("[daemon] cloudfiles unregister",
+			"folder", name, "local", localRoot, "err", err)
+	}
+}
+
 // stopAllProviders stops every running provider. Called on daemon shutdown.
 func (d *Daemon) stopAllProviders() {
 	d.providerMu.Lock()

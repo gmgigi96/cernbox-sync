@@ -142,9 +142,24 @@ fn socket_path() -> String {
     if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
         return format!("{}/cernbox-sync.sock", xdg);
     }
-    let cache = dirs_next::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    format!("{}/cernbox-sync/sync.sock", cache.display())
+    // On Windows, use TEMP rather than LocalAppData — MSIX virtualizes writes
+    // to LocalAppData, which causes the daemon's AF_UNIX bind() to fail with
+    // WSAEINVAL (the unredirected dir doesn't exist while the redirected one
+    // does, and bind operates below the file-system filter that does the
+    // redirection). TEMP is not virtualized for full-trust Desktop Bridge
+    // apps, so the daemon and GUI agree on the same physical path.
+    // Mirrors ipc.SocketPath() on the Go side.
+    #[cfg(windows)]
+    {
+        let temp = std::env::temp_dir();
+        return format!("{}\\cernbox-sync\\sync.sock", temp.display());
+    }
+    #[cfg(not(windows))]
+    {
+        let cache = dirs_next::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        format!("{}/cernbox-sync/sync.sock", cache.display())
+    }
 }
 
 // ── Low-level send/receive ─────────────────────────────────────────────────

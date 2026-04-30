@@ -14,3 +14,4 @@ import (
 func (d *Daemon) ensureProvider(_ config.Folder) cloudfiles.Provider { return nil }
 func (d *Daemon) stopFolderProvider(_ string)                        {}
 func (d *Daemon) stopAllProviders()                                  {}
+func (d *Daemon) removeFolderProvider(_, _ string)                   {}

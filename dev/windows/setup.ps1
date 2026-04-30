@@ -20,6 +20,20 @@ choco install -y golang git mingw
 # but installing it explicitly is cheap insurance).
 choco install -y nodejs-lts microsoft-edge-webview2-runtime
 
+# SPICE guest tools — installs the vdagent service plus QXL/virtio-serial
+# drivers, enabling host<->guest clipboard sharing and dynamic resolution
+# when the VM is launched with `make windows-vm-gui` (which uses -spice +
+# -chardev spicevmc,name=vdagent). The installer is NSIS-based; /S runs
+# silently. Done unconditionally — it costs ~5 MB and lets the agent kick
+# in the first time SPICE channels appear, even if a future VM session
+# falls back to plain SDL with no SPICE devices.
+$spiceTools = Join-Path $env:TEMP 'spice-guest-tools.exe'
+Invoke-WebRequest -UseBasicParsing `
+    -Uri 'https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-latest.exe' `
+    -OutFile $spiceTools
+Start-Process -FilePath $spiceTools -ArgumentList '/S' -Wait -NoNewWindow
+Remove-Item $spiceTools
+
 # Reload PATH so go/gcc are usable in this session
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path', 'User')

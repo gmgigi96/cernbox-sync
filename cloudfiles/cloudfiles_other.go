@@ -22,6 +22,12 @@ func SetPinState(_ string, _ bool) error {
 	return ErrUnsupported
 }
 
+// UnregisterSyncRoot is a no-op on non-Windows platforms — there's no
+// OS-level sync-root concept to clean up. Returns nil so the daemon's
+// folder-removal path doesn't error out on Linux/macOS, where the call
+// is invoked unconditionally.
+func UnregisterSyncRoot(_ string) error { return nil }
+
 // stubProvider is here for reference only — it is not constructible. Its
 // purpose is to ensure the Provider interface stays implementable across
 // platforms (compile-time check below).

@@ -177,11 +177,33 @@ func (p *winProvider) connect() (int64, error) {
 }
 
 // Unregister tears down the sync root entirely. Used when a folder is
-// removed from the daemon's config; callers should Stop() first.
+// removed from the daemon's config; callers should Stop() first. Thin
+// wrapper around the package-level UnregisterSyncRoot so the daemon can
+// drop a sync root even when no Provider instance is cached for it (e.g.,
+// after a daemon restart between registration and removal).
 func (p *winProvider) Unregister() error {
-	cPath := C.CString(p.cfg.LocalRoot)
+	return UnregisterSyncRoot(p.cfg.LocalRoot)
+}
+
+// UnregisterSyncRoot removes the OS-level sync-root registration at
+// localRoot, including the SyncRootManager registry entries and the
+// IO_REPARSE_TAG_CLOUD reparse point on the directory. Idempotent: returns
+// nil if there's nothing registered at that path.
+//
+// This is the package-level counterpart to SetPinState — usable without
+// constructing a Provider, so the daemon can clean up after a folder is
+// removed even if it never instantiated a provider for it in this run.
+func UnregisterSyncRoot(localRoot string) error {
+	cPath := C.CString(localRoot)
 	defer C.free(unsafe.Pointer(cPath))
-	return hresultErr(int32(C.cf_unregister_sync_root(cPath)), "CfUnregisterSyncRoot")
+	hr := int32(C.cf_unregister_sync_root(cPath))
+	// HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) — nothing to unregister.
+	// Map to nil so a redundant cleanup call is harmless.
+	const hresultFileNotFound = int32(-2147024894) // 0x80070002
+	if hr == hresultFileNotFound {
+		return nil
+	}
+	return hresultErr(hr, "CfUnregisterSyncRoot")
 }
 
 // Create lays down a placeholder at absPath for the remote resource r.
