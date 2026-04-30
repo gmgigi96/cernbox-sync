@@ -125,8 +125,19 @@ if (-not $daemonExe) {
 }
 if (-not $daemonExe) { throw "cernbox-syncd.exe not found. Run 'go build ./cmd/cernbox-syncd' or 'make gui' first." }
 
+# cernbox-cf.dll is the C++/WinRT registration shim built by
+# cloudfiles/winrt/build.ps1 (invoked from run-build.ps1). It must live
+# alongside the daemon inside the package so LoadLibrary("cernbox-cf.dll")
+# resolves via the directory-of-the-exe rule.
+$cfDll = Get-ChildItem -Path (Join-Path $RepoRoot 'gui\src-tauri\binaries') -Filter 'cernbox-cf.dll' -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if (-not $cfDll) {
+    throw "cernbox-cf.dll not found in gui\src-tauri\binaries\. Run cloudfiles\winrt\build.ps1 (or run-build.ps1) first."
+}
+
 Write-Host "Main exe:    $($mainExe.FullName)"
 Write-Host "Daemon exe:  $($daemonExe.FullName)"
+Write-Host "CF shim:     $($cfDll.FullName)"
 
 # -- Stage package contents ---------------------------------------------------
 
@@ -138,6 +149,7 @@ try {
     # this matches what providers_windows.go (and the IPC client) expect to
     # spawn from the package directory once Phase 2/3 wire it up.
     Copy-Item $daemonExe.FullName (Join-Path $stage 'cernbox-syncd.exe')
+    Copy-Item $cfDll.FullName     (Join-Path $stage 'cernbox-cf.dll')
 
     # Copy WebView2/web assets if Tauri staged them next to the exe.
     foreach ($extra in 'WebView2Loader.dll', 'resources') {

@@ -34,6 +34,19 @@ Invoke-WebRequest -UseBasicParsing `
 Start-Process -FilePath $spiceTools -ArgumentList '/S' -Wait -NoNewWindow
 Remove-Item $spiceTools
 
+# Visual Studio Build Tools 2022 + C++/WinRT toolchain. Required by the
+# Cloud Files registration shim (cloudfiles/winrt/cernbox-cf.dll) which
+# calls StorageProviderSyncRootManager.Register - a WinRT API that only
+# C++/WinRT wraps cleanly, and C++/WinRT support in MinGW is incomplete.
+# The VCTools workload bundles cl.exe, link.exe, MSBuild, and the Win11
+# SDK 22621 with cppwinrt projection headers under
+# 'C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\cppwinrt\'.
+#
+# Heavy install: ~7-9 GB on disk, 15-30 min on first run. Idempotent on
+# subsequent runs (choco fast-paths an existing install).
+choco install -y visualstudio2022buildtools `
+    --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended --quiet --norestart"
+
 # Reload PATH so go/gcc are usable in this session
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path', 'User')

@@ -23,11 +23,6 @@
 
 /* ── Function pointer types ──────────────────────────────────────────────── */
 
-typedef HRESULT (WINAPI *PFN_CfRegisterSyncRoot)(
-    PCWSTR, const CF_SYNC_REGISTRATION *, const CF_SYNC_POLICIES *, CF_REGISTER_FLAGS);
-
-typedef HRESULT (WINAPI *PFN_CfUnregisterSyncRoot)(PCWSTR);
-
 typedef HRESULT (WINAPI *PFN_CfDisconnectSyncRoot)(CF_CONNECTION_KEY);
 
 typedef HRESULT (WINAPI *PFN_CfUpdateSyncProviderStatus)(
@@ -45,8 +40,6 @@ typedef HRESULT (WINAPI *PFN_CfUpdatePlaceholder)(
 typedef HRESULT (WINAPI *PFN_CfSetPinState)(
     HANDLE, CF_PIN_STATE, CF_SET_PIN_FLAGS, LPOVERLAPPED);
 
-static PFN_CfRegisterSyncRoot   p_CfRegisterSyncRoot   = NULL;
-static PFN_CfUnregisterSyncRoot p_CfUnregisterSyncRoot = NULL;
 static PFN_CfDisconnectSyncRoot p_CfDisconnectSyncRoot = NULL;
 static PFN_CfUpdateSyncProviderStatus p_CfUpdateSyncProviderStatus = NULL;
 static PFN_CfCreatePlaceholders p_CfCreatePlaceholders = NULL;
@@ -54,7 +47,14 @@ static PFN_CfUpdatePlaceholder  p_CfUpdatePlaceholder  = NULL;
 static PFN_CfSetPinState        p_CfSetPinState        = NULL;
 
 /* Lazy-load cldapi.dll on first use. Returns 0 on success, an HRESULT on
- * failure. Subsequent calls are O(1). */
+ * failure. Subsequent calls are O(1).
+ *
+ * Sync-root REGISTRATION (CfRegisterSyncRoot / CfUnregisterSyncRoot) was
+ * dropped along with its cldapi.dll function pointers - registration now
+ * goes through the WinRT path (StorageProviderSyncRootManager.Register,
+ * via cernbox-cf.dll). The remaining cldapi.dll surface here is just the
+ * placeholder + connection-status operations that have no WinRT
+ * equivalent. */
 static int32_t load_cldapi(void) {
     static int loaded = 0; /* 0=not tried, 1=ok, -1=failed */
     if (loaded == 1) return 0;
@@ -65,15 +65,12 @@ static int32_t load_cldapi(void) {
         loaded = -1;
         return HRESULT_FROM_WIN32(GetLastError());
     }
-    p_CfRegisterSyncRoot   = (PFN_CfRegisterSyncRoot)  (void *)GetProcAddress(h, "CfRegisterSyncRoot");
-    p_CfUnregisterSyncRoot = (PFN_CfUnregisterSyncRoot)(void *)GetProcAddress(h, "CfUnregisterSyncRoot");
     p_CfDisconnectSyncRoot = (PFN_CfDisconnectSyncRoot)(void *)GetProcAddress(h, "CfDisconnectSyncRoot");
     p_CfUpdateSyncProviderStatus = (PFN_CfUpdateSyncProviderStatus)(void *)GetProcAddress(h, "CfUpdateSyncProviderStatus");
     p_CfCreatePlaceholders = (PFN_CfCreatePlaceholders)(void *)GetProcAddress(h, "CfCreatePlaceholders");
     p_CfUpdatePlaceholder  = (PFN_CfUpdatePlaceholder) (void *)GetProcAddress(h, "CfUpdatePlaceholder");
     p_CfSetPinState        = (PFN_CfSetPinState)       (void *)GetProcAddress(h, "CfSetPinState");
-    if (!p_CfRegisterSyncRoot || !p_CfUnregisterSyncRoot ||
-        !p_CfDisconnectSyncRoot || !p_CfUpdateSyncProviderStatus ||
+    if (!p_CfDisconnectSyncRoot || !p_CfUpdateSyncProviderStatus ||
         !p_CfCreatePlaceholders || !p_CfUpdatePlaceholder ||
         !p_CfSetPinState) {
         loaded = -1;
@@ -83,14 +80,7 @@ static int32_t load_cldapi(void) {
     return 0;
 }
 
-/* ── helpers ─────────────────────────────────────────────────────────────── */
-
-/* Provider GUID for cernbox-sync. Generated once and embedded so all sync
- * roots created by this binary share a single provider identity. */
-static const GUID kProviderGuid = {
-    0x2b3a4c5d, 0x6e7f, 0x8a9b,
-    {0x0c, 0x1d, 0x2e, 0x3f, 0x4a, 0x5b, 0x6c, 0x7d}
-};
+/* -- helpers --------------------------------------------------------------- */
 
 /* Convert a UTF-8 string to a freshly-allocated wide string. The caller
  * must free the returned pointer. Returns NULL on conversion failure. */
@@ -107,70 +97,7 @@ static wchar_t *utf8_to_wide(const char *s) {
     return w;
 }
 
-/* ── exported wrappers ───────────────────────────────────────────────────── */
-
-int32_t cf_register_sync_root(const char *utf8_path, const char *utf8_provider_name) {
-    int32_t loaderr = load_cldapi();
-    if (loaderr) return loaderr;
-
-    wchar_t *path     = utf8_to_wide(utf8_path);
-    wchar_t *provider = utf8_to_wide(utf8_provider_name);
-    if (!path || !provider) {
-        free(path);
-        free(provider);
-        return E_OUTOFMEMORY;
-    }
-
-    CF_SYNC_REGISTRATION reg = {0};
-    reg.StructSize       = sizeof(reg);
-    reg.ProviderName     = provider;
-    reg.ProviderVersion  = L"1.0";
-    reg.ProviderId       = kProviderGuid;
-
-    CF_SYNC_POLICIES policies = {0};
-    policies.StructSize              = sizeof(policies);
-    policies.Hydration.Primary       = CF_HYDRATION_POLICY_PARTIAL;
-    /* PARTIAL (not FULL) so Windows calls our FETCH_PLACEHOLDERS callback
-     * during directory enumeration. With FULL the OS skips the callback
-     * entirely yet still keeps the OFFLINE/RECALL flags on the sync root,
-     * which left every `dir`/Explorer access waiting on the cloud filter
-     * with no one to answer it. The stub callback answers "done, disable
-     * further population" so Windows lets the enumeration through after
-     * the first call. */
-    policies.Population.Primary      = CF_POPULATION_POLICY_PARTIAL;
-    policies.InSync                  = CF_INSYNC_POLICY_TRACK_ALL;
-    policies.HardLink                = CF_HARDLINK_POLICY_NONE;
-
-    /* MARK_IN_SYNC_ON_ROOT tells the OS the directory namespace is already
-     * up to date so it doesn't slap OFFLINE + RECALL_ON_DATA_ACCESS on the
-     * sync-root directory. Without this flag every Explorer-shell path that
-     * goes through the cloud filter (cmd `dir`, Get-ChildItem, Explorer
-     * itself) waits the full recall timeout for a fetch we never get
-     * asked to satisfy.
-     *
-     * DISABLE_ON_DEMAND_POPULATION_ON_ROOT keeps the OS from calling our
-     * FETCH_PLACEHOLDERS at the root level — child placeholders still get
-     * populated by the engine, and we don't expose any deeper-than-root
-     * directories as on-demand. */
-    CF_REGISTER_FLAGS flags = (CF_REGISTER_FLAGS)(
-        CF_REGISTER_FLAG_MARK_IN_SYNC_ON_ROOT |
-        CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT);
-    HRESULT hr = p_CfRegisterSyncRoot(path, &reg, &policies, flags);
-    free(path);
-    free(provider);
-    return (int32_t)hr;
-}
-
-int32_t cf_unregister_sync_root(const char *utf8_path) {
-    int32_t loaderr = load_cldapi();
-    if (loaderr) return loaderr;
-
-    wchar_t *path = utf8_to_wide(utf8_path);
-    if (!path) return E_OUTOFMEMORY;
-    HRESULT hr = p_CfUnregisterSyncRoot(path);
-    free(path);
-    return (int32_t)hr;
-}
+/* -- exported wrappers ----------------------------------------------------- */
 
 int32_t cf_disconnect_sync_root(int64_t connection_key) {
     int32_t loaderr = load_cldapi();

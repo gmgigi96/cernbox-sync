@@ -90,8 +90,18 @@ if (-not $daemonExe) {
 }
 if (-not $daemonExe) { throw "cernbox-syncd.exe not found." }
 
+# Cloud Files WinRT registration shim (cernbox-cf.dll) - mandatory in
+# Phase 2: the daemon refuses to set up on-demand without it (see
+# daemon/providers_windows.go::ensureProvider).
+$cfDll = Get-ChildItem -Path (Join-Path $RepoRoot 'gui\src-tauri\binaries') -Filter 'cernbox-cf.dll' -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if (-not $cfDll) {
+    throw "cernbox-cf.dll not found in gui\src-tauri\binaries\. Run cloudfiles\winrt\build.ps1 (or pass -Build to this script via run-build.ps1)."
+}
+
 Write-Host "Main exe:    $($mainExe.FullName)"
 Write-Host "Daemon exe:  $($daemonExe.FullName)"
+Write-Host "CF shim:     $($cfDll.FullName)"
 
 # -- Stage to a persistent directory ------------------------------------------
 #
@@ -120,6 +130,7 @@ New-Item -Force -ItemType Directory $StageDir | Out-Null
 Write-Host "Staging at $StageDir ..."
 Copy-Item $mainExe.FullName   (Join-Path $StageDir $mainExe.Name)
 Copy-Item $daemonExe.FullName (Join-Path $StageDir 'cernbox-syncd.exe')
+Copy-Item $cfDll.FullName     (Join-Path $StageDir 'cernbox-cf.dll')
 
 foreach ($extra in 'WebView2Loader.dll', 'resources') {
     $src = Join-Path $ReleaseDir $extra

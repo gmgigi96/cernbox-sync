@@ -39,7 +39,7 @@ printf "Timed out waiting for SSH\n"; exit 1
 endef
 
 .PHONY: all build cli daemon test test-gui test-e2e test-e2e-watch test-all lint clean help dev-up dev-down gui gui-dev
-.PHONY: windows-vm-create windows-vm-start windows-vm-stop windows-vm-status windows-vm-ssh windows-vm-setup windows-vm-gui test-windows test-windows-integration windows-dev-cert gui-msix gui-msix-dev
+.PHONY: windows-vm-create windows-vm-start windows-vm-stop windows-vm-status windows-vm-ssh windows-vm-setup windows-vm-gui test-windows test-windows-integration windows-dev-cert gui-msix gui-msix-dev windows-build-cfdll
 
 all: build
 
@@ -243,7 +243,7 @@ windows-vm-gui: ## Start the Windows VM with a graphical display + repo mounted 
 		-chardev spicevmc,id=spicechannel0,name=vdagent \
 		-display spice-app
 
-test-windows: ## Build and run Windows-specific tests inside the VM
+test-windows: ## Build and run Windows-specific tests inside the VM (cloudfiles via MSIX harness, others via plain go test)
 	$(call wait-for-windows-ssh)
 	@echo "Uploading source..."
 	@# Wipe the workspace first so files removed locally also disappear in
@@ -255,8 +255,16 @@ test-windows: ## Build and run Windows-specific tests inside the VM
 		--exclude='$(WINDOWS_VM_DIR)/*.qcow2' \
 		--exclude='$(WINDOWS_VM_DIR)/*.iso' \
 		. | $(WINDOWS_SSH_CMD) "tar -xzf - -C 'C:/workspace/cernbox-sync/'"
-	@echo "Running Windows tests..."
-	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; go test -tags windows ./..."
+	@# Phase 2 split: the cloudfiles tests now require MSIX package
+	@# identity (StorageProviderSyncRootManager.Register won't run
+	@# unpackaged), so they go through run-tests-msix.ps1 which compiles
+	@# them, stages them inside a tests-only AppxPackage, and invokes them
+	@# via an uap5:AppExecutionAlias. Everything else (engine, daemon, db,
+	@# ipc, ...) doesn't need identity, so we run those via plain `go test`.
+	@echo "Running non-cloudfiles tests inside VM (plain go test)..."
+	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; \$$pkgs = (go list ./... | Where-Object { \$$_ -notmatch '/cloudfiles$$' -and \$$_ -notmatch '/cloudfiles/winrt' }); go test -tags windows \$$pkgs"
+	@echo "Running cloudfiles tests inside VM (MSIX harness)..."
+	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; powershell.exe -ExecutionPolicy Bypass -File dev/windows/run-tests-msix.ps1"
 
 # Coordinates for test-windows-integration. Default points at the host machine
 # via the QEMU user-networking gateway (10.0.2.2) so it works out of the box.
@@ -291,6 +299,18 @@ WINDOWS_VM_CERT_DIR := C:/cernbox-sync-cert
 # the host's 10.0.2.2:80 via netsh portproxy). For a production-pointing
 # bundle, override:  make gui-msix MSIX_SERVER_URL=https://cernbox.cern.ch
 MSIX_SERVER_URL ?= http://localhost
+
+windows-build-cfdll: ## Compile the Cloud Files WinRT shim (cernbox-cf.dll) inside the VM
+	$(call wait-for-windows-ssh)
+	@echo "Uploading source..."
+	$(WINDOWS_SSH_CMD) "if (Test-Path C:/workspace/cernbox-sync) { Remove-Item -Recurse -Force C:/workspace/cernbox-sync }; New-Item -Force -ItemType Directory C:/workspace/cernbox-sync | Out-Null"
+	@tar -czf - \
+		--exclude='.git' \
+		--exclude='$(WINDOWS_VM_DIR)/*.qcow2' \
+		--exclude='$(WINDOWS_VM_DIR)/*.iso' \
+		. | $(WINDOWS_SSH_CMD) "tar -xzf - -C 'C:/workspace/cernbox-sync/'"
+	@echo "Compiling cernbox-cf.dll inside VM (MSVC + Windows SDK)..."
+	$(WINDOWS_SSH_CMD) "Set-Location C:/workspace/cernbox-sync; powershell.exe -ExecutionPolicy Bypass -File cloudfiles/winrt/build.ps1"
 
 windows-dev-cert: ## Generate a self-signed dev code-signing cert inside the VM (one-time)
 	$(call wait-for-windows-ssh)

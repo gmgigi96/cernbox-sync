@@ -38,6 +38,16 @@ Get-Process -Name cernbox-syncd -ErrorAction SilentlyContinue | Stop-Process -Fo
 $triple = ((rustc -vV | Select-String '^host:') -replace 'host:\s*','').Trim()
 New-Item -Force -ItemType Directory gui\src-tauri\binaries | Out-Null
 
+# Build the C++/WinRT registration shim first. Output lands in
+# gui\src-tauri\binaries\cernbox-cf.dll, alongside the daemon, so the MSIX
+# staging step picks it up via its standard binaries lookup. Failure here
+# is fatal: without this DLL the daemon can't register sync roots and
+# on-demand sync silently falls back to plain download.
+Write-Host 'Building cernbox-cf.dll (Cloud Files WinRT shim)...'
+& powershell.exe -ExecutionPolicy Bypass -File 'cloudfiles\winrt\build.ps1' `
+    -OutDir 'gui\src-tauri\binaries'
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Write-Host "Building cernbox-syncd-$triple.exe (release)..."
 go build -buildvcs=false -ldflags='-s -w' -o "gui\src-tauri\binaries\cernbox-syncd-$triple.exe" ./cmd/cernbox-syncd
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

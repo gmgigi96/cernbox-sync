@@ -26,14 +26,9 @@ import (
 	"github.com/gmgigi96/cernbox-sync/webdav"
 )
 
-// providerName is the brand stamped on every sync root we register. It also
-// serves as the user-visible identity in shell APIs that expose the provider.
-const providerName = "cernbox-sync"
-
-// hresultAlreadyExists is HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) and is
-// returned when a sync root with the same path is already registered.
-// We treat it as success so re-registering on daemon restart is idempotent.
-const hresultAlreadyExists = int32(-2147024713) // 0x800700B7
+// providerVersionString is stamped into the StorageProviderSyncRootInfo.
+// User-invisible but the API requires a non-empty value.
+const providerVersionString = "1.0.0"
 
 // errNotImplemented marks Provider methods whose Windows-side bodies will
 // be filled in by later phases (placeholder ops, callbacks, pinning).
@@ -115,10 +110,9 @@ func (p *winProvider) Stop() error {
 }
 
 // syncRootID is the stable identifier we hand to the OS for this folder.
-// Format: providerName + "::" + folderName so the same sync root re-binds
-// across daemon restarts.
+// Delegates to the package-level helper so the format stays in one place.
 func (p *winProvider) syncRootID() string {
-	return providerName + "::" + p.cfg.FolderName
+	return SyncRootIDFor(p.cfg.FolderName)
 }
 
 // connectWithCallback wires our FETCH_DATA handler. Same syscall-instead-
@@ -139,26 +133,22 @@ func (p *winProvider) connectWithCallback() (int64, error) {
 	return connectSyncRootSyscall(p.cfg.LocalRoot, cb)
 }
 
-// register installs p.cfg.LocalRoot as a Cloud Files sync root via the
-// legacy CfRegisterSyncRoot API in cldapi.dll. The WinRT path
-// (StorageProviderSyncRootManager.Register) does the same work plus
-// some metadata the registry-direct route can't reproduce, but its C++
-// vtable surface is fragile to mirror by hand. CfRegisterSyncRoot is a
-// stable C ABI and writes BOTH the SyncRootManager registry entries and
-// the IO_REPARSE_TAG_CLOUD reparse point on the directory — without the
-// reparse point CfConnectSyncRoot returns ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT.
-// Idempotent: the C wrapper folds ERROR_ALREADY_EXISTS into S_OK.
+// register installs p.cfg.LocalRoot as a sync root via the modern
+// StorageProviderSyncRootManager.Register WinRT API, called through the
+// cernbox-cf.dll shim (cloudfiles/winrt/cernbox-cf.cpp). Replaces the
+// legacy CfRegisterSyncRoot path; on-demand sync now requires the daemon
+// to run with MSIX package identity. ErrShimNotFound is returned when
+// the shim DLL isn't reachable - typically a sign the daemon was
+// launched from a non-packaged dev build.
 func (p *winProvider) register() error {
-	cPath := C.CString(p.cfg.LocalRoot)
-	defer C.free(unsafe.Pointer(cPath))
-	cName := C.CString(p.cfg.FolderName)
-	defer C.free(unsafe.Pointer(cName))
-
-	hr := int32(C.cf_register_sync_root(cPath, cName))
-	if hr == hresultAlreadyExists {
-		return nil
-	}
-	return hresultErr(hr, "CfRegisterSyncRoot")
+	return RegisterSyncRootWinRT(
+		p.syncRootID(),
+		p.cfg.LocalRoot,
+		p.cfg.FolderName,
+		providerVersionString,
+		&kProviderGUID,
+		"", // iconResource: empty -> OS default cloud-folder icon (Phase 4 polish)
+	)
 }
 
 // connect calls CfConnectSyncRoot and returns the connection key. Routes
@@ -182,28 +172,20 @@ func (p *winProvider) connect() (int64, error) {
 // drop a sync root even when no Provider instance is cached for it (e.g.,
 // after a daemon restart between registration and removal).
 func (p *winProvider) Unregister() error {
-	return UnregisterSyncRoot(p.cfg.LocalRoot)
+	return UnregisterSyncRoot(p.syncRootID())
 }
 
-// UnregisterSyncRoot removes the OS-level sync-root registration at
-// localRoot, including the SyncRootManager registry entries and the
-// IO_REPARSE_TAG_CLOUD reparse point on the directory. Idempotent: returns
-// nil if there's nothing registered at that path.
+// UnregisterSyncRoot removes the OS-level sync-root registration with the
+// given id (typically obtained from SyncRootIDFor). Calls
+// StorageProviderSyncRootManager.Unregister via the cernbox-cf.dll shim;
+// idempotent (the shim folds ERROR_NOT_FOUND to success so redundant
+// cleanup calls are harmless).
 //
-// This is the package-level counterpart to SetPinState — usable without
+// This is the package-level counterpart to SetPinState - usable without
 // constructing a Provider, so the daemon can clean up after a folder is
 // removed even if it never instantiated a provider for it in this run.
-func UnregisterSyncRoot(localRoot string) error {
-	cPath := C.CString(localRoot)
-	defer C.free(unsafe.Pointer(cPath))
-	hr := int32(C.cf_unregister_sync_root(cPath))
-	// HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) — nothing to unregister.
-	// Map to nil so a redundant cleanup call is harmless.
-	const hresultFileNotFound = int32(-2147024894) // 0x80070002
-	if hr == hresultFileNotFound {
-		return nil
-	}
-	return hresultErr(hr, "CfUnregisterSyncRoot")
+func UnregisterSyncRoot(syncRootID string) error {
+	return UnregisterSyncRootWinRT(syncRootID)
 }
 
 // Create lays down a placeholder at absPath for the remote resource r.

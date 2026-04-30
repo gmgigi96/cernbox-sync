@@ -36,14 +36,12 @@ typedef struct CORRELATION_VECTOR {
 extern "C" {
 #endif
 
-/* Register the local folder utf8_path as a Cloud Files sync root.
- * Returns S_OK on success, an HRESULT on failure. The function is idempotent
- * for the typical "already registered" case (HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS))
- * which the Go side maps to nil. */
-int32_t cf_register_sync_root(const char *utf8_path, const char *utf8_provider_name);
-
-/* Reverse of cf_register_sync_root. */
-int32_t cf_unregister_sync_root(const char *utf8_path);
+/* Sync-root registration moved to the WinRT path
+ * (StorageProviderSyncRootManager.Register, wrapped in cernbox-cf.dll -
+ * see cloudfiles/winrt/cernbox-cf.cpp). The legacy CfRegisterSyncRoot /
+ * CfUnregisterSyncRoot wrappers were dropped along with their cldapi.dll
+ * function-pointer entries; on-demand sync now requires the daemon to
+ * run under MSIX package identity. */
 
 /* Disconnect a previously connected sync root. */
 int32_t cf_disconnect_sync_root(int64_t connection_key);
