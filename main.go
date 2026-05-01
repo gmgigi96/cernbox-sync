@@ -73,6 +73,10 @@ func main() {
 		cmdSetSettings(os.Args[2:])
 	case "get-settings":
 		cmdGetSettings(os.Args[2:])
+	case "pin":
+		cmdPin(os.Args[2:])
+	case "unpin":
+		cmdUnpin(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(1)
@@ -104,10 +108,11 @@ func cmdAdd(args []string) {
 	localDir := fs.String("local", "", "Local directory to sync (required)")
 	remoteURL := fs.String("remote", "", "Remote WebDAV URL of the space (required)")
 	foldersRaw := fs.String("folders", "", "Comma-separated list of sub-folders to sync (omit to sync entire space)")
+	onDemand := fs.Bool("on-demand", false, "Enable on-demand sync (Cloud Files API on Windows): files appear as placeholders and download on access")
 	_ = fs.Parse(args)
 
 	if *name == "" || *localDir == "" || *remoteURL == "" {
-		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync add -name <n> -local <dir> -remote <url> [-folders f1,f2]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync add -name <n> -local <dir> -remote <url> [-folders f1,f2] [-on-demand]\n\n")
 		fs.PrintDefaults()
 		os.Exit(1)
 	}
@@ -129,6 +134,9 @@ func cmdAdd(args []string) {
 			LocalRoot:  *localDir,
 			RemoteBase: *remoteURL,
 			Folders:    folders,
+			Settings: config.FolderSettings{
+				OnDemand: *onDemand,
+			},
 		},
 	})
 	fmt.Printf("Registered sync folder %q\n", *name)
@@ -172,6 +180,25 @@ func cmdRemove(args []string) {
 
 	send(ipc.Request{Cmd: ipc.CmdRemove, Name: *name})
 	fmt.Printf("Removed sync folder %q\n", *name)
+}
+
+// ── pin / unpin ──────────────────────────────────────────────────────────────
+
+func cmdPin(args []string)   { pinCommand(args, ipc.CmdPin, "pin") }
+func cmdUnpin(args []string) { pinCommand(args, ipc.CmdUnpin, "unpin") }
+
+func pinCommand(args []string, cmd, verb string) {
+	fs := flag.NewFlagSet(verb, flag.ExitOnError)
+	name := fs.String("name", "", "Name of the on-demand sync folder (required)")
+	fs.Parse(args)
+
+	if *name == "" || fs.NArg() != 1 {
+		fmt.Fprintf(os.Stderr, "Usage: cernbox-sync %s -name <folder> <relative-path>\n\n", verb)
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+	send(ipc.Request{Cmd: cmd, Name: *name, Path: fs.Arg(0)})
+	fmt.Printf("%sed %q in folder %q\n", strings.Title(verb), fs.Arg(0), *name)
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import {
   AlertCircle,
   Check,
   ChevronUp,
+  Cloud,
   X,
 } from "lucide-react";
 import { ipc } from "../ipc";
@@ -31,12 +32,21 @@ interface LocalFolderPickerProps {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function parentPath(path: string): string | null {
-  const sep = path.includes("/") ? "/" : "\\";
-  const parts = path.split(sep).filter(Boolean);
-  if (parts.length === 0) return null;
-  parts.pop();
-  const parent = sep + parts.join(sep);
-  return parent === sep ? sep : parent;
+  if (!path) return null;
+  // Windows drive root — "C:\", "C:/" or "C:" has no parent.
+  if (/^[A-Za-z]:[\\\/]?$/.test(path)) return null;
+  // POSIX root.
+  if (path === "/") return null;
+  // Strip trailing separators so "/foo/" and "C:\foo\" behave like "/foo" and "C:\foo".
+  const trimmed = path.replace(/[\\\/]+$/, "");
+  const lastSep = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+  if (lastSep < 0) return null;
+  const parent = trimmed.slice(0, lastSep);
+  // Parent of "C:\Users" is "C:\" — keep the separator so the path stays absolute.
+  if (/^[A-Za-z]:$/.test(parent)) return parent + "\\";
+  // Parent of "/foo" is "/".
+  if (parent === "") return "/";
+  return parent;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -50,6 +60,7 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
   const [syncName, setSyncName] = useState(existingFolder?.Name ?? space.name);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [onDemand, setOnDemand] = useState(false);
   const [newFolderActive, setNewFolderActive] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [newFolderError, setNewFolderError] = useState<string | null>(null);
@@ -66,14 +77,11 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
         // Resolve the actual path from the first non-".." entry, or keep the requested path
         if (path) setCurrentPath(path);
         else {
-          // Home dir — derive from entries
+          // Home dir — derive from a child entry by stripping its last path component.
           const first = result.find((e) => e.name !== "..");
           if (first) {
-            const p = first.path;
-            const sep = p.includes("/") ? "/" : "\\";
-            const parts = p.split(sep).filter(Boolean);
-            parts.pop();
-            setCurrentPath(sep + parts.join(sep));
+            const parent = parentPath(first.path);
+            if (parent) setCurrentPath(parent);
           }
         }
       })
@@ -127,6 +135,7 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
           LocalRoot: selected,
           RemoteBase: remoteBase,
           Folders: relativeFolders,
+          Settings: { on_demand: onDemand },
         });
       }
       onDone();
@@ -325,6 +334,29 @@ export function LocalFolderPicker({ space, remoteUrls, existingFolder, daemon, o
               Short identifier for this sync pair
             </p>
           </div>
+
+          {!existingFolder && (
+            <div style={s.sideCard}>
+              <p style={s.sideCardLabel}>SYNC MODE</p>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: "0.5rem", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={onDemand}
+                  onChange={(e) => setOnDemand(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.8125rem", color: "var(--on-surface)", fontWeight: 500 }}>
+                    <Cloud size={13} strokeWidth={1.5} style={{ color: "var(--outline)" }} />
+                    On-demand
+                  </span>
+                  <span style={{ fontSize: "0.6875rem", color: "var(--outline)", lineHeight: 1.4 }}>
+                    Files appear as placeholders and download on access (Windows only). Cannot be changed later.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
 
           {submitError && (
             <div style={s.errorBox}>

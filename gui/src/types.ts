@@ -5,6 +5,9 @@ export interface FolderSettings {
   auto_sync_on_change: boolean;
   /** Suspend automatic and manual syncing for this folder. */
   paused?: boolean;
+  /** On-demand sync (Cloud Files API on Windows): files appear as placeholders
+   *  and download on access. Immutable after folder creation. */
+  on_demand?: boolean;
 }
 
 export interface Folder {

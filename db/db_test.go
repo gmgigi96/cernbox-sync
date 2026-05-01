@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -323,3 +324,58 @@ func TestSyncState_Delete_NonExistent_NoError(t *testing.T) {
 	}
 }
 
+// ── helper: fake file on disk ─────────────────────────────────────────────────
+
+func writeTempFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
+		t.Fatalf("writeTempFile: %v", err)
+	}
+	return path
+}
+
+// ── pinned_paths table ───────────────────────────────────────────────────────
+
+func TestPin_RoundTrip(t *testing.T) {
+	d := openDB(t)
+
+	if pinned, err := d.IsPinned("foo.txt"); err != nil || pinned {
+		t.Fatalf("IsPinned before Pin: pinned=%v err=%v", pinned, err)
+	}
+
+	if err := d.Pin("foo.txt"); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	if pinned, err := d.IsPinned("foo.txt"); err != nil || !pinned {
+		t.Errorf("IsPinned after Pin: pinned=%v err=%v", pinned, err)
+	}
+
+	// Pin is idempotent: a second call must not fail.
+	if err := d.Pin("foo.txt"); err != nil {
+		t.Errorf("second Pin: %v", err)
+	}
+
+	if err := d.Unpin("foo.txt"); err != nil {
+		t.Fatalf("Unpin: %v", err)
+	}
+	if pinned, err := d.IsPinned("foo.txt"); err != nil || pinned {
+		t.Errorf("IsPinned after Unpin: pinned=%v err=%v", pinned, err)
+	}
+}
+
+func TestAllPinned(t *testing.T) {
+	d := openDB(t)
+	for _, p := range []string{"a.txt", "b/c.txt", "d.txt"} {
+		if err := d.Pin(p); err != nil {
+			t.Fatalf("Pin %q: %v", p, err)
+		}
+	}
+	got, err := d.AllPinned()
+	if err != nil {
+		t.Fatalf("AllPinned: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("AllPinned len = %d, want 3 (got %v)", len(got), got)
+	}
+}

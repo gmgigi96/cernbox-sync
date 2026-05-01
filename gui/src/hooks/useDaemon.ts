@@ -16,7 +16,7 @@ export interface DaemonState {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  addFolder: (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase" | "Folders">) => Promise<void>;
+  addFolder: (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase" | "Folders"> & { Settings?: Partial<Folder["Settings"]> }) => Promise<void>;
   updateFolder: (f: Folder) => Promise<void>;
   removeFolder: (name: string) => Promise<void>;
   syncFolder: (name?: string) => Promise<void>;
@@ -41,8 +41,16 @@ export function useDaemon(): DaemonState {
   }, []);
 
   const addFolder = useCallback(
-    async (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase" | "Folders">) => {
-      await ipc.add(f.Name, f.LocalRoot, f.RemoteBase, f.Folders.length > 0 ? f.Folders : undefined);
+    async (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase" | "Folders"> & { Settings?: Partial<Folder["Settings"]> }) => {
+      await ipc.add(
+        f.Name,
+        f.LocalRoot,
+        f.RemoteBase,
+        f.Folders.length > 0 ? f.Folders : undefined,
+        f.Settings?.sync_hidden_files,
+        f.Settings?.auto_sync_on_change,
+        f.Settings?.on_demand,
+      );
       // State is updated automatically via the folder_added event from the daemon.
     },
     [],
@@ -56,6 +64,7 @@ export function useDaemon(): DaemonState {
       f.Folders.length > 0 ? f.Folders : undefined,
       f.Settings.sync_hidden_files,
       f.Settings.auto_sync_on_change,
+      f.Settings.on_demand,
     );
     // State is updated automatically via the folder_updated event from the daemon.
   }, []);

@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-const httpTimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
-
 // Client is a thin WebDAV HTTP client with basic-auth.
 type Client struct {
 	base     string // e.g. https://cernbox.cern.ch/remote.php/dav/spaces/eoshome-g$…/Documents
@@ -221,8 +219,12 @@ func parseResponse(r Response, base string) (Resource, error) {
 		res.IsDir = p.ResourceType.Collection != nil
 
 		if p.LastModifiedRaw != "" {
-			t, err := time.Parse(httpTimeFormat, p.LastModifiedRaw)
-			if err == nil {
+			// http.ParseTime accepts the three RFC-defined time formats
+			// (RFC1123 with GMT, RFC1123 with UTC, RFC850, ANSI C asctime),
+			// matching what real WebDAV servers emit. Our previous strict
+			// httpTimeFormat parser silently dropped any value whose
+			// timezone abbreviation wasn't literally "GMT".
+			if t, err := http.ParseTime(p.LastModifiedRaw); err == nil {
 				res.LastModified = t
 			}
 		}

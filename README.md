@@ -34,6 +34,8 @@ Run a single test:
 go test ./engine/ -run TestSync_RemoteNewFile
 ```
 
+For setting up a local development environment (Docker stack with EOS + reva, or the QEMU Windows VM used to test Windows-specific code), see [`dev/README.md`](dev/README.md).
+
 ## Usage
 
 ### Start the daemon

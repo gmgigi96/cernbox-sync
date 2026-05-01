@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/gmgigi96/cernbox-sync/cloudfiles"
 	"github.com/gmgigi96/cernbox-sync/config"
 	"github.com/gmgigi96/cernbox-sync/db"
 	"github.com/gmgigi96/cernbox-sync/engine"
@@ -48,11 +49,11 @@ type Daemon struct {
 	cancel context.CancelFunc
 
 	mu           sync.Mutex
-	syncing      map[string]bool              // folders currently being synced
+	syncing      map[string]bool               // folders currently being synced
 	syncCancels  map[string]context.CancelFunc // cancel funcs for in-progress syncs
-	lastSync     map[string]time.Time         // time of last successful sync per folder
-	counts       map[string]ipc.FileCounts    // local file/dir counts after last sync
-	globalPaused bool                         // all syncing paused when true
+	lastSync     map[string]time.Time          // time of last successful sync per folder
+	counts       map[string]ipc.FileCounts     // local file/dir counts after last sync
+	globalPaused bool                          // all syncing paused when true
 
 	bus *eventBus // push-event broadcaster
 
@@ -83,6 +84,12 @@ type Daemon struct {
 	debounceTimers   map[string]*time.Timer // folderName → pending debounce timer
 	debounceMu       sync.Mutex
 	debounceDuration time.Duration // how long to wait after the last event before syncing
+
+	// On-demand sync: one cloudfiles.Provider per sync folder (Windows only;
+	// nil on other platforms). Kept alive between sync cycles so the OS
+	// callback path remains connected and can hydrate placeholders at any time.
+	providerMu sync.Mutex
+	providers  map[string]cloudfiles.Provider
 }
 
 // New creates a new Daemon. interval controls how often all registered folders
@@ -105,6 +112,7 @@ func New(cfgDB *config.DB, interval time.Duration, log *slog.Logger) *Daemon {
 		debounceDuration: 2 * time.Second,
 		syncTickerReset:  make(chan time.Duration, 1),
 		bus:              newEventBus(),
+		providers:        make(map[string]cloudfiles.Provider),
 	}
 }
 
@@ -144,6 +152,11 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	// Filesystem watcher for auto-sync on change.
 	d.startWatcher(ctx)
 
+	// Connect cloudfiles providers for on-demand folders eagerly so the OS
+	// has a callback target the moment the user opens an Explorer window —
+	// otherwise placeholder access would time out until the next sync cycle.
+	d.connectOnDemandProviders()
+
 	// Periodic sync loop.
 	go d.syncLoop(ctx)
 
@@ -167,6 +180,7 @@ func (d *Daemon) Run(ctx context.Context, sockPath string) error {
 	<-ctx.Done()
 	_ = ln.Close()
 	_ = os.Remove(sockPath)
+	d.stopAllProviders()
 	d.log.Info("[daemon] stopped")
 	return nil
 }
@@ -188,6 +202,25 @@ func (d *Daemon) syncLoop(ctx context.Context) {
 			d.log.Info("[daemon] sync interval updated", "interval", newInterval)
 		case <-t.C:
 			d.syncAll()
+		}
+	}
+}
+
+// connectOnDemandProviders calls ensureProvider for every registered folder
+// whose Settings.OnDemand is true, so the CF API callback table is wired up
+// before any Explorer access can happen. Errors are logged inside
+// ensureProvider; this function never blocks the caller for long because
+// Provider.Start is intended to be quick (registry + connect, no I/O).
+// On non-Windows builds ensureProvider is a no-op.
+func (d *Daemon) connectOnDemandProviders() {
+	folders, err := d.cfgDB.All()
+	if err != nil {
+		d.log.Error("[daemon] list folders for on-demand startup", "err", err)
+		return
+	}
+	for _, f := range folders {
+		if f.Settings.OnDemand {
+			d.ensureProvider(f)
 		}
 	}
 }
@@ -277,6 +310,11 @@ func (d *Daemon) syncFolder(f config.Folder) {
 	metadataStreams := d.metadataStreams
 	d.mu.Unlock()
 
+	var placeholder engine.PlaceholderFS
+	if f.Settings.OnDemand {
+		placeholder = d.ensureProvider(f)
+	}
+
 	cfg := engine.Config{
 		Ctx:             ctx,
 		LocalRoot:       f.LocalRoot,
@@ -286,11 +324,12 @@ func (d *Daemon) syncFolder(f config.Folder) {
 		Password:        password,
 		DBPath:          filepath.Join(f.LocalRoot, ".sync.db"),
 		FolderLog:       fl,
+		Placeholders:    placeholder,
 		SyncHiddenFiles: f.Settings.SyncHiddenFiles,
 		UploadLimiter:   uploadLimiter,
 		DownloadLimiter: downloadLimiter,
-		TransferStreams:  transferStreams,
-		MetadataStreams:  metadataStreams,
+		TransferStreams: transferStreams,
+		MetadataStreams: metadataStreams,
 		OnProgress: func(done, total int, current string, uploadBps, downloadBps, bytesDone, bytesTotal int64) {
 			d.bus.publish(ipc.Event{
 				Type:   ipc.EventSyncProgress,
@@ -458,6 +497,11 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		d.log.Info("[daemon] add: registered folder", "folder", req.Folder.Name)
 		d.updateFolderWatch(req.Folder)
+		// Connect the cloudfiles provider eagerly so Explorer access works
+		// before the first sync runs. No-op on non-Windows.
+		if req.Folder.Settings.OnDemand {
+			d.ensureProvider(req.Folder)
+		}
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderAdded, FolderData: &req.Folder})
 		return ok()
 
@@ -478,9 +522,18 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if err := d.cfgDB.Remove(req.Name); err != nil {
 			return fail(err.Error())
 		}
+		// localRoot drives both the fsnotify watch teardown and the
+		// OS-level sync-root unregister. Folder lookup may legitimately
+		// return f == nil (e.g., already-removed entry); in that case we
+		// have no path to feed cloudfiles.UnregisterSyncRoot, so we just
+		// drop the cached provider and stop. The OS-level registration —
+		// if any — has to be cleaned up out-of-band in that edge case.
+		var localRoot string
 		if f != nil {
+			localRoot = f.LocalRoot
 			d.removeFolderWatch(f.Name, f.LocalRoot)
 		}
+		d.removeFolderProvider(req.Name, localRoot)
 		d.log.Info("[daemon] remove: removed folder", "folder", req.Name)
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderRemoved, Folder: req.Name})
 		return ok()
@@ -504,7 +557,14 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		if oldFolder != nil {
 			d.removeFolderWatch(oldFolder.Name, oldFolder.LocalRoot)
 		}
+		// Stop the existing provider so it is re-created with the updated
+		// LocalRoot / RemoteBase. Then reconnect eagerly if the folder is
+		// still on-demand, so Explorer access keeps working.
+		d.stopFolderProvider(req.Folder.Name)
 		d.updateFolderWatch(req.Folder)
+		if req.Folder.Settings.OnDemand {
+			d.ensureProvider(req.Folder)
+		}
 		d.log.Info("[daemon] update: updated folder", "folder", req.Folder.Name, "selected", req.Folder.Folders, "settings", fmt.Sprintf("%+v", req.Folder.Settings))
 		d.bus.publish(ipc.Event{Type: ipc.EventFolderUpdated, FolderData: &req.Folder})
 		return ok()
@@ -833,6 +893,46 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		}
 		d.log.Debug("[daemon] list-conflicts", "count", len(conflicts))
 		return ipc.Response{OK: true, Conflicts: conflicts}
+
+	case ipc.CmdPin, ipc.CmdUnpin:
+		if req.Name == "" || req.Path == "" {
+			return fail("pin/unpin requires both name and path")
+		}
+		f, err := d.cfgDB.Get(req.Name)
+		if err != nil {
+			return fail(err.Error())
+		}
+		if f == nil {
+			return fail(fmt.Sprintf("folder %q not found", req.Name))
+		}
+		if !f.Settings.OnDemand {
+			return fail(fmt.Sprintf("folder %q is not on-demand", req.Name))
+		}
+		sdb, err := db.Open(filepath.Join(f.LocalRoot, ".sync.db"))
+		if err != nil {
+			return fail(err.Error())
+		}
+		defer sdb.Close()
+		pin := req.Cmd == ipc.CmdPin
+		if pin {
+			if err := sdb.Pin(req.Path); err != nil {
+				return fail(err.Error())
+			}
+		} else {
+			if err := sdb.Unpin(req.Path); err != nil {
+				return fail(err.Error())
+			}
+		}
+		// Apply the OS-side pin state best-effort. On non-Windows
+		// SetPinState returns ErrUnsupported and we just log it; the DB
+		// row above is the source of truth and gets re-applied each cycle.
+		abs := filepath.Join(f.LocalRoot, req.Path)
+		if err := cloudfiles.SetPinState(abs, pin); err != nil {
+			d.log.Warn("[daemon] CF SetPinState",
+				"cmd", req.Cmd, "folder", req.Name, "path", req.Path, "err", err)
+		}
+		d.log.Info("[daemon] pin op", "cmd", req.Cmd, "folder", req.Name, "path", req.Path)
+		return ok()
 
 	default:
 		d.log.Error("[daemon] unknown command", "cmd", req.Cmd)
