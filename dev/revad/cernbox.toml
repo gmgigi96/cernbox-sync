@@ -4,6 +4,10 @@
 internal_gateway = "revad"
 provider_domain = "revad"
 machine_api_key = "machine-api-key"
+# SQLite stores shared by the login flow, the OCS grant handlers and the
+# app password provider. They live on the tmpfs, so they reset with the container.
+appauth_db = "/tmp/appauth.db?_busy_timeout=5000&_journal_mode=WAL"
+loginflow_db = "/tmp/loginflow.db?_busy_timeout=5000&_journal_mode=WAL"
 
 [http]
 
@@ -41,6 +45,7 @@ driver = "static"
 basic = "{{ grpc.services.authprovider[0].address }}"
 bearer = "{{ grpc.services.authprovider[0].address }}"
 machine = "{{ grpc.services.authprovider[1].address }}"
+appauth = "{{ grpc.services.authprovider[2].address }}"
 
 [[grpc.services.authprovider]]
 auth_manager = "json"
@@ -54,6 +59,18 @@ auth_manager = "machine"
 [grpc.services.authprovider.auth_managers.machine]
 api_key = "{{ vars.machine_api_key }}"
 gateway_addr = "{{ vars.internal_gateway }}:19000"
+
+# App passwords minted by the login flow (see LOGIN FLOW below). Basic-Auth
+# credentials sent by sync clients ("mirall" User-Agent) are checked here.
+[[grpc.services.authprovider]]
+auth_manager = "appauth"
+
+[grpc.services.applicationauth]
+driver = "sql"
+
+[grpc.services.applicationauth.drivers.sql]
+db_engine = "sqlite"
+db_name = "{{ vars.appauth_db }}"
 
 
 ### STORAGE ###
@@ -124,11 +141,12 @@ groups = "/etc/revad/groups.demo.json"
 ### HTTP ENDPOINTS ###
 
 [http.middlewares.auth]
-credential_chain = ["publicshares", "basic", "bearer"]
+credential_chain = ["publicshares", "basic", "bearer", "appauth"]
 token_strategy_chain = ["bearer", "header"]
 
 [http.middlewares.auth.credentials_by_user_agent]
-"mirall" = "basic"
+# Sync clients (Nextcloud desktop, cernbox-sync) authenticate with app passwords.
+"mirall" = "appauth"
 
 [http.services.datagateway]
 address = ":80"
@@ -136,6 +154,9 @@ address = ":80"
 [[http.services.dataprovider]]
 driver = "eos"
 insecure = true
+# Since reva v3.13 the storage provider discovers its data provider through the
+# service registry by mount id.
+mount_id = "localhome"
 
 [http.services.dataprovider.drivers.eos]
 namespace = "/"
@@ -163,6 +184,13 @@ additional_info_attribute = "{{.Username}} ({{.Mail}})"
 cache_warmup_driver = "first-request"
 resource_info_cache_ttl = 60
 resource_info_cache_type = "memory"
+# Must be at least 32 characters: otherwise the cloud/user handlers (including
+# the login flow grant/deny endpoints) are left uninitialised.
+signing_key_secret = "dev-signing-key-secret-0123456789abcdef"
+
+[http.services.ocs.loginflow_store_drivers.sql]
+db_engine = "sqlite"
+db_name = "{{ vars.loginflow_db }}"
 
 [http.services.ocs.config]
 version = "1.8"
@@ -243,6 +271,34 @@ major = 10
 minor = 0
 micro = 11
 string = "10.0.11"
+
+### LOGIN FLOW ###
+# Nextcloud Login Flow V2 for sync clients, served at /index.php/login/v2.
+# The authenticated grant/deny/info endpoints live in OCS under
+# /ocs/v2.php/cloud/user/login-flow/{logintoken}. There is no web UI in the dev
+# environment: grant access with dev/scripts/loginflow.sh.
+
+[http.services.loginflow]
+address = ":80"
+server_base_url = "http://localhost"
+webui_url = "http://localhost"
+flow_ttl_seconds = 1200
+appauth_driver = "sql"
+store_driver = "sql"
+
+[http.services.loginflow.appauth_drivers.sql]
+db_engine = "sqlite"
+db_name = "{{ vars.appauth_db }}"
+
+[http.services.loginflow.store_drivers.sql]
+db_engine = "sqlite"
+db_name = "{{ vars.loginflow_db }}"
+
+[http.services.loginflow.ratelimit]
+init_per_ip_per_min = 20
+poll_per_ip_per_min = 120
+poll_per_token_per_min = 30
+poll_wait_ms = 5000
 
 [http.services.ocdav]
 address = ":80"

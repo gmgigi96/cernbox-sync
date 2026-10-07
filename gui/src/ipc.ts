@@ -11,8 +11,20 @@ export const ipc = {
   getAccount(): Promise<Account | null> {
     return invoke<Account | null>("ipc_get_account");
   },
-  setAccount(username: string, password: string): Promise<void> {
-    return invoke("ipc_set_account", { username, password });
+  /** Starts a browser login flow; resolves to the URL the user must open. */
+  loginFlowStart(serverUrl: string): Promise<string> {
+    return invoke<string>("login_flow_start", { serverUrl });
+  },
+  /**
+   * Polls the current login flow once. Resolves to the login name once access
+   * has been granted (the account is then stored in the daemon), or null while
+   * still waiting.
+   */
+  loginFlowPoll(): Promise<string | null> {
+    return invoke<string | null>("login_flow_poll");
+  },
+  loginFlowCancel(): Promise<void> {
+    return invoke("login_flow_cancel");
   },
   update(name: string, localRoot: string, remoteBase: string, folders?: string[], syncHiddenFiles?: boolean, autoSyncOnChange?: boolean): Promise<void> {
     return invoke("ipc_update", { name, localRoot, remoteBase, folders: folders ?? null, syncHiddenFiles: syncHiddenFiles ?? null, autoSyncOnChange: autoSyncOnChange ?? null });
