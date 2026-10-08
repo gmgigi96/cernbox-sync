@@ -139,12 +139,13 @@ Stored in the config DB and changeable at runtime without a daemon restart via `
 
 On first start (no account, or nothing synced yet) the GUI opens a setup wizard:
 
-1. **Welcome** — checks whether the ownCloud / CERNBox desktop client syncs folders on this computer.
+1. **Welcome** — meanwhile checks whether the ownCloud / CERNBox desktop client syncs folders on this computer.
 2. **Account** — sign in, pre-filled with the desktop client's username when there is one. An account already configured is kept, with the option to use a different one.
 3. **Import** — only when the desktop client was found: take over its folders (see below).
 4. **Interface** — simple or advanced view; a GUI-only preference stored in the webview's local storage.
-5. **Preferences** — sync interval and bandwidth limits, saved as daemon settings.
-6. **Finish** — summary, then straight to adding a folder or to the app.
+5. **Finish** — summary, then straight to adding a folder or to the app.
+
+Sync settings (interval, bandwidth limits, …) keep their defaults; they can be changed later from Settings.
 
 Once finished it is not shown again (the flag lives in the webview's local storage), except when no account is configured. Installs that already sync folders skip it.
 

@@ -11,7 +11,7 @@ const step = (page: import("@playwright/test").Page) =>
   page.getByRole("list", { name: "Setup progress" }).locator("[aria-current=step]");
 
 test.describe("Setup wizard", () => {
-  test("signs in, saves the choices and is not shown again", async ({ appPageNoAccount: page }) => {
+  test("signs in, saves the interface choice and is not shown again", async ({ appPageNoAccount: page }) => {
     await expect(page.getByRole("heading", { name: "Welcome to CERNBox Sync" })).toBeVisible();
     await expect(page.getByRole("list", { name: "Setup progress" })).not.toContainText("Import");
     await page.getByRole("button", { name: "Get started" }).click();
@@ -25,17 +25,12 @@ test.describe("Setup wizard", () => {
     await expect(page.getByRole("radio", { name: /Advanced/ })).toHaveAttribute("aria-checked", "true");
     await page.getByRole("button", { name: "Continue" }).click();
 
-    await expect(step(page)).toContainText("Preferences");
-    await page.getByRole("combobox", { name: "Sync interval" }).selectOption("15m");
-    await page.getByRole("button", { name: "Continue" }).click();
-
     await expect(page.getByRole("heading", { name: "You're all set" })).toBeVisible();
     await expect(page.getByText("Signed in as einstein")).toBeVisible();
     await page.getByRole("button", { name: "Later" }).click();
 
-    // The main app, with the interval saved in the daemon.
-    await page.getByRole("button", { name: /^Settings$/i }).click();
-    await expect(page.locator("input[placeholder='e.g. 5m']")).toHaveValue(/^15m(0s)?$/);
+    // The main app.
+    await expect(page.getByRole("button", { name: /^Settings$/i })).toBeVisible();
 
     await page.reload();
     await page.waitForSelector("#root > *");
@@ -49,8 +44,7 @@ test.describe("Setup wizard", () => {
     await page.getByRole("button", { name: "Continue" }).click();
 
     await page.getByRole("button", { name: "Continue" }).click(); // interface
-    await expect(step(page)).toContainText("Preferences");
-    await page.getByRole("button", { name: "Skip" }).click();
+    await expect(step(page)).toContainText("Finish");
 
     await page.getByRole("button", { name: "Add a folder" }).click();
     await expect(page.getByRole("heading", { name: "Welcome to CERNBox Sync" })).not.toBeVisible();

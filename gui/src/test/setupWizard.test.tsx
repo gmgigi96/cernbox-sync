@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
-import { SetupWizard, durationSeconds, needsSetup, wizardSteps } from "../pages/SetupWizard";
+import { SetupWizard, needsSetup, wizardSteps } from "../pages/SetupWizard";
 import { useUiStore } from "../store/uiStore";
 import type { DaemonState } from "../hooks/useDaemon";
 import type { Account, LegacyClient } from "../types";
@@ -63,16 +63,7 @@ const legacyClient: LegacyClient = {
   ],
 };
 
-const SETTINGS = {
-  logRotateMaxAge: "168h",
-  syncInterval: "5m0s",
-  uploadBandwidth: 0,
-  downloadBandwidth: 2 * 1024 * 1024,
-  transferStreams: 4,
-  metadataStreams: 2,
-};
-
-/** Mocks the daemon commands the wizard uses. */
+/** Mocks the daemon commands the wizard uses; any other command fails the test. */
 function mockDaemon({ legacy = [] as LegacyClient[], account = ACCOUNT as Account | null } = {}) {
   vi.mocked(invoke).mockImplementation(async (cmd) => {
     switch (cmd) {
@@ -82,10 +73,6 @@ function mockDaemon({ legacy = [] as LegacyClient[], account = ACCOUNT as Accoun
         return undefined;
       case "ipc_get_account":
         return account;
-      case "ipc_get_settings":
-        return SETTINGS;
-      case "ipc_set_settings":
-        return undefined;
       default:
         throw new Error(`unexpected command ${cmd}`);
     }
@@ -130,33 +117,21 @@ describe("needsSetup", () => {
   });
 });
 
-describe("durationSeconds", () => {
-  it("reads the durations of the daemon and of the choices alike", () => {
-    expect(durationSeconds("5m")).toBe(300);
-    expect(durationSeconds("5m0s")).toBe(300);
-    expect(durationSeconds("1h0m0s")).toBe(durationSeconds("1h"));
-    expect(durationSeconds("1m30s")).toBe(90);
-    expect(durationSeconds("soon")).toBeNaN();
-    expect(durationSeconds("5mx")).toBeNaN();
-  });
-});
-
 describe("wizardSteps", () => {
   it("offers the import only when a desktop client syncs folders", () => {
-    expect(wizardSteps(0)).toEqual(["welcome", "account", "interface", "preferences", "done"]);
-    expect(wizardSteps(2)).toEqual(["welcome", "account", "import", "interface", "preferences", "done"]);
+    expect(wizardSteps(0)).toEqual(["welcome", "account", "interface", "done"]);
+    expect(wizardSteps(2)).toEqual(["welcome", "account", "import", "interface", "done"]);
   });
 });
 
 describe("SetupWizard", () => {
-  it("walks a new user through sign-in, interface and preferences", async () => {
+  it("walks a new user through sign-in and the interface choice", async () => {
     mockDaemon();
     const { onFinish, onAccountChanged } = renderWizard();
 
     // Welcome: the button is enabled once the desktop-client detection answered.
     const start = await screen.findByRole("button", { name: /get started/i });
     await waitFor(() => expect(start).toBeEnabled());
-    expect(screen.queryByText(/desktop client on this computer/)).not.toBeInTheDocument();
     fireEvent.click(start);
 
     // Account: no import step without a desktop client.
@@ -177,23 +152,9 @@ describe("SetupWizard", () => {
     expect(localStorage.getItem("cernbox-sync-ui")).toContain('"advanced"');
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
 
-    // Preferences: shows the daemon's values and saves the edits, keeping the rest.
-    expect(currentStep()).toHaveTextContent("Preferences");
-    const interval = screen.getByRole("combobox", { name: "Sync interval" });
-    await waitFor(() => expect(interval).toHaveValue("5m"));
-    expect(await screen.findByDisplayValue("2")).toBeInTheDocument(); // 2 MB/s download limit
-    fireEvent.change(interval, { target: { value: "15m" } });
-    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-
-    await waitFor(() => expect(currentStep()).toHaveTextContent("Finish"));
-    expect(invoke).toHaveBeenCalledWith("ipc_set_settings", {
-      logRotateMaxAge: "168h",
-      syncInterval: "15m",
-      uploadBandwidth: 0,
-      downloadBandwidth: 2 * 1024 * 1024,
-      transferStreams: 4,
-      metadataStreams: 2,
-    });
+    // Sync settings are left to their defaults.
+    expect(currentStep()).toHaveTextContent("Finish");
+    expect(invoke).not.toHaveBeenCalledWith("ipc_set_settings", expect.anything());
 
     // Done: nothing synced yet, so adding a folder is the main action.
     expect(screen.getByText(/advanced interface/i)).toBeInTheDocument();
@@ -205,12 +166,15 @@ describe("SetupWizard", () => {
     mockDaemon({ legacy: [legacyClient] });
     renderWizard();
 
-    expect(await screen.findByText(/CERNBox desktop client on this computer syncs 1 folder/)).toBeInTheDocument();
-    expect(screen.getByText("Import")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /get started/i }));
+    // The import is only shown as a step; neither welcome nor sign-in announce it.
+    expect(await screen.findByText("Import")).toBeInTheDocument();
+    expect(screen.queryByText(/desktop client/)).not.toBeInTheDocument();
+    const start = screen.getByRole("button", { name: /get started/i });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
 
     expect(screen.getByPlaceholderText("your-cern-username")).toHaveValue("legacyuser");
-    expect(screen.getByText(/Sign in to import it next/)).toBeInTheDocument();
+    expect(screen.queryByText(/desktop client/)).not.toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText("••••••••"), { target: { value: "secret" } });
     fireEvent.click(screen.getByRole("button", { name: /get started/i }));
 
@@ -241,7 +205,7 @@ describe("SetupWizard", () => {
     expect(screen.getByPlaceholderText("your-cern-username")).toBeInTheDocument();
   });
 
-  it("skips the preferences without changing them", async () => {
+  it("opens the app at the end when folders are already synced", async () => {
     mockDaemon();
     const { onFinish } = renderWizard({
       account: ACCOUNT,
@@ -253,11 +217,8 @@ describe("SetupWizard", () => {
     fireEvent.click(start);
     fireEvent.click(screen.getByRole("button", { name: /continue/i })); // account
     fireEvent.click(screen.getByRole("button", { name: /continue/i })); // interface
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("ipc_get_settings"));
-    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
 
     expect(currentStep()).toHaveTextContent("Finish");
-    expect(invoke).not.toHaveBeenCalledWith("ipc_set_settings", expect.anything());
     expect(screen.getByText(/1 folder is kept in sync/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /open cernbox sync/i }));
     expect(onFinish).toHaveBeenCalledWith(false);

@@ -1,18 +1,16 @@
 import { useState } from "react";
-import { User, Lock, AlertCircle, ArrowRight, FolderSync } from "lucide-react";
+import { User, Lock, AlertCircle, ArrowRight } from "lucide-react";
 import { ipc } from "../ipc";
 
 interface AccountSetupProps {
   onDone: () => void;
   /** Pre-filled username, e.g. the one used by a detected desktop client. */
   suggestedUsername?: string;
-  /** Informational message shown above the form. */
-  notice?: string;
   /** Rendered inside the setup wizard, which provides the window frame. */
   embedded?: boolean;
 }
 
-export function AccountSetup({ onDone, suggestedUsername, notice, embedded }: AccountSetupProps) {
+export function AccountSetup({ onDone, suggestedUsername, embedded }: AccountSetupProps) {
   const [username, setUsername] = useState(suggestedUsername ?? "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -60,13 +58,6 @@ export function AccountSetup({ onDone, suggestedUsername, notice, embedded }: Ac
           <br />
           These will be used for all sync folders.
         </p>
-
-        {notice && (
-          <div style={styles.noticeBox}>
-            <FolderSync size={14} strokeWidth={1.5} style={{ flexShrink: 0, marginTop: 2 }} />
-            {notice}
-          </div>
-        )}
 
         <form onSubmit={handleSubmit} style={styles.form}>
           <div style={styles.field}>
@@ -199,19 +190,6 @@ const styles: Record<string, React.CSSProperties> = {
     outline: "none",
     fontFamily: "var(--font-family)",
     width: "100%",
-  },
-  noticeBox: {
-    width: "100%",
-    display: "flex",
-    alignItems: "flex-start",
-    gap: "0.5rem",
-    background: "rgba(180,197,255,0.08)",
-    borderRadius: "var(--radius-md)",
-    padding: "0.625rem 0.75rem",
-    marginBottom: "1.25rem",
-    fontSize: "0.8125rem",
-    lineHeight: 1.5,
-    color: "var(--on-surface-variant)",
   },
   errorBox: {
     display: "flex",

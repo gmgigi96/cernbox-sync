@@ -81,7 +81,7 @@ Conflict resolution is hardcoded to server wins; the local file is renamed `.con
 - `synclog` — per-folder activity log files with rotation
 - `gui/` — Tauri app: `src-tauri/src/lib.rs` (Rust command handlers), `src/` (React/TypeScript pages and components)
 
-**GUI pages:** SetupWizard (first start: account, desktop-client import, view mode, sync preferences), Dashboard, Settings, Folders, FolderDetail, AccountSetup, LegacyImport (desktop-client import, a wizard step), SpacePicker (remote WebDAV browser), FolderPicker, LocalFolderPicker
+**GUI pages:** SetupWizard (first start: account, desktop-client import, view mode), Dashboard, Settings, Folders, FolderDetail, AccountSetup, LegacyImport (desktop-client import, a wizard step), SpacePicker (remote WebDAV browser), FolderPicker, LocalFolderPicker
 
 ## Project Rules
 

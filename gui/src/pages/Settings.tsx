@@ -29,7 +29,7 @@ function displayToBytes(value: number, unit: BwUnit): number {
 
 // ── BandwidthInput component ──────────────────────────────────────────────────
 
-export function BandwidthInput({
+function BandwidthInput({
   bytes,
   onChange,
   disabled,
