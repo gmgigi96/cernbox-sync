@@ -323,3 +323,51 @@ func TestSyncState_Delete_NonExistent_NoError(t *testing.T) {
 	}
 }
 
+// ── baseline seeding ──────────────────────────────────────────────────────────
+
+func TestSyncState_SeedBaseline_EmptyDB(t *testing.T) {
+	d := openDB(t)
+	mt := time.Unix(1700000000, 0)
+	seeded, err := d.SeedBaseline([]db.Entry{
+		{Path: "docs", ETag: "e-docs", IsDir: true},
+		{Path: "docs/a.txt", ETag: "e-a", Size: 3, LastModified: mt, FileID: "id-a"},
+	})
+	if err != nil {
+		t.Fatalf("SeedBaseline: %v", err)
+	}
+	if !seeded {
+		t.Fatal("expected seeded=true on an empty DB")
+	}
+	all, err := d.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(all))
+	}
+	a := all["docs/a.txt"]
+	if a == nil || a.ETag != "e-a" || a.Size != 3 || !a.LastModified.Equal(mt) || a.FileID != "id-a" || a.IsDir {
+		t.Errorf("unexpected entry: %+v", a)
+	}
+	if !all["docs"].IsDir {
+		t.Error("docs should be a directory")
+	}
+}
+
+func TestSyncState_SeedBaseline_KeepsExistingState(t *testing.T) {
+	d := openDB(t)
+	if err := d.Upsert(db.Entry{Path: "mine.txt", ETag: "e-mine"}); err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := d.SeedBaseline([]db.Entry{{Path: "theirs.txt", ETag: "e-theirs"}})
+	if err != nil {
+		t.Fatalf("SeedBaseline: %v", err)
+	}
+	if seeded {
+		t.Fatal("expected seeded=false when sync state already exists")
+	}
+	all, _ := d.All()
+	if len(all) != 1 || all["mine.txt"] == nil {
+		t.Errorf("existing state must be left untouched, got %v", all)
+	}
+}

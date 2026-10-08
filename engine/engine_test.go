@@ -815,6 +815,166 @@ func TestSync_FirstRun_LocalWins(t *testing.T) {
 	}
 }
 
+// A folder taken over from another sync client is registered with that
+// client's last-synced snapshot as baseline. The first sync must only transfer
+// what changed since then: no re-upload of unchanged files, and remote edits
+// made in the meantime are downloaded rather than overwritten.
+func TestSync_ImportedBaseline_OnlyTransfersChanges(t *testing.T) {
+	env := setup(t)
+	synced := time.Date(2025, 3, 1, 9, 0, 0, 0, time.UTC)
+	later := synced.Add(48 * time.Hour)
+
+	env.dav.addDir("docs", "etag-docs-v2")
+	env.dav.addFile("docs/same.txt", "same", "etag-same", synced)
+	env.dav.addFile("docs/remote-edit.txt", "edited on server", "etag-remote-v2", later)
+	env.dav.addFile("docs/local-edit.txt", "old", "etag-local", synced)
+
+	env.writeLocalAt("docs/same.txt", "same", synced)
+	env.writeLocalAt("docs/remote-edit.txt", "old", synced)
+	env.writeLocalAt("docs/local-edit.txt", "edited locally", later)
+
+	env.seedDB(
+		db.Entry{Path: "docs", ETag: "etag-docs-v1", IsDir: true},
+		db.Entry{Path: "docs/same.txt", ETag: "etag-same", Size: 4, LastModified: synced},
+		db.Entry{Path: "docs/remote-edit.txt", ETag: "etag-remote-v1", Size: 3, LastModified: synced},
+		db.Entry{Path: "docs/local-edit.txt", ETag: "etag-local", Size: 3, LastModified: synced},
+	)
+
+	env.run()
+
+	if env.readLocal("docs/remote-edit.txt") != "edited on server" {
+		t.Error("remote edit should have been downloaded")
+	}
+	if contains(env.dav.puts, "docs/remote-edit.txt") || contains(env.dav.puts, "docs/same.txt") {
+		t.Errorf("unchanged or remotely edited files must not be uploaded; puts=%v", env.dav.puts)
+	}
+	if !contains(env.dav.puts, "docs/local-edit.txt") {
+		t.Errorf("local edit should have been uploaded; puts=%v", env.dav.puts)
+	}
+	if c := env.conflictFiles("docs"); len(c) != 0 {
+		t.Errorf("no conflicts expected, got %v", c)
+	}
+}
+
+// ─── selective sync tests ─────────────────────────────────────────────────────
+
+// Local items outside the selected sub-folders are out of scope: they must be
+// neither uploaded nor deleted, even when the DB knows them.
+func TestSync_SelectiveSync_LocalOutsideSelectionUntouched(t *testing.T) {
+	env := setup(t)
+	mt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	env.dav.addDir("docs", "etag-docs")
+	env.dav.addFile("docs/a.txt", "a", "etag-a", mt)
+	env.dav.addFile("top.txt", "top", "etag-top", mt)
+
+	env.writeLocalAt("docs/a.txt", "a", mt)
+	env.writeLocalAt("top.txt", "top", mt)
+	env.writeLocal("new-at-root.txt", "new")
+	env.mkdirLocal("other")
+	env.seedDB(
+		db.Entry{Path: "docs", ETag: "etag-docs", IsDir: true},
+		db.Entry{Path: "docs/a.txt", ETag: "etag-a", Size: 1, LastModified: mt},
+		db.Entry{Path: "top.txt", ETag: "etag-top", Size: 3, LastModified: mt},
+	)
+	env.cfg.Folders = []string{"docs"}
+
+	env.run()
+
+	env.assertNoActions("selective sync")
+	for _, p := range []string{"top.txt", "new-at-root.txt", "other"} {
+		if !env.localExists(p) {
+			t.Errorf("%s outside the selection must be left alone", p)
+		}
+	}
+}
+
+// A nested selection syncs only that sub-tree; its ancestors are not
+// created remotely and siblings are not downloaded.
+func TestSync_SelectiveSync_NestedSelection(t *testing.T) {
+	env := setup(t)
+	mt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	env.dav.addDir("a", "etag-a")
+	env.dav.addDir("a/c", "etag-c")
+	env.dav.addFile("a/c/x.txt", "x", "etag-x", mt)
+	env.dav.addDir("a/d", "etag-d")
+	env.dav.addFile("a/d/y.txt", "y", "etag-y", mt)
+	env.dav.addFile("a/z.txt", "z", "etag-z", mt)
+	env.cfg.Folders = []string{"a/c"}
+
+	env.run()
+
+	if env.readLocal("a/c/x.txt") != "x" {
+		t.Error("a/c/x.txt should be downloaded")
+	}
+	if env.localExists("a/d") || env.localExists("a/z.txt") {
+		t.Error("items outside the selection must not be downloaded")
+	}
+	if len(env.dav.mkcols) != 0 || len(env.dav.puts) != 0 {
+		t.Errorf("no remote writes expected; mkcols=%v puts=%v", env.dav.mkcols, env.dav.puts)
+	}
+
+	env.dav.resetSideEffects()
+	env.run()
+	env.assertNoActions("second run")
+	if !env.localExists("a/c/x.txt") {
+		t.Error("a/c/x.txt must survive the second run")
+	}
+}
+
+// Selections saved by the GUI are URL-encoded (taken from server hrefs) while
+// the engine works with plain paths. Files in such a folder must still be in
+// scope: never hidden (which would make them look locally deleted) and new
+// local files uploaded.
+func TestSync_SelectiveSync_EncodedSelection(t *testing.T) {
+	env := setup(t)
+	mt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	env.dav.addDir("My Docs", "etag-docs")
+	env.dav.addFile("My Docs/a.txt", "a", "etag-a", mt)
+	env.writeLocalAt("My Docs/a.txt", "a", mt)
+	env.writeLocal("My Docs/new.txt", "new")
+	env.seedDB(
+		db.Entry{Path: "My Docs", ETag: "etag-docs", IsDir: true},
+		db.Entry{Path: "My Docs/a.txt", ETag: "etag-a", Size: 1, LastModified: mt},
+	)
+	env.cfg.Folders = []string{"My%20Docs"}
+
+	env.run()
+
+	if len(env.dav.deletes) != 0 {
+		t.Fatalf("nothing may be deleted remotely; deletes=%v", env.dav.deletes)
+	}
+	if len(env.dav.puts) != 1 || env.dav.puts[0] != "My Docs/new.txt" {
+		t.Errorf("only the new local file should be uploaded; puts=%v", env.dav.puts)
+	}
+}
+
+// ─── sync metadata tests ──────────────────────────────────────────────────────
+
+// Bookkeeping files of this engine and of the ownCloud desktop client are
+// never transferred, even when hidden files are synced.
+func TestSync_SyncMetadata_NeverTransferred(t *testing.T) {
+	env := setup(t)
+	env.cfg.SyncHiddenFiles = true
+	for _, name := range []string{
+		".sync_journal.db", ".sync_journal.db-wal", ".sync_0a1b2c3d4e5f.db",
+		"._sync_0a1b2c3d4e5f.db", ".csync_journal.db", ".owncloudsync.log",
+		".sync.db-journal", ".tmp-sync-123",
+	} {
+		env.writeLocal(name, "internal")
+	}
+	env.writeLocal(".profile", "regular hidden file")
+	env.dav.addFile(".sync_ffffffffffff.db", "other client's journal", "etag-j", time.Now())
+
+	env.run()
+
+	if len(env.dav.puts) != 1 || env.dav.puts[0] != ".profile" {
+		t.Errorf("only .profile should be uploaded; puts=%v", env.dav.puts)
+	}
+	if env.localExists(".sync_ffffffffffff.db") {
+		t.Error("remote client journal must not be downloaded")
+	}
+}
+
 // ─── hidden file tests ────────────────────────────────────────────────────────
 
 // Remote has a hidden file (.dotfile); SyncHiddenFiles is false (default).

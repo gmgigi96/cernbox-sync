@@ -12,11 +12,24 @@ import { AccountSetup } from "./pages/AccountSetup";
 import { SpacePicker } from "./pages/SpacePicker";
 import { FolderPicker } from "./pages/FolderPicker";
 import { LocalFolderPicker } from "./pages/LocalFolderPicker";
+import { LegacyImport } from "./pages/LegacyImport";
 import { useDaemon } from "./hooks/useDaemon";
 import { ipc } from "./ipc";
-import type { Account, Folder, NavPage, Space } from "./types";
+import type { Account, Folder, LegacyClient, NavPage, Space } from "./types";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL;
+
+// Set once the user imported or skipped the folders of an ownCloud / CERNBox
+// desktop client, so the offer is made only on first start.
+const LEGACY_IMPORT_DONE_KEY = "legacyImportDone";
+
+function legacyImportDone(): boolean {
+  try {
+    return localStorage.getItem(LEGACY_IMPORT_DONE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 type FlowStep =
   | { step: "none" }
@@ -84,14 +97,67 @@ export function App() {
       .catch(() => setAccount(false));
   }, []);
 
+  // Folders synced by a desktop client this app can take over, as found by
+  // the daemon. null = not detected yet.
+  const [legacyClients, setLegacyClients] = useState<LegacyClient[] | null>(null);
+  const [legacyImportOpen, setLegacyImportOpen] = useState(false);
+
+  useEffect(() => {
+    if (legacyClients !== null || !daemon.daemonOnline) return;
+    if (legacyImportDone()) {
+      setLegacyClients([]);
+      return;
+    }
+    ipc.legacyDetect(SERVER_URL, false)
+      .then(setLegacyClients)
+      .catch(() => setLegacyClients([]));
+  }, [legacyClients, daemon.daemonOnline]);
+
+  // Offered on first start: signed in, nothing synced yet. Stays open while
+  // importing adds folders, until the user leaves it.
+  useEffect(() => {
+    if (legacyClients?.length && account && !daemon.loading && daemon.daemonOnline && daemon.folders.length === 0) {
+      setLegacyImportOpen(true);
+    }
+  }, [legacyClients, account, daemon.loading, daemon.daemonOnline, daemon.folders.length]);
+
   if (account === null) return null;
 
   if (account === false) {
+    // Wait for the detection to suggest the username of the desktop client.
+    if (daemon.loading || (daemon.daemonOnline && legacyClients === null)) return null;
+    const legacyAccount = (legacyClients ?? []).flatMap((c) => c.accounts.map((a) => ({ client: c, account: a })))[0];
     return (
       <AccountSetup
+        suggestedUsername={legacyAccount?.account.username}
+        notice={
+          legacyAccount &&
+          `The ${legacyAccount.client.app_name} desktop client on this computer syncs ${
+            legacyAccount.account.folders.length === 1 ? "1 folder" : `${legacyAccount.account.folders.length} folders`
+          }. Sign in to import ${legacyAccount.account.folders.length === 1 ? "it" : "them"} next.`
+        }
         onDone={() =>
           ipc.getAccount().then((acc) => setAccount(acc ?? false))
         }
+      />
+    );
+  }
+
+  if (legacyImportOpen && legacyClients?.length) {
+    return (
+      <LegacyImport
+        clients={legacyClients}
+        serverUrl={SERVER_URL}
+        daemon={daemon}
+        onDone={() => {
+          try {
+            localStorage.setItem(LEGACY_IMPORT_DONE_KEY, "1");
+          } catch {
+            // Without storage the offer is simply made again next time.
+          }
+          setLegacyClients([]);
+          setLegacyImportOpen(false);
+        }}
       />
     );
   }

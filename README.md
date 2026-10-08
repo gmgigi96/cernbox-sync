@@ -135,6 +135,17 @@ Stored in the config DB and changeable at runtime without a daemon restart via `
 | `sync_hidden_files` | `false` | Include dot-files in sync |
 | `auto_sync_on_change` | `false` | Trigger an immediate sync when local filesystem events are detected (debounced via `fsnotify`) |
 
+## Migrating from the ownCloud / CERNBox desktop client
+
+On first start (no account and no sync folders yet) the GUI offers to take over the sync folders of a configured ownCloud desktop client, including its CERNBox branding. The daemon does the work (IPC commands `legacy-detect` and `legacy-import`, package `migrate`):
+
+- The configuration is read from `cernbox/cernbox.cfg` or `ownCloud/owncloud.cfg` in `$XDG_CONFIG_HOME` (Linux), `~/Library/Preferences` (macOS) or `%APPDATA%` (Windows), and in the locations used by releases up to 2.4. Stored credentials are never read; the username is pre-filled on the sign-in page.
+- Each folder's remote path is matched to a space and checked on the server. CERNBox addresses spaces by their storage path (e.g. `/eos/project/...`) and the personal space as `/home`.
+- Selective-sync exclusions become the equivalent folder selection. Files next to excluded folders cannot be part of a selection and are no longer synced.
+- The last-synced state recorded in the client's journal (`.sync_journal.db`) seeds the folder's `.sync.db`, so the first sync only transfers what changed since the old client last synced instead of uploading every file again.
+- The paused state, the hidden-files setting and fixed bandwidth limits are carried over, and folders sync on local changes as they did in the desktop client.
+- Folders using virtual files, and folders whose journal is missing while the local folder holds files, are not imported. The import is blocked while the old client runs (it keeps its journal locked); quit it first, and afterwards remove the folders from it so that it does not sync them again.
+
 ## Repository layout
 
 ```
@@ -145,6 +156,7 @@ Stored in the config DB and changeable at runtime without a daemon restart via `
 │       └── main.go              — Daemon entry-point
 ├── ipc/
 │   └── ipc.go                   — Shared IPC protocol: socket path, Request/Response/Event types, Send()
+├── migrate/                     — Import of the ownCloud/CERNBox desktop client's sync folders
 ├── daemon/
 │   ├── daemon.go                — Sync loop, IPC server, goroutine-per-folder dispatch, event bus
 │   └── watcher.go               — fsnotify-based filesystem watcher with per-folder debounce

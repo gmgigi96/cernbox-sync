@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -283,6 +284,9 @@ func Run(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("local scan: %w", err)
 	}
+	if len(cfg.Folders) > 0 {
+		keepSelected(localMap, remoteMap, cfg.Folders)
+	}
 	logf(cfg.FolderLog, "[sync] local resources: %d", len(localMap))
 
 	// ── 4. Classify ──────────────────────────────────────────────────────────
@@ -360,15 +364,16 @@ func scanRemote(wdc *webdav.Client, folders []string, syncHiddenFiles bool, dbSt
 				continue
 			}
 
+			name := rel
+			if idx := strings.LastIndex(rel, "/"); idx >= 0 {
+				name = rel[idx+1:]
+			}
+			if isSyncMetadata(name) {
+				continue
+			}
 			// Skip hidden entries unless enabled.
-			if !syncHiddenFiles {
-				name := rel
-				if idx := strings.LastIndex(rel, "/"); idx >= 0 {
-					name = rel[idx+1:]
-				}
-				if isHidden(name, "") {
-					continue
-				}
+			if !syncHiddenFiles && isHidden(name, "") {
+				continue
 			}
 
 			result[rel] = e
@@ -449,7 +454,7 @@ func scanLocal(root string, syncHiddenFiles bool) (map[string]*localInfo, error)
 
 		// Skip internal files — they live inside the local root but must
 		// never be uploaded or treated as sync-able files.
-		if rel == ".sync.db" || rel == ".sync.log" || isConflictFile(d.Name()) {
+		if rel != "" && (isSyncMetadata(d.Name()) || isConflictFile(d.Name())) {
 			return nil
 		}
 
@@ -474,6 +479,56 @@ func scanLocal(root string, syncHiddenFiles bool) (map[string]*localInfo, error)
 		return nil
 	})
 	return result, err
+}
+
+// isSyncMetadata reports whether name belongs to sync-client bookkeeping that
+// must never be transferred: this engine's state DB (with its SQLite side
+// files), log and download staging files, and the journals and logs that the
+// ownCloud desktop client and its brandings keep inside a sync folder (so a
+// folder taken over from that client does not upload them).
+func isSyncMetadata(name string) bool {
+	switch {
+	case strings.HasPrefix(name, ".sync.db"), name == ".sync.log", strings.HasPrefix(name, ".tmp-sync-"):
+		return true
+	case strings.HasPrefix(name, ".sync_"), strings.HasPrefix(name, "._sync_"):
+		return strings.Contains(name, ".db")
+	case strings.HasPrefix(name, ".csync_journal.db"), strings.HasPrefix(name, ".owncloudsync.log"):
+		return true
+	}
+	return false
+}
+
+// keepSelected removes from localMap every entry outside the selected
+// sub-folders. The remote scan only covers the selection, so anything else
+// (e.g. files at the root of a selectively synced folder) would otherwise look
+// new and be uploaded, or look remotely deleted and be removed locally.
+// Entries seen by the remote scan are always kept, so a selection spelled
+// differently from the scanned paths can never hide a file that exists on
+// both sides (which would look locally deleted).
+func keepSelected(localMap map[string]*localInfo, remoteMap map[string]*webdav.Resource, folders []string) {
+	selection := make([]string, 0, len(folders))
+	for _, f := range folders {
+		// Selections may be stored URL-encoded, as taken from server hrefs.
+		if decoded, err := url.PathUnescape(f); err == nil {
+			f = decoded
+		}
+		selection = append(selection, strings.Trim(f, "/"))
+	}
+	for path := range localMap {
+		if _, scanned := remoteMap[path]; scanned || path == "" {
+			continue
+		}
+		selected := false
+		for _, f := range selection {
+			if path == f || strings.HasPrefix(path, f+"/") {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			delete(localMap, path)
+		}
+	}
 }
 
 // ─── classify ────────────────────────────────────────────────────────────────
