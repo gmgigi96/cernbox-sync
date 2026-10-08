@@ -127,6 +127,47 @@ func (d *DB) Upsert(e Entry) error {
 	return nil
 }
 
+// SeedBaseline records entries as the last-synced snapshot of a folder that
+// has never been synced by this engine, e.g. one previously managed by another
+// sync client. It is a no-op returning false when the DB already holds sync
+// state, so an existing baseline is never overwritten. All entries are written
+// in a single transaction.
+func (d *DB) SeedBaseline(entries []Entry) (bool, error) {
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return false, fmt.Errorf("db seed: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sync_state`).Scan(&n); err != nil {
+		return false, fmt.Errorf("db seed: %w", err)
+	}
+	if n > 0 {
+		return false, nil
+	}
+	stmt, err := tx.Prepare(
+		`INSERT INTO sync_state (path, etag, is_dir, size, last_modified, file_id) VALUES (?, ?, ?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return false, fmt.Errorf("db seed: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, e := range entries {
+		isDir := 0
+		if e.IsDir {
+			isDir = 1
+		}
+		if _, err := stmt.Exec(e.Path, e.ETag, isDir, e.Size, e.LastModified.Unix(), e.FileID); err != nil {
+			return false, fmt.Errorf("db seed %q: %w", e.Path, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("db seed: %w", err)
+	}
+	return true, nil
+}
+
 // AllUnder returns every entry whose path is strictly under the given prefix
 // (i.e. path starts with prefix+"/"). The prefix itself is not included.
 func (d *DB) AllUnder(prefix string) (map[string]*Entry, error) {

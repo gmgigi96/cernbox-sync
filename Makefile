@@ -55,6 +55,7 @@ gui: ## Build the GUI (Tauri app)
 	cd gui && npm install && NO_STRIP=1 npm run tauri build
 
 gui-dev: ## Start the GUI in development mode
+	$(GO) build -o gui/src-tauri/binaries/cernbox-syncd-$$(rustc -vV | awk '/^host:/{print $$2}') ./cmd/cernbox-syncd
 	cd gui && npm install && npm run tauri dev
 
 clean: ## Remove built binaries

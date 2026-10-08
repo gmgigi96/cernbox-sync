@@ -70,6 +70,15 @@ struct IpcRequest {
     account: Option<AccountPayload>,
 }
 
+/// A `legacy-detect` / `legacy-import` request. The import from the
+/// ownCloud / CERNBox desktop client is implemented by the daemon, so the
+/// payloads are passed through as they are.
+#[derive(Debug, Serialize)]
+struct LegacyRequest {
+    cmd: &'static str,
+    legacy: serde_json::Value,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ConflictEntry {
     folder: String,
@@ -93,6 +102,10 @@ struct IpcResponse {
     account: Option<AccountPayload>,
     #[serde(default)]
     conflicts: Vec<ConflictEntry>,
+    #[serde(default)]
+    legacy: serde_json::Value,
+    #[serde(default)]
+    legacy_import: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -146,7 +159,7 @@ fn socket_path() -> String {
 
 // ── Low-level send/receive ─────────────────────────────────────────────────
 
-fn ipc_send(req: &IpcRequest) -> Result<IpcResponse, String> {
+fn ipc_send<T: Serialize>(req: &T) -> Result<IpcResponse, String> {
     let path = socket_path();
 
     #[cfg(unix)]
@@ -523,6 +536,28 @@ fn ipc_resume(name: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
+// ── Import from the ownCloud / CERNBox desktop client ──────────────────────────
+
+#[tauri::command]
+async fn ipc_legacy_detect(server_url: String, plan: bool) -> Result<serde_json::Value, String> {
+    let legacy = serde_json::json!({ "server_url": server_url, "plan": plan });
+    Ok(legacy_request("legacy-detect", legacy).await?.legacy)
+}
+
+#[tauri::command]
+async fn ipc_legacy_import(server_url: String, folders: serde_json::Value, import_limits: bool) -> Result<serde_json::Value, String> {
+    let legacy = serde_json::json!({ "server_url": server_url, "folders": folders, "import_limits": import_limits });
+    Ok(legacy_request("legacy-import", legacy).await?.legacy_import)
+}
+
+/// Sends a legacy request off the main thread: the daemon checks every folder
+/// on the server, which takes a while.
+async fn legacy_request(cmd: &'static str, legacy: serde_json::Value) -> Result<IpcResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || ipc_send(&LegacyRequest { cmd, legacy }))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 // ── Push event types (mirror Go ipc.Event / ipc.SubscribeResponse) ────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -731,6 +766,8 @@ pub fn run() {
             create_local_dir,
             read_text_file,
             open_log_file,
+            ipc_legacy_detect,
+            ipc_legacy_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

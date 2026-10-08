@@ -71,7 +71,7 @@ func (c *Client) Propfind(remotePath string, depth int) ([]Resource, error) {
 
 	if resp.StatusCode != http.StatusMultiStatus {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("propfind: unexpected status %d: %s", resp.StatusCode, string(b))
+		return nil, &StatusError{Code: resp.StatusCode, Body: string(b)}
 	}
 
 	var ms Multistatus
@@ -88,6 +88,17 @@ func (c *Client) Propfind(remotePath string, depth int) ([]Resource, error) {
 		resources = append(resources, res)
 	}
 	return resources, nil
+}
+
+// StatusError is returned by Propfind when the server answers with a status
+// other than 207 Multi-Status.
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("propfind: unexpected status %d: %s", e.Code, e.Body)
 }
 
 // Get downloads a remote file and returns its content.

@@ -32,7 +32,9 @@ go test ./engine/ -run TestSyncRemoteNewFile
 
 **IPC:** Newline-delimited JSON over a Unix domain socket (`$XDG_RUNTIME_DIR/cernbox-sync.sock` on Linux). The `ipc` package defines `Request`/`Response` structs and `Send()`.
 
-**IPC commands:** `list`, `add`, `update`, `remove`, `sync`, `status`, `stop`, `get-settings`, `set-settings`, `get-account`, `set-account`, `subscribe`
+**IPC commands:** `list`, `add`, `update`, `remove`, `sync`, `status`, `stop`, `get-settings`, `set-settings`, `get-account`, `set-account`, `subscribe`, `legacy-detect`, `legacy-import`
+
+`legacy-detect` and `legacy-import` take over the sync folders of the ownCloud/CERNBox desktop client (logic in package `migrate`). Detection reads the client's configuration and journal databases; with `plan` it also checks on the server where each folder is and how its selective sync maps to `Folders`. Import plans each folder again, seeds its `.sync.db` from the client's journal before registering it (so the first sync only transfers real changes), and starts syncing it. The GUI only displays the results and the user's choice.
 
 The `subscribe` command opens a long-lived connection; the daemon pushes events (`sync-started`, `sync-progress`, `sync-completed`, `sync-failed`, `folder-added`, `folder-removed`, `folder-updated`) as newline-delimited JSON. The GUI uses this to update the UI in real time without polling.
 
@@ -74,11 +76,12 @@ Conflict resolution is hardcoded to server wins; the local file is renamed `.con
 - `config` — CRUD for the global config DB and settings
 - `db` — CRUD for the per-folder sync state DB
 - `ipc` — shared protocol types, socket path resolution, event types
+- `migrate` — detection and import of the ownCloud/CERNBox desktop client's sync folders: QSettings config reader, journal reader, space resolution via the Graph API
 - `logger` — stdlib `slog` configuration; custom levels: `off`, `error`, `info`, `debug`, `trace`
 - `synclog` — per-folder activity log files with rotation
 - `gui/` — Tauri app: `src-tauri/src/lib.rs` (Rust command handlers), `src/` (React/TypeScript pages and components)
 
-**GUI pages:** Dashboard, Settings, Folders, FolderDetail, AccountSetup, SpacePicker (remote WebDAV browser), FolderPicker, LocalFolderPicker
+**GUI pages:** Dashboard, Settings, Folders, FolderDetail, AccountSetup, LegacyImport (first-start import from the desktop client), SpacePicker (remote WebDAV browser), FolderPicker, LocalFolderPicker
 
 ## Project Rules
 

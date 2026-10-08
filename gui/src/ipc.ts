@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, ConflictEntry, Folder, SyncStatus } from "./types";
+import type { Account, ConflictEntry, Folder, LegacyClient, LegacyFolderRef, LegacyImportReport, SyncStatus } from "./types";
 
 export const ipc = {
   list(): Promise<Folder[]> {
@@ -55,6 +55,14 @@ export const ipc = {
   },
   listConflicts(name?: string): Promise<ConflictEntry[]> {
     return invoke<ConflictEntry[]>("ipc_list_conflicts", { name: name ?? null });
+  },
+  /** Lists the desktop-client folders on serverUrl; with plan, also checks how each can be imported. */
+  async legacyDetect(serverUrl: string, plan: boolean): Promise<LegacyClient[]> {
+    return (await invoke<LegacyClient[] | null>("ipc_legacy_detect", { serverUrl, plan })) ?? [];
+  },
+  /** Imports desktop-client folders, with their settings and last-synced state. */
+  legacyImport(serverUrl: string, folders: LegacyFolderRef[], importLimits: boolean): Promise<LegacyImportReport> {
+    return invoke<LegacyImportReport>("ipc_legacy_import", { serverUrl, folders, importLimits });
   },
 };
 

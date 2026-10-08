@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/gmgigi96/cernbox-sync/config"
+	"github.com/gmgigi96/cernbox-sync/migrate"
 )
 
 // Command names sent in Request.Cmd.
@@ -36,6 +37,12 @@ const (
 	CmdResume = "resume"
 	// CmdListConflicts returns all unresolved conflicts, optionally filtered by folder name.
 	CmdListConflicts = "list-conflicts"
+	// CmdLegacyDetect lists the sync folders of the ownCloud / CERNBox
+	// desktop client that can be taken over.
+	CmdLegacyDetect = "legacy-detect"
+	// CmdLegacyImport registers desktop-client folders, carrying over their
+	// settings and last-synced state.
+	CmdLegacyImport = "legacy-import"
 )
 
 // Event type names pushed by the daemon to subscribed clients.
@@ -112,6 +119,35 @@ type AccountPayload struct {
 	Password string `json:"password"`
 }
 
+// LegacyRequest carries the parameters of CmdLegacyDetect and CmdLegacyImport.
+type LegacyRequest struct {
+	// ServerURL is the server this app syncs with; only desktop-client
+	// accounts on its host are considered.
+	ServerURL string `json:"server_url"`
+	// Plan checks on the server whether and how each folder can be imported
+	// (CmdLegacyDetect).
+	Plan bool `json:"plan,omitempty"`
+	// Folders to import (CmdLegacyImport).
+	Folders []migrate.FolderRef `json:"folders,omitempty"`
+	// ImportLimits applies the desktop client's bandwidth limits where this
+	// app has none (CmdLegacyImport).
+	ImportLimits bool `json:"import_limits,omitempty"`
+}
+
+// LegacyImportResult is the outcome of importing one desktop-client folder.
+type LegacyImportResult struct {
+	migrate.FolderRef
+	// Name of the registered sync folder.
+	Name  string `json:"name,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// LegacyImportReport is the outcome of CmdLegacyImport.
+type LegacyImportReport struct {
+	Results     []LegacyImportResult `json:"results"`
+	LimitsError string               `json:"limits_error,omitempty"`
+}
+
 // Request is sent by the CLI to the daemon.
 type Request struct {
 	Cmd      string          `json:"cmd"`
@@ -119,6 +155,7 @@ type Request struct {
 	Name     string          `json:"name,omitempty"`    // used by CmdRemove and CmdSync
 	Settings SettingsPayload `json:"settings"`          // used by CmdSetSettings
 	Account  *AccountPayload `json:"account,omitempty"` // used by CmdSetAccount
+	Legacy   *LegacyRequest  `json:"legacy,omitempty"`  // used by CmdLegacyDetect and CmdLegacyImport
 }
 
 // ConflictEntry describes a single unresolved conflict.
@@ -138,6 +175,10 @@ type Response struct {
 	Settings  *SettingsPayload `json:"settings,omitempty"`  // CmdGetSettings
 	Account   *AccountPayload  `json:"account,omitempty"`   // CmdGetAccount
 	Conflicts []ConflictEntry  `json:"conflicts,omitempty"` // CmdListConflicts
+	// Legacy lists the desktop clients found (CmdLegacyDetect).
+	Legacy []migrate.Client `json:"legacy,omitempty"`
+	// LegacyImport reports what CmdLegacyImport did.
+	LegacyImport *LegacyImportReport `json:"legacy_import,omitempty"`
 }
 
 // FileCounts holds the number of files and directories synced for a folder.

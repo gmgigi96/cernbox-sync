@@ -91,6 +91,7 @@ async function dispatchInvoke(
     folder?: unknown;
     settings?: unknown;
     account?: unknown;
+    legacy?: unknown;
   };
   type DaemonResp = {
     ok: boolean;
@@ -99,6 +100,8 @@ async function dispatchInvoke(
     status?: unknown;
     settings?: unknown;
     account?: unknown;
+    legacy?: unknown[];
+    legacy_import?: unknown;
   };
 
   async function send(req: DaemonReq): Promise<DaemonResp> {
@@ -228,6 +231,17 @@ async function dispatchInvoke(
     }
     case "open_log_file":
       return null;
+    case "ipc_legacy_detect": {
+      const r = await send({ cmd: "legacy-detect", legacy: { server_url: args.serverUrl, plan: args.plan } });
+      return r.legacy ?? null;
+    }
+    case "ipc_legacy_import": {
+      const r = await send({
+        cmd: "legacy-import",
+        legacy: { server_url: args.serverUrl, folders: args.folders, import_limits: args.importLimits },
+      });
+      return r.legacy_import;
+    }
     // Tauri's @tauri-apps/api/event listen() calls plugin:event|listen internally.
     // We return a stub handler ID — no actual events are pushed in tests.
     case "plugin:event|listen":
@@ -315,13 +329,16 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Daemon
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cernbox-e2e-run-"));
   const runDir = path.join(tmpDir, "run");
   const configDir = path.join(tmpDir, "config");
+  const dataDir = path.join(tmpDir, "data");
   const localDir = path.join(tmpDir, "local");
   for (const d of [runDir, configDir, localDir]) fs.mkdirSync(d, { recursive: true });
 
   const sockPath = path.join(runDir, "cernbox-sync.sock");
 
   const proc: ChildProcess = spawn(bin, ["-interval", "24h", "-socket", sockPath], {
-    env: { ...process.env, XDG_RUNTIME_DIR: runDir, XDG_CONFIG_HOME: configDir },
+    // Isolated config and data dirs: the daemon must not find the desktop
+    // client configured on the test machine.
+    env: { ...process.env, XDG_RUNTIME_DIR: runDir, XDG_CONFIG_HOME: configDir, XDG_DATA_HOME: dataDir },
     stdio: "pipe",
   });
 

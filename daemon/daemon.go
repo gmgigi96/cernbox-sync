@@ -438,27 +438,9 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 
 	case ipc.CmdAdd:
 		d.log.Debug("[daemon] add", "name", req.Folder.Name, "local", req.Folder.LocalRoot, "remote", req.Folder.RemoteBase)
-		abs, err := filepath.Abs(req.Folder.LocalRoot)
-		if err != nil {
-			return fail("invalid local path: " + err.Error())
-		}
-		if err := os.MkdirAll(abs, 0o755); err != nil {
-			return fail("cannot create local dir: " + err.Error())
-		}
-		req.Folder.LocalRoot = abs
-		existing, err := d.cfgDB.GetByRemoteBase(req.Folder.RemoteBase)
-		if err != nil {
+		if _, err := d.addFolder(req.Folder, nil); err != nil {
 			return fail(err.Error())
 		}
-		if existing != nil {
-			return fail(fmt.Sprintf("space %q is already registered as sync folder %q", req.Folder.RemoteBase, existing.Name))
-		}
-		if err := d.cfgDB.Add(req.Folder); err != nil {
-			return fail(err.Error())
-		}
-		d.log.Info("[daemon] add: registered folder", "folder", req.Folder.Name)
-		d.updateFolderWatch(req.Folder)
-		d.bus.publish(ipc.Event{Type: ipc.EventFolderAdded, FolderData: &req.Folder})
 		return ok()
 
 	case ipc.CmdList:
@@ -789,6 +771,26 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 		d.log.Info("[daemon] set-account: account updated", "username", req.Account.Username)
 		return ok()
 
+	case ipc.CmdLegacyDetect:
+		if req.Legacy == nil {
+			return fail("missing legacy payload")
+		}
+		clients, err := d.legacyDetect(*req.Legacy)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ipc.Response{OK: true, Legacy: clients}
+
+	case ipc.CmdLegacyImport:
+		if req.Legacy == nil {
+			return fail("missing legacy payload")
+		}
+		report, err := d.legacyImport(*req.Legacy)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ipc.Response{OK: true, LegacyImport: &report}
+
 	case ipc.CmdListConflicts:
 		folders, err := d.cfgDB.All()
 		if err != nil {
@@ -842,6 +844,62 @@ func (d *Daemon) dispatch(req ipc.Request) ipc.Response {
 
 func ok() ipc.Response             { return ipc.Response{OK: true} }
 func fail(msg string) ipc.Response { return ipc.Response{OK: false, Error: msg} }
+
+// addFolder registers f and returns it as stored. A non-empty baseline is
+// first written as the initial sync state of the folder, so that no sync
+// cycle can start without it; a folder that already has sync state keeps it.
+func (d *Daemon) addFolder(f config.Folder, baseline []db.Entry) (config.Folder, error) {
+	abs, err := filepath.Abs(f.LocalRoot)
+	if err != nil {
+		return f, fmt.Errorf("invalid local path: %w", err)
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return f, fmt.Errorf("cannot create local dir: %w", err)
+	}
+	f.LocalRoot = abs
+	existing, err := d.cfgDB.GetByRemoteBase(f.RemoteBase)
+	if err != nil {
+		return f, err
+	}
+	if existing != nil {
+		return f, fmt.Errorf("space %q is already registered as sync folder %q", f.RemoteBase, existing.Name)
+	}
+	if len(baseline) > 0 {
+		if sameName, err := d.cfgDB.Get(f.Name); err != nil {
+			return f, err
+		} else if sameName != nil {
+			return f, fmt.Errorf("add folder %q: name already in use", f.Name)
+		}
+		seeded, err := seedBaseline(filepath.Join(abs, ".sync.db"), baseline)
+		if err != nil {
+			return f, err
+		}
+		if seeded {
+			d.log.Info("[daemon] add: seeded sync baseline", "folder", f.Name, "entries", len(baseline))
+		} else {
+			d.log.Info("[daemon] add: local folder already has sync state, baseline ignored", "folder", f.Name)
+		}
+	}
+	if err := d.cfgDB.Add(f); err != nil {
+		return f, err
+	}
+	d.log.Info("[daemon] add: registered folder", "folder", f.Name)
+	d.updateFolderWatch(f)
+	d.bus.publish(ipc.Event{Type: ipc.EventFolderAdded, FolderData: &f})
+	return f, nil
+}
+
+// seedBaseline writes entries as the initial sync state of the folder DB at
+// dbPath. It reports false, leaving the DB untouched, when the DB already
+// holds sync state.
+func seedBaseline(dbPath string, entries []db.Entry) (bool, error) {
+	state, err := db.Open(dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = state.Close() }()
+	return state.SeedBaseline(entries)
+}
 
 // countLocalEntries walks localRoot and counts files and directories,
 // skipping hidden entries (those starting with ".").
