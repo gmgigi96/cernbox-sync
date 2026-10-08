@@ -8,6 +8,7 @@
 
 import { test as base, type BrowserContext, type Page } from "@playwright/test";
 import { startDaemon, tauriMockScript, type DaemonHandle } from "./daemon";
+import { CLIENT_UA } from "./loginflow";
 
 export interface Fixtures {
   daemon: DaemonHandle;
@@ -63,7 +64,8 @@ export const test = base.extend<Fixtures>({
   },
 
   appPageNoAccount: async ({ browser, daemonNoAccount }, use) => {
-    const ctx = await browser.newContext();
+    // Contexts created by hand do not inherit the config's `use` options.
+    const ctx = await browser.newContext({ userAgent: CLIENT_UA });
     await setupContext(ctx, daemonNoAccount.proxy.url);
     const page = await ctx.newPage();
     await openApp(page);

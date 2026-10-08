@@ -79,7 +79,11 @@ Conflict resolution is hardcoded to server wins; the local file is renamed `.con
 - `migrate` — detection and import of the ownCloud/CERNBox desktop client's sync folders: QSettings config reader, journal reader, space resolution via the Graph API
 - `logger` — stdlib `slog` configuration; custom levels: `off`, `error`, `info`, `debug`, `trace`
 - `synclog` — per-folder activity log files with rotation
+- `loginflow` — client side of the Nextcloud Login Flow V2 (used by the CLI `login` command); the GUI has the same flow in Rust (`login_flow_*` commands in `lib.rs`)
+- `version` — client version and the `mirall/<version>` User-Agent sent on every request (servers route sync-client Basic-Auth to app-password auth by User-Agent)
 - `gui/` — Tauri app: `src-tauri/src/lib.rs` (Rust command handlers), `src/` (React/TypeScript pages and components)
+
+**Account / login flow:** the account is connected through the browser (Nextcloud Login Flow V2): the client (CLI or GUI) starts a flow at `<server>/index.php/login/v2`, the user grants access in the browser, and the client polls until it gets a login name + app password, which it stores in the daemon via `set-account`. The daemon only uses those credentials for Basic-Auth.
 
 **GUI pages:** SetupWizard (first start: account, desktop-client import, view mode), Dashboard, Settings, Folders, FolderDetail, AccountSetup, LegacyImport (desktop-client import, a wizard step), SpacePicker (remote WebDAV browser), FolderPicker, LocalFolderPicker
 

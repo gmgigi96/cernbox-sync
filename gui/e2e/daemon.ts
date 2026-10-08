@@ -19,12 +19,15 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { obtainAppPassword, pollLoginFlow, startLoginFlow, type StartedFlow } from "./loginflow";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const WEBDAV_BASE = "http://localhost/remote.php/webdav/eos/user/e/einstein";
 export const WEBDAV_USER = "einstein";
+// Account password: accepted from Node (no sync-client User-Agent), e.g. for
+// test fixtures. The daemon and the app get an app password instead.
 export const WEBDAV_PASS = "relativity";
 
 // ── build helpers ─────────────────────────────────────────────────────────────
@@ -76,12 +79,20 @@ async function socketSend(sockPath: string, obj: unknown): Promise<unknown> {
 
 // ── IPC command → daemon request mapping ──────────────────────────────────────
 
+/** Login flow state of one proxy, mirroring LoginFlowState in lib.rs. */
+interface LoginFlowState {
+  pending: StartedFlow | null;
+  /** URLs the app asked to open in the browser (plugin:opener|open_url). */
+  openedUrls: string[];
+}
+
 /**
  * Translate a Tauri invoke call (command name + camelCase args) into the
  * daemon IPC request shape and return the value the Tauri command would return.
  */
 async function dispatchInvoke(
   sockPath: string,
+  loginFlow: LoginFlowState,
   command: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -124,10 +135,26 @@ async function dispatchInvoke(
       const r = await send({ cmd: "get-account" });
       return r.account ?? null;
     }
-    case "ipc_set_account": {
-      await send({ cmd: "set-account", account: { username: args.username, password: args.password } });
-      return null;
+    case "login_flow_start": {
+      const flow = await startLoginFlow(args.serverUrl as string);
+      loginFlow.pending = flow;
+      return flow.loginUrl;
     }
+    case "login_flow_poll": {
+      const flow = loginFlow.pending;
+      if (!flow) throw new Error("No login in progress.");
+      const creds = await pollLoginFlow(flow);
+      if (!creds || loginFlow.pending !== flow) return null;
+      loginFlow.pending = null;
+      await send({ cmd: "set-account", account: { username: creds.loginName, password: creds.appPassword } });
+      return creds.loginName;
+    }
+    case "login_flow_cancel":
+      loginFlow.pending = null;
+      return null;
+    case "plugin:opener|open_url":
+      loginFlow.openedUrls.push(args.url as string);
+      return null;
     case "ipc_get_settings": {
       const r = await send({ cmd: "get-settings" });
       const s = r.settings as Record<string, unknown> | null ?? {};
@@ -257,6 +284,8 @@ async function dispatchInvoke(
 
 export interface ProxyServer {
   url: string;
+  /** URLs the app opened in the browser, oldest first. */
+  openedUrls: string[];
   close(): void;
 }
 
@@ -265,6 +294,7 @@ export interface ProxyServer {
  * { command, args } and proxies to the daemon Unix socket at sockPath.
  */
 export function startProxyServer(sockPath: string): Promise<ProxyServer> {
+  const loginFlow: LoginFlowState = { pending: null, openedUrls: [] };
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
       // CORS preflight
@@ -285,7 +315,7 @@ export function startProxyServer(sockPath: string): Promise<ProxyServer> {
         res.setHeader("Content-Type", "application/json");
         try {
           const { command, args } = JSON.parse(body) as { command: string; args: Record<string, unknown> };
-          const result = await dispatchInvoke(sockPath, command, args);
+          const result = await dispatchInvoke(sockPath, loginFlow, command, args);
           res.writeHead(200).end(JSON.stringify({ ok: true, result }));
         } catch (e) {
           res.writeHead(200).end(JSON.stringify({ ok: false, error: String(e) }));
@@ -297,6 +327,7 @@ export function startProxyServer(sockPath: string): Promise<ProxyServer> {
       const addr = server.address() as net.AddressInfo;
       resolve({
         url: `http://127.0.0.1:${addr.port}`,
+        openedUrls: loginFlow.openedUrls,
         close: () => server.close(),
       });
     });
@@ -346,8 +377,10 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Daemon
   await waitForSocket(sockPath, 15_000);
 
   // Set credentials so any IPC that needs them works (unless the test wants a blank state).
+  // The daemon talks to the server as a sync client, so it needs an app password.
   if (!opts.noAccount) {
-    await socketSend(sockPath, { cmd: "set-account", account: { username: WEBDAV_USER, password: WEBDAV_PASS } });
+    const appPassword = await obtainAppPassword();
+    await socketSend(sockPath, { cmd: "set-account", account: { username: WEBDAV_USER, password: appPassword } });
   }
 
   const proxy = await startProxyServer(sockPath);

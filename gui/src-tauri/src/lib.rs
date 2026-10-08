@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::ShellExt;
@@ -279,8 +280,7 @@ fn ipc_get_account() -> Result<Option<AccountPayload>, String> {
     Ok(resp.account)
 }
 
-#[tauri::command]
-fn ipc_set_account(username: String, password: String) -> Result<(), String> {
+fn set_account(username: String, password: String) -> Result<(), String> {
     let req = IpcRequest {
         cmd: "set-account".into(),
         folder: None,
@@ -290,6 +290,176 @@ fn ipc_set_account(username: String, password: String) -> Result<(), String> {
     };
     ipc_send(&req)?;
     Ok(())
+}
+
+// ── Login flow (Nextcloud Login Flow V2) ──────────────────────────────────────
+//
+// The account is connected through the browser: the client starts a flow
+// anonymously, the user grants access on the server's web page, and the client
+// polls until the server hands out a login name and an app password, which are
+// stored in the daemon as the account credentials. The poll token never leaves
+// this process: the frontend only sees the login URL and the login name.
+// The CLI implements the same flow in Go (loginflow/loginflow.go).
+
+/// Mirrors version.UserAgent() in Go. The "mirall/<version>" token makes the
+/// server treat the client like the Nextcloud desktop client: Basic-Auth
+/// credentials are checked as app passwords, and the login flow grant page can
+/// describe the client. The webview uses it too, so the frontend's own
+/// requests (Graph / WebDAV browsing) authenticate the same way.
+fn user_agent() -> String {
+    let os = match std::env::consts::OS {
+        "linux" => "Linux",
+        "windows" => "Windows",
+        "macos" => "Macintosh",
+        other => other,
+    };
+    format!("Mozilla/5.0 ({os}) mirall/{} (cernbox-sync)", env!("CARGO_PKG_VERSION"))
+}
+
+struct PendingLoginFlow {
+    id: u64,
+    poll_token: String,
+    poll_endpoint: String,
+}
+
+#[derive(Default)]
+pub struct LoginFlowState {
+    /// Bumped on every start/cancel so a poll that was in flight for an older
+    /// flow can tell it has been superseded.
+    next_id: Mutex<u64>,
+    pending: Mutex<Option<PendingLoginFlow>>,
+}
+
+#[derive(Deserialize)]
+struct LoginFlowInitResponse {
+    poll: LoginFlowPollEndpoint,
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct LoginFlowPollEndpoint {
+    token: String,
+    endpoint: String,
+}
+
+#[derive(Deserialize)]
+struct LoginFlowCredentials {
+    #[serde(rename = "loginName")]
+    login_name: String,
+    #[serde(rename = "appPassword")]
+    app_password: String,
+}
+
+fn login_flow_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(user_agent())
+        // The server holds a poll open for a few seconds while the flow is pending.
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Cannot create HTTP client: {e}"))
+}
+
+/// Accepts only http(s) URLs, so a server can never make the client open
+/// e.g. a file:// URL in the browser.
+fn parse_http_url(raw: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(raw.trim()).map_err(|e| format!("Invalid URL {raw:?}: {e}"))?;
+    match url.scheme() {
+        "http" | "https" if url.host_str().is_some() => Ok(url),
+        _ => Err(format!("Invalid URL {raw:?}: not an http(s) URL")),
+    }
+}
+
+/// Starts a login flow against `server_url` and returns the URL the user has
+/// to open in the browser to grant access. Any previous flow is discarded.
+#[tauri::command]
+async fn login_flow_start(state: tauri::State<'_, LoginFlowState>, server_url: String) -> Result<String, String> {
+    let base = parse_http_url(&server_url)?;
+    let init_url = format!("{}/index.php/login/v2", base.as_str().trim_end_matches('/'));
+
+    let resp = login_flow_http_client()?
+        .post(&init_url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("Cannot reach {server_url}: {e}"))?;
+    match resp.status().as_u16() {
+        200 => {}
+        404 => return Err(format!("The server {server_url} does not support browser login.")),
+        429 => return Err("Too many login attempts, try again in a minute.".into()),
+        s => return Err(format!("Unexpected response from the server (HTTP {s}).")),
+    }
+    let init: LoginFlowInitResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response from the server: {e}"))?;
+    if init.poll.token.is_empty() {
+        return Err("Invalid response from the server: missing poll token.".into());
+    }
+    let login_url = parse_http_url(&init.login)?;
+    parse_http_url(&init.poll.endpoint)?;
+
+    let mut next_id = state.next_id.lock().unwrap();
+    *next_id += 1;
+    *state.pending.lock().unwrap() = Some(PendingLoginFlow {
+        id: *next_id,
+        poll_token: init.poll.token,
+        poll_endpoint: init.poll.endpoint,
+    });
+    Ok(login_url.into())
+}
+
+/// Polls the current login flow once. Returns the login name once the user has
+/// granted access (the credentials are then already stored in the daemon), or
+/// None while access has not been granted yet. The server answers "not
+/// granted" for denied and expired flows too, so the caller bounds the wait.
+#[tauri::command]
+async fn login_flow_poll(state: tauri::State<'_, LoginFlowState>) -> Result<Option<String>, String> {
+    let (id, token, endpoint) = match state.pending.lock().unwrap().as_ref() {
+        Some(f) => (f.id, f.poll_token.clone(), f.poll_endpoint.clone()),
+        None => return Err("No login in progress.".into()),
+    };
+
+    let resp = login_flow_http_client()?
+        .post(&endpoint)
+        .header("Accept", "application/json")
+        .form(&[("token", token)])
+        .send()
+        .await
+        .map_err(|e| format!("Cannot reach the server: {e}"))?;
+    match resp.status().as_u16() {
+        200 => {}
+        // 404: not granted (yet). 429: rate-limited, retried on the next poll.
+        404 | 429 => return Ok(None),
+        s => return Err(format!("Unexpected response from the server (HTTP {s}).")),
+    }
+    let creds: LoginFlowCredentials = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response from the server: {e}"))?;
+    if creds.login_name.is_empty() || creds.app_password.is_empty() {
+        return Err("Invalid response from the server: incomplete credentials.".into());
+    }
+
+    {
+        let mut pending = state.pending.lock().unwrap();
+        if pending.as_ref().map(|f| f.id) != Some(id) {
+            // Cancelled or restarted while this poll was in flight.
+            return Ok(None);
+        }
+        *pending = None;
+    }
+    let login_name = creds.login_name.clone();
+    tauri::async_runtime::spawn_blocking(move || set_account(creds.login_name, creds.app_password))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(Some(login_name))
+}
+
+/// Discards the current login flow, if any.
+#[tauri::command]
+fn login_flow_cancel(state: tauri::State<'_, LoginFlowState>) {
+    *state.next_id.lock().unwrap() += 1;
+    *state.pending.lock().unwrap() = None;
 }
 
 #[tauri::command]
@@ -730,7 +900,23 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .manage(LoginFlowState::default())
         .setup(|app| {
+            // The main window is declared with "create": false in
+            // tauri.conf.json and created here, so that its webview sends the
+            // client User-Agent (see user_agent()).
+            let window_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned()
+                .ok_or("missing main window config")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?
+                .user_agent(&user_agent())
+                .build()?;
+
             // On Windows the daemon is bundled as a sidecar and started automatically.
             // On Linux/macOS the user is expected to run cernbox-syncd themselves.
             #[cfg(windows)]
@@ -759,7 +945,9 @@ pub fn run() {
             ipc_get_settings,
             ipc_set_settings,
             ipc_get_account,
-            ipc_set_account,
+            login_flow_start,
+            login_flow_poll,
+            login_flow_cancel,
             ipc_get_snapshot,
             ipc_list_conflicts,
             list_local_dir,
@@ -771,4 +959,26 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_http_url_accepts_only_http_urls() {
+        assert!(parse_http_url("https://cernbox.cern.ch").is_ok());
+        assert!(parse_http_url(" http://localhost/index.php/login/v2/flow/abc ").is_ok());
+        assert!(parse_http_url("file:///etc/passwd").is_err());
+        assert!(parse_http_url("javascript:alert(1)").is_err());
+        assert!(parse_http_url("cernbox.cern.ch").is_err());
+        assert!(parse_http_url("").is_err());
+    }
+
+    #[test]
+    fn user_agent_mimics_the_nextcloud_client() {
+        let ua = user_agent();
+        assert!(ua.starts_with("Mozilla/5.0 ("), "{ua}");
+        assert!(ua.contains(&format!("mirall/{}", env!("CARGO_PKG_VERSION"))), "{ua}");
+    }
 }

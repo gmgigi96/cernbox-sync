@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gmgigi96/cernbox-sync/config"
+	"github.com/gmgigi96/cernbox-sync/version"
 	"github.com/gmgigi96/cernbox-sync/webdav"
 )
 
@@ -66,6 +67,8 @@ func listSpaces(serverURL, username, password string) ([]space, error) {
 		return nil, fmt.Errorf("list spaces: %w", err)
 	}
 	req.SetBasicAuth(username, password)
+	// The account holds an app password, accepted only from the sync client.
+	req.Header.Set("User-Agent", version.UserAgent())
 	req.Header.Set("Accept", "application/json")
 	resp, err := httpClient.Do(req)
 	if err != nil {
