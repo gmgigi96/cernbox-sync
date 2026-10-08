@@ -135,9 +135,23 @@ Stored in the config DB and changeable at runtime without a daemon restart via `
 | `sync_hidden_files` | `false` | Include dot-files in sync |
 | `auto_sync_on_change` | `false` | Trigger an immediate sync when local filesystem events are detected (debounced via `fsnotify`) |
 
+## First-start setup wizard
+
+On first start (no account, or nothing synced yet) the GUI opens a setup wizard:
+
+1. **Welcome** — meanwhile checks whether the ownCloud / CERNBox desktop client syncs folders on this computer.
+2. **Account** — sign in, pre-filled with the desktop client's username when there is one. An account already configured is kept, with the option to use a different one.
+3. **Import** — only when the desktop client was found: take over its folders (see below).
+4. **Interface** — simple or advanced view; a GUI-only preference stored in the webview's local storage.
+5. **Finish** — summary, then straight to adding a folder or to the app.
+
+Sync settings (interval, bandwidth limits, …) keep their defaults; they can be changed later from Settings.
+
+Once finished it is not shown again (the flag lives in the webview's local storage), except when no account is configured. Installs that already sync folders skip it.
+
 ## Migrating from the ownCloud / CERNBox desktop client
 
-On first start (no account and no sync folders yet) the GUI offers to take over the sync folders of a configured ownCloud desktop client, including its CERNBox branding. The daemon does the work (IPC commands `legacy-detect` and `legacy-import`, package `migrate`):
+During the setup wizard the GUI offers to take over the sync folders of a configured ownCloud desktop client, including its CERNBox branding. The daemon does the work (IPC commands `legacy-detect` and `legacy-import`, package `migrate`):
 
 - The configuration is read from `cernbox/cernbox.cfg` or `ownCloud/owncloud.cfg` in `$XDG_CONFIG_HOME` (Linux), `~/Library/Preferences` (macOS) or `%APPDATA%` (Windows), and in the locations used by releases up to 2.4. Stored credentials are never read; the username is pre-filled on the sign-in page.
 - Each folder's remote path is matched to a space and checked on the server. CERNBox addresses spaces by their storage path (e.g. `/eos/project/...`) and the personal space as `/home`.

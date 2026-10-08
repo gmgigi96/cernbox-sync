@@ -10,8 +10,10 @@ interface LegacyImportProps {
   clients: LegacyClient[];
   serverUrl: string;
   daemon: DaemonState;
-  /** Called once the user imported folders or chose to skip. */
-  onDone: () => void;
+  /** Called once the user imported folders or chose to skip, with the number of folders imported. */
+  onDone: (imported: number) => void;
+  /** Rendered inside the setup wizard, which provides the window frame. */
+  embedded?: boolean;
 }
 
 interface Row {
@@ -57,7 +59,9 @@ function Checkbox({ checked, disabled, label, onChange }: { checked: boolean; di
  * client. The daemon decides whether and how each folder can be imported
  * and performs the import; this page shows its answers and the user's choice.
  */
-export function LegacyImport({ clients: initialClients, serverUrl, daemon, onDone }: LegacyImportProps) {
+export function LegacyImport({ clients: initialClients, serverUrl, daemon, onDone, embedded }: LegacyImportProps) {
+  const root = embedded ? s.embeddedRoot : s.root;
+  const card = embedded ? { ...s.card, maxHeight: "100%" } : s.card;
   const [clients, setClients] = useState(initialClients);
   const [checking, setChecking] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -125,8 +129,8 @@ export function LegacyImport({ clients: initialClients, serverUrl, daemon, onDon
     const imported = report.results.filter((r) => !r.error);
     const failed = report.results.filter((r) => r.error);
     return (
-      <div style={s.root}>
-        <div style={s.card}>
+      <div style={root}>
+        <div style={card}>
           <CheckCircle2 size={32} strokeWidth={1.5} style={{ color: "var(--success)", marginBottom: "1rem" }} />
           <h1 style={s.title}>
             {imported.length === 0 ? "No folders imported" : imported.length === 1 ? "1 folder imported" : `${imported.length} folders imported`}
@@ -157,7 +161,7 @@ export function LegacyImport({ clients: initialClients, serverUrl, daemon, onDon
               </span>
             </div>
           )}
-          <button className="btn-primary" style={s.wideBtn} onClick={onDone}>
+          <button className="btn-primary" style={s.wideBtn} onClick={() => onDone(imported.length)}>
             Continue <ArrowRight size={15} strokeWidth={1.5} />
           </button>
         </div>
@@ -171,8 +175,8 @@ export function LegacyImport({ clients: initialClients, serverUrl, daemon, onDon
   const importDisabled = checking || importing || running || readyCount === 0 || !daemon.daemonOnline;
 
   return (
-    <div style={s.root}>
-      <div style={{ ...s.card, width: 640 }}>
+    <div style={root}>
+      <div style={{ ...card, width: 640 }}>
         <FolderSync size={32} strokeWidth={1.5} style={{ color: "var(--primary)", marginBottom: "1rem" }} />
         <h1 style={s.title}>Import from the {appName} desktop client</h1>
         <p style={s.subtitle}>
@@ -267,7 +271,7 @@ export function LegacyImport({ clients: initialClients, serverUrl, daemon, onDon
         )}
 
         <div style={s.actions}>
-          <button className="btn-secondary" onClick={onDone} disabled={importing}>
+          <button className="btn-secondary" onClick={() => onDone(0)} disabled={importing}>
             Skip
           </button>
           <button className="btn-primary" onClick={handleImport} disabled={importDisabled}>
@@ -287,6 +291,13 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     background: "var(--background)",
+  },
+  embeddedRoot: {
+    flex: 1,
+    minHeight: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
   },
   card: {
     background: "var(--surface-container-high)",

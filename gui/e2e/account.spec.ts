@@ -2,12 +2,16 @@
  * AccountSetup page tests.
  *
  * Uses appPageNoAccount — a daemon with no credentials stored — so the app
- * always lands on the AccountSetup form first.
+ * always opens the setup wizard, whose account step shows the AccountSetup form.
  */
 
 import { test, expect } from "./fixture";
 
 test.describe("AccountSetup", () => {
+  test.beforeEach(async ({ appPageNoAccount }) => {
+    await appPageNoAccount.getByRole("button", { name: "Get started" }).click();
+  });
+
   test("shows the account setup form when no account is configured", async ({ appPageNoAccount }) => {
     await expect(appPageNoAccount.getByText("Connect your CERN account")).toBeVisible();
     await expect(appPageNoAccount.getByPlaceholder("your-cern-username")).toBeVisible();
@@ -30,7 +34,8 @@ test.describe("AccountSetup", () => {
     await appPageNoAccount.getByPlaceholder("••••••••").fill("relativity");
     await appPageNoAccount.getByRole("button", { name: "Get Started" }).click();
 
-    // After a successful set-account the app moves past AccountSetup.
+    // After a successful set-account the wizard moves past AccountSetup.
     await expect(appPageNoAccount.getByText("Connect your CERN account")).not.toBeVisible({ timeout: 5_000 });
+    await expect(appPageNoAccount.getByRole("heading", { name: "Choose the interface" })).toBeVisible();
   });
 });

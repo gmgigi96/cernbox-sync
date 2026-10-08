@@ -8,28 +8,15 @@ import { Conflicts } from "./pages/Conflicts";
 import { Folders } from "./pages/Folders";
 import { FolderDetail } from "./pages/FolderDetail";
 import { Settings } from "./pages/Settings";
-import { AccountSetup } from "./pages/AccountSetup";
 import { SpacePicker } from "./pages/SpacePicker";
 import { FolderPicker } from "./pages/FolderPicker";
 import { LocalFolderPicker } from "./pages/LocalFolderPicker";
-import { LegacyImport } from "./pages/LegacyImport";
+import { SetupWizard, markSetupDone, needsSetup, setupDone } from "./pages/SetupWizard";
 import { useDaemon } from "./hooks/useDaemon";
 import { ipc } from "./ipc";
-import type { Account, Folder, LegacyClient, NavPage, Space } from "./types";
+import type { Account, Folder, NavPage, Space } from "./types";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL;
-
-// Set once the user imported or skipped the folders of an ownCloud / CERNBox
-// desktop client, so the offer is made only on first start.
-const LEGACY_IMPORT_DONE_KEY = "legacyImportDone";
-
-function legacyImportDone(): boolean {
-  try {
-    return localStorage.getItem(LEGACY_IMPORT_DONE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
 
 type FlowStep =
   | { step: "none" }
@@ -97,66 +84,31 @@ export function App() {
       .catch(() => setAccount(false));
   }, []);
 
-  // Folders synced by a desktop client this app can take over, as found by
-  // the daemon. null = not detected yet.
-  const [legacyClients, setLegacyClients] = useState<LegacyClient[] | null>(null);
-  const [legacyImportOpen, setLegacyImportOpen] = useState(false);
+  // Whether the setup wizard is shown, decided once the account and the
+  // folders are known. null = not decided yet.
+  const [wizard, setWizard] = useState<boolean | null>(null);
 
   useEffect(() => {
-    if (legacyClients !== null || !daemon.daemonOnline) return;
-    if (legacyImportDone()) {
-      setLegacyClients([]);
-      return;
-    }
-    ipc.legacyDetect(SERVER_URL, false)
-      .then(setLegacyClients)
-      .catch(() => setLegacyClients([]));
-  }, [legacyClients, daemon.daemonOnline]);
+    if (wizard !== null || account === null || daemon.loading) return;
+    const show = needsSetup(account, setupDone(), daemon.folders.length);
+    // Folders synced before the wizard existed: nothing to set up.
+    if (!show) markSetupDone();
+    setWizard(show);
+  }, [wizard, account, daemon.loading, daemon.folders.length]);
 
-  // Offered on first start: signed in, nothing synced yet. Stays open while
-  // importing adds folders, until the user leaves it.
-  useEffect(() => {
-    if (legacyClients?.length && account && !daemon.loading && daemon.daemonOnline && daemon.folders.length === 0) {
-      setLegacyImportOpen(true);
-    }
-  }, [legacyClients, account, daemon.loading, daemon.daemonOnline, daemon.folders.length]);
+  if (account === null || (wizard === null && account !== false)) return null;
 
-  if (account === null) return null;
-
-  if (account === false) {
-    // Wait for the detection to suggest the username of the desktop client.
-    if (daemon.loading || (daemon.daemonOnline && legacyClients === null)) return null;
-    const legacyAccount = (legacyClients ?? []).flatMap((c) => c.accounts.map((a) => ({ client: c, account: a })))[0];
+  if (wizard || account === false) {
     return (
-      <AccountSetup
-        suggestedUsername={legacyAccount?.account.username}
-        notice={
-          legacyAccount &&
-          `The ${legacyAccount.client.app_name} desktop client on this computer syncs ${
-            legacyAccount.account.folders.length === 1 ? "1 folder" : `${legacyAccount.account.folders.length} folders`
-          }. Sign in to import ${legacyAccount.account.folders.length === 1 ? "it" : "them"} next.`
-        }
-        onDone={() =>
-          ipc.getAccount().then((acc) => setAccount(acc ?? false))
-        }
-      />
-    );
-  }
-
-  if (legacyImportOpen && legacyClients?.length) {
-    return (
-      <LegacyImport
-        clients={legacyClients}
+      <SetupWizard
         serverUrl={SERVER_URL}
         daemon={daemon}
-        onDone={() => {
-          try {
-            localStorage.setItem(LEGACY_IMPORT_DONE_KEY, "1");
-          } catch {
-            // Without storage the offer is simply made again next time.
-          }
-          setLegacyClients([]);
-          setLegacyImportOpen(false);
+        account={account}
+        onAccountChanged={setAccount}
+        onFinish={(addFolder) => {
+          markSetupDone();
+          setWizard(false);
+          if (addFolder) setFlow({ step: "spacePicker" });
         }}
       />
     );
