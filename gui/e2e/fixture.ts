@@ -2,6 +2,7 @@
  * Custom Playwright fixture that:
  *  - Starts an isolated daemon + HTTP proxy once per test.
  *  - Injects the Tauri mock into every page before scripts load.
+ *  - Marks the first-start setup wizard as done, unless the test is about it.
  *  - Navigates to the app root and waits for React to mount.
  */
 
@@ -16,12 +17,18 @@ export interface Fixtures {
   appPage: Page;
   /** Page backed by a daemon with no account (for AccountSetup tests). */
   appPageNoAccount: Page;
+  /** Page at "/" on first start: account configured, setup wizard not done yet. */
+  appPageFirstStart: Page;
 }
 
 /** Install the Tauri shim and route interceptors on a browser context. */
-async function setupContext(ctx: BrowserContext, proxyUrl: string): Promise<void> {
+async function setupContext(ctx: BrowserContext, proxyUrl: string, setupDone = true): Promise<void> {
   // Inject window.__TAURI_INTERNALS__ before any page script runs.
   await ctx.addInitScript(tauriMockScript(proxyUrl));
+  // Skip the setup wizard shown on first start (a missing account shows it anyway).
+  if (setupDone) {
+    await ctx.addInitScript(() => localStorage.setItem("cernbox-sync-setup-done", "1"));
+  }
 }
 
 /** Navigate to the app root and wait for React to mount. */
@@ -45,6 +52,12 @@ export const test = base.extend<Fixtures>({
 
   appPage: async ({ context, page, daemon }, use) => {
     await setupContext(context, daemon.proxy.url);
+    await openApp(page);
+    await use(page);
+  },
+
+  appPageFirstStart: async ({ context, page, daemon }, use) => {
+    await setupContext(context, daemon.proxy.url, false);
     await openApp(page);
     await use(page);
   },

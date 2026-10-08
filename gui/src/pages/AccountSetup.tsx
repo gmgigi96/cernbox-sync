@@ -8,9 +8,11 @@ interface AccountSetupProps {
   suggestedUsername?: string;
   /** Informational message shown above the form. */
   notice?: string;
+  /** Rendered inside the setup wizard, which provides the window frame. */
+  embedded?: boolean;
 }
 
-export function AccountSetup({ onDone, suggestedUsername, notice }: AccountSetupProps) {
+export function AccountSetup({ onDone, suggestedUsername, notice, embedded }: AccountSetupProps) {
   const [username, setUsername] = useState(suggestedUsername ?? "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +41,7 @@ export function AccountSetup({ onDone, suggestedUsername, notice }: AccountSetup
   }
 
   return (
-    <div style={styles.root}>
+    <div style={embedded ? styles.embeddedRoot : styles.root}>
       <div style={styles.card}>
         {/* Logo / icon */}
         <div style={styles.iconWrap}>
@@ -131,6 +133,13 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     background: "var(--background)",
+  },
+  embeddedRoot: {
+    flex: 1,
+    minHeight: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
   },
   card: {
     background: "var(--surface-container-high)",
