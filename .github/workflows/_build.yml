@@ -162,7 +162,8 @@ jobs:
   e2e-tests:
     name: E2E Tests
     needs: [build-check]
-    runs-on: ubuntu-latest
+    # Pinned: Playwright's Chromium does not support ubuntu-latest (26.04) yet.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
