@@ -34,7 +34,10 @@ export function repoRoot(): string {
   return path.resolve(__dirname, "../..");
 }
 
-let _daemonBin: string | null = null;
+/** Env variable through which global-setup.ts hands the built daemon to the workers. */
+export const DAEMON_BIN_ENV = "CERNBOX_E2E_DAEMON_BIN";
+
+let _daemonBin: string | null = process.env[DAEMON_BIN_ENV] || null;
 
 /** Builds cernbox-syncd once and caches the path. */
 export function buildDaemon(): string {
