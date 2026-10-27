@@ -20,6 +20,7 @@ make cli      # build CLI only
 make daemon   # build daemon only
 make gui      # build Tauri desktop GUI
 make gui-dev  # run GUI in development mode with hot reload
+make appimage # build the GUI as a Linux AppImage (bundles and starts the daemon)
 make test     # run unit tests (go test ./...)
 make test-integration  # run integration tests (requires Docker, see dev-up)
 make dev-up   # start Docker Compose with Revad WebDAV server for integration tests
