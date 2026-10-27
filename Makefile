@@ -4,7 +4,7 @@ GO     := go
 
 COMPOSE := docker compose -f dev/docker-compose.yaml
 
-.PHONY: all build cli daemon test test-gui test-e2e test-e2e-watch test-all lint clean help dev-up dev-down gui gui-dev
+.PHONY: all build cli daemon test test-gui test-e2e test-e2e-watch test-all lint clean help dev-up dev-down gui gui-dev appimage
 
 all: build
 
@@ -53,6 +53,11 @@ dev-down: ## Stop dev services via docker compose
 gui: ## Build the GUI (Tauri app)
 	$(GO) build -ldflags="-s -w" -o gui/src-tauri/binaries/cernbox-syncd-$$(rustc -vV | awk '/^host:/{print $$2}') ./cmd/cernbox-syncd
 	cd gui && npm install && NO_STRIP=1 npm run tauri build
+
+appimage: ## Build the GUI as a Linux AppImage (bundles the daemon)
+	CGO_ENABLED=0 $(GO) build -ldflags="-s -w" -o gui/src-tauri/binaries/cernbox-syncd-$$(rustc -vV | awk '/^host:/{print $$2}') ./cmd/cernbox-syncd
+	cd gui && npm install && NO_STRIP=1 npm run tauri build -- --bundles appimage
+	@ls -1 gui/src-tauri/target/release/bundle/appimage/*.AppImage
 
 gui-dev: ## Start the GUI in development mode
 	$(GO) build -o gui/src-tauri/binaries/cernbox-syncd-$$(rustc -vV | awk '/^host:/{print $$2}') ./cmd/cernbox-syncd

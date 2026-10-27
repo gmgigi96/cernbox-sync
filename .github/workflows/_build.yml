@@ -246,12 +246,14 @@ jobs:
           files: dist/**/*
 
   # ── GUI installers (Tauri) ────────────────────────────────────────────────────
+  # Also runs on pull requests (build only, nothing is published) so that a
+  # broken installer build shows up before it reaches the nightly.
   build-gui:
     name: Build GUI (${{ matrix.platform }})
-    if: inputs.publish
-    needs: [unit-tests, gui-tests, integration-tests, e2e-tests]
+    needs: [build-check]
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: linux
@@ -298,8 +300,21 @@ jobs:
             -o gui/src-tauri/binaries/cernbox-syncd-${{ matrix.rust_triple }}.exe `
             ./cmd/cernbox-syncd
 
-      - name: Create sidecar placeholder (Linux/macOS)
-        if: matrix.platform != 'windows'
+      # The AppImage starts the bundled daemon itself, so it must be the real one.
+      - name: Build daemon sidecar (Linux)
+        if: matrix.platform == 'linux'
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p gui/src-tauri/binaries
+          go build -ldflags="-s -w" \
+            -o gui/src-tauri/binaries/cernbox-syncd-${{ matrix.rust_triple }} \
+            ./cmd/cernbox-syncd
+
+      - name: Create sidecar placeholder (macOS)
+        if: matrix.platform == 'macos'
         run: |
           mkdir -p gui/src-tauri/binaries
           touch gui/src-tauri/binaries/cernbox-syncd-${{ matrix.rust_triple }}
