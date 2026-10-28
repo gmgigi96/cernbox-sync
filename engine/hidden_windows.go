@@ -28,3 +28,25 @@ func isHidden(name string, absPath string) bool {
 	}
 	return attrs&syscall.FILE_ATTRIBUTE_HIDDEN != 0
 }
+
+// validLocalName reports whether name can be stored on a Windows file system:
+// no reserved characters, no trailing space or dot (Windows strips them, so
+// the item would come back under another name) and no reserved device name.
+func validLocalName(name string) bool {
+	if name == "" || strings.ContainsAny(name, `<>:"/\|?*`) || strings.HasSuffix(name, " ") || strings.HasSuffix(name, ".") {
+		return false
+	}
+	for _, r := range name {
+		if r < 32 {
+			return false
+		}
+	}
+	base, _, _ := strings.Cut(name, ".")
+	switch strings.ToUpper(strings.TrimRight(base, " ")) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return false
+	}
+	return true
+}

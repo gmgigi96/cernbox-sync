@@ -315,6 +315,8 @@ func Run(cfg Config) error {
 	actions := append(renames, classify(remoteMap, localMap, dbState)...)
 	sortActions(actions)
 	actions, refused := applyPermissions(actions, remoteMap, dbState)
+	actions, unsyncable := refuseInvalidLocalNames(actions)
+	refused = append(refused, unsyncable...)
 	logf(cfg.FolderLog, "[sync] actions: %d", len(actions))
 	for _, fe := range refused {
 		logf(cfg.FolderLog, "[sync] ERROR %s %q: %v", fe.Op, fe.Path, fe.Err)
@@ -543,7 +545,7 @@ func scanLocal(root string, syncHiddenFiles bool) (map[string]*localInfo, error)
 			modTime: info.ModTime(),
 			isDir:   d.IsDir(),
 		}
-		li.dev, li.ino = fileIdentity(info)
+		li.dev, li.ino = fileIdentity(absPath, info)
 		result[rel] = li
 		return nil
 	})
@@ -834,6 +836,32 @@ func isDelete(k actionKind) bool { return k == deleteLocal || k == deleteRemote 
 func isMove(k actionKind) bool   { return k == moveRemote || k == renameLocal }
 func depth(p string) int         { return strings.Count(p, "/") }
 
+// refuseInvalidLocalNames drops the actions that would create a local item
+// whose name the local file system cannot store (e.g. "a:b" on Windows) and
+// reports each of them. Nothing is written to the DB for them, so they are
+// neither deleted on the server nor retried as local deletions.
+func refuseInvalidLocalNames(actions []action) ([]action, []FileError) {
+	out := actions[:0]
+	var refused []FileError
+	for _, a := range actions {
+		if (a.kind == download || a.kind == mkdirLocal || a.kind == renameLocal) && !validLocalPath(a.path) {
+			refused = append(refused, FileError{Path: a.path, Op: kindName(a.kind), Err: ErrInvalidName})
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, refused
+}
+
+func validLocalPath(p string) bool {
+	for seg := range strings.SplitSeq(p, "/") {
+		if !validLocalName(seg) {
+			return false
+		}
+	}
+	return true
+}
+
 // ─── permissions ─────────────────────────────────────────────────────────────
 
 // applyPermissions enforces the server's oc:permissions on the planned
@@ -957,8 +985,9 @@ type executor struct {
 // upsert writes an entry, recording the local identity (inode) of the item.
 func (x *executor) upsert(e db.Entry) error {
 	if e.Inode == 0 {
-		if st, err := os.Lstat(filepath.Join(x.localRoot, filepath.FromSlash(e.Path))); err == nil {
-			e.Device, e.Inode = fileIdentity(st)
+		abs := filepath.Join(x.localRoot, filepath.FromSlash(e.Path))
+		if st, err := os.Lstat(abs); err == nil {
+			e.Device, e.Inode = fileIdentity(abs, st)
 		}
 	}
 	return x.state.Upsert(e)

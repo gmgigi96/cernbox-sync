@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// ErrInvalidName is reported for a remote item whose name cannot be stored on
+// the local file system; the item is not synced.
+var ErrInvalidName = errors.New("name not allowed on the local file system")
+
 // ErrReadOnly is reported for a change that the server's permissions (or an
 // explicit 403) do not allow; the local item was left or restored as is.
 var ErrReadOnly = errors.New("not permitted on the server (read-only)")

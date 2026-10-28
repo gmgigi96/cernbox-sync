@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -601,6 +602,15 @@ func specialNames() []string {
 	}
 }
 
+// invalidOnWindows reports whether a name of specialNames cannot be stored
+// on a Windows file system.
+func invalidOnWindows(name string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	return strings.ContainsAny(name, `<>:"\|?*`) || strings.HasSuffix(name, " ") || strings.HasSuffix(name, ".")
+}
+
 // Plan 4.1, 4.2, 4.3, 4.4: special names sync both ways, no duplicates, second run no-op.
 func TestSpec_4_SpecialNames(t *testing.T) {
 	names := specialNames()
@@ -614,17 +624,58 @@ func TestSpec_4_SpecialNames(t *testing.T) {
 		for i, n := range names {
 			env.dav.addFile(n, "content of "+n, fmt.Sprintf("e%d", i), time.Now().Add(-time.Hour))
 		}
-		env.run()
+		if runtime.GOOS != "windows" {
+			env.run()
+		} else {
+			// Plan 4.3: names Windows cannot store are reported, not synced.
+			se := env.mustSyncError()
+			var bad []string
+			for _, fe := range se.Errors {
+				if !errors.Is(fe.Err, engine.ErrInvalidName) {
+					t.Errorf("unexpected error: %v", fe)
+				}
+				bad = append(bad, fe.Path)
+			}
+			var want []string
+			for _, n := range names {
+				if invalidOnWindows(n) {
+					want = append(want, n)
+				}
+			}
+			slices.Sort(bad)
+			slices.Sort(want)
+			if !slices.Equal(bad, want) {
+				t.Errorf("refused names:\n got  %q\n want %q", bad, want)
+			}
+		}
 		for _, n := range names {
+			if invalidOnWindows(n) {
+				continue
+			}
 			if !env.localExists(n) {
 				t.Errorf("missing locally: %q", n)
 			} else if got := env.readLocal(n); got != "content of "+n {
 				t.Errorf("%q: content %q", n, got)
 			}
 		}
-		env.assertSettled("4 download")
+		if runtime.GOOS != "windows" {
+			env.assertSettled("4 download")
+		} else {
+			env.dav.resetSideEffects()
+			_ = env.mustSyncError()
+			for _, m := range []string{"GET", "PUT", "DELETE", "MKCOL", "MOVE"} {
+				if n := env.dav.count(m); n != 0 {
+					t.Errorf("4 download: second run issued %d %s request(s)", n, m)
+				}
+			}
+		}
 	})
 	t.Run("upload", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			// Such names cannot exist locally on Windows.
+			names = slices.DeleteFunc(slices.Clone(names), invalidOnWindows)
+			wantServer = slices.DeleteFunc(wantServer, invalidOnWindows)
+		}
 		env := setup(t)
 		for _, n := range names {
 			env.writeLocal(n, "content of "+n)
@@ -1255,6 +1306,9 @@ func TestSpec_12_5_TooManyRequests(t *testing.T) {
 func TestSpec_12_6_LocalWriteFailure(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ignores the directory mode bits")
 	}
 	env := setup(t)
 	env.dav.addDir("sub", "s1")
