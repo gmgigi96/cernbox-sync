@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -90,11 +91,20 @@ func (c *Client) Propfind(remotePath string, depth int) ([]Resource, error) {
 	return resources, nil
 }
 
-// StatusError is returned by Propfind when the server answers with a status
-// other than 207 Multi-Status.
+// ErrUnauthorized matches (via errors.Is) a StatusError with code 401.
+var ErrUnauthorized = errors.New("webdav: unauthorized")
+
+// StatusError is returned when the server answers with an unexpected status.
 type StatusError struct {
-	Code int
-	Body string
+	Method string
+	Path   string
+	Code   int
+	Body   string
+}
+
+// Is reports whether e matches target; a 401 matches ErrUnauthorized.
+func (e *StatusError) Is(target error) bool {
+	return target == ErrUnauthorized && e.Code == http.StatusUnauthorized
 }
 
 func (e *StatusError) Error() string {
@@ -179,6 +189,17 @@ func (c *Client) Delete(remotePath string) error {
 	}
 	return nil
 }
+
+// Move renames src to dst on the server.
+// TODO: not implemented yet (stub for the shared API contract).
+func (c *Client) Move(src, dst string, overwrite bool) error {
+	return errors.New("MOVE: not implemented")
+}
+
+// SetRetryPolicy sets how many times retryable requests are retried and the
+// base delay of the exponential backoff.
+// TODO: not implemented yet (stub for the shared API contract).
+func (c *Client) SetRetryPolicy(maxRetries int, baseDelay time.Duration) {}
 
 // url builds the full URL for a remote path relative to base.
 func (c *Client) url(remotePath string) string {
