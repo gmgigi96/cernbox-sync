@@ -43,6 +43,9 @@ export interface SyncState {
   daemonOnline: boolean;
   loading: boolean;
   error: string | null;
+  /** True after the daemon reported an authentication failure. */
+  authRequired: boolean;
+  clearAuthRequired: () => void;
 
   // Internal updaters — prefixed with _ to signal they are not for direct use.
   _applySnapshot: (folders: Folder[], status: SyncStatus) => void;
@@ -61,6 +64,9 @@ export const useSyncStore = create<SyncState>((set) => ({
   daemonOnline: false,
   loading: true,
   error: null,
+  authRequired: false,
+
+  clearAuthRequired: () => set({ authRequired: false }),
 
   _applySnapshot: (folders, status) =>
     set({ folders, status, daemonOnline: true, loading: false, error: null }),
@@ -129,6 +135,9 @@ export const useSyncStore = create<SyncState>((set) => ({
             progress: newProgress,
             uploadBps: up,
             downloadBps: down,
+            ...(event.error?.toLowerCase().includes("unauthorized")
+              ? { authRequired: true }
+              : {}),
           };
         }
 

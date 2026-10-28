@@ -61,7 +61,16 @@ export async function listSpaces(
 
   const data: GraphDrivesResponse = await resp.json();
 
-  return (data.value ?? []).map((d) => ({
+  // The same drive can be listed twice (e.g. a share received directly and
+  // via a group): keep each id once.
+  const seen = new Set<string>();
+  const drives = (data.value ?? []).filter((d) => {
+    if (seen.has(d.id)) return false;
+    seen.add(d.id);
+    return true;
+  });
+
+  return drives.map((d) => ({
     id: d.id,
     name: d.name,
     drive_type: d.driveType,

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useSyncStore, type DaemonSnapshot, type DaemonEvent } from "./store/syncStore";
@@ -83,6 +83,18 @@ export function App() {
       .then((acc) => setAccount(acc?.username ? acc : false))
       .catch(() => setAccount(false));
   }, []);
+
+  // After a re-login from the auth banner (authRequired true -> false), reload
+  // the account so the pickers don't use the stale password.
+  const prevAuthRequired = useRef(false);
+  useEffect(() => {
+    if (prevAuthRequired.current && !daemon.authRequired) {
+      ipc.getAccount()
+        .then((acc) => { if (acc?.username) setAccount(acc); })
+        .catch(() => {});
+    }
+    prevAuthRequired.current = daemon.authRequired;
+  }, [daemon.authRequired]);
 
   // Whether the setup wizard is shown, decided once the account and the
   // folders are known. null = not decided yet.
