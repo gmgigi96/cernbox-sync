@@ -1356,9 +1356,9 @@ func weirdNames() []string {
 		"עברית.txt",
 		"العربية.txt",
 		"🚀 rocket.txt",
-		"👨‍👩‍👧‍👦 family.txt", // ZWJ sequence
+		"👨\u200d👩\u200d👧\u200d👦 family.txt", // ZWJ sequence
 		"🇨🇭 flag.txt",
-		"zero​width.txt",
+		"zero\u200bwidth.txt",
 		"with  two  spaces.txt",
 		"hash#tag.txt",
 		"question?mark.txt",

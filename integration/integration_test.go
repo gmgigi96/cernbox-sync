@@ -558,7 +558,7 @@ var specialNames = []string{
 	"עברית.txt",
 	"العربية.txt",
 	"🚀 rocket.txt",
-	"👨‍👩‍👧‍👦 family.txt",
+	"👨\u200d👩\u200d👧\u200d👦 family.txt",
 	"🇨🇭 flag.txt",
 	"with  two  spaces.txt",
 	"hash#tag.txt",
