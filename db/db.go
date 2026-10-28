@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
     size         INTEGER NOT NULL DEFAULT 0,
     last_modified INTEGER NOT NULL DEFAULT 0,
     file_id      TEXT    NOT NULL DEFAULT '',
+    permissions  TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (path)
 );
 CREATE TABLE IF NOT EXISTS conflicts (
@@ -35,6 +36,9 @@ type Entry struct {
 	Size         int64
 	LastModified time.Time
 	FileID       string
+	// Permissions is the oc:permissions string last seen on the server
+	// (empty when unknown).
+	Permissions string
 }
 
 // DB wraps the SQLite connection.
@@ -48,11 +52,53 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	// A single connection serialises every statement, so concurrent sync
+	// workers never hit SQLITE_BUSY on this file. The busy timeout covers
+	// other processes opening the same DB (e.g. a desktop-client import).
+	conn.SetMaxOpenConns(1)
+	if _, err := conn.Exec(`PRAGMA busy_timeout = 10000`); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
 	if _, err := conn.Exec(schema); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+	if err := migrate(conn); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return &DB{conn: conn}, nil
+}
+
+// migrate upgrades a DB created by an older version.
+func migrate(conn *sql.DB) error {
+	rows, err := conn.Query(`PRAGMA table_info(sync_state)`)
+	if err != nil {
+		return fmt.Errorf("inspect schema: %w", err)
+	}
+	hasPerms := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("inspect schema: %w", err)
+		}
+		if name == "permissions" {
+			hasPerms = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("inspect schema: %w", err)
+	}
+	if !hasPerms {
+		if _, err := conn.Exec(`ALTER TABLE sync_state ADD COLUMN permissions TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate schema: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close closes the underlying connection.
@@ -61,13 +107,13 @@ func (d *DB) Close() error { return d.conn.Close() }
 // Get returns the entry for path, or (nil, nil) if not found.
 func (d *DB) Get(path string) (*Entry, error) {
 	row := d.conn.QueryRow(
-		`SELECT path, etag, is_dir, size, last_modified, file_id FROM sync_state WHERE path = ?`,
+		`SELECT path, etag, is_dir, size, last_modified, file_id, permissions FROM sync_state WHERE path = ?`,
 		path,
 	)
 	var e Entry
 	var modUnix int64
 	var isDir int
-	err := row.Scan(&e.Path, &e.ETag, &isDir, &e.Size, &modUnix, &e.FileID)
+	err := row.Scan(&e.Path, &e.ETag, &isDir, &e.Size, &modUnix, &e.FileID, &e.Permissions)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -82,7 +128,7 @@ func (d *DB) Get(path string) (*Entry, error) {
 // All returns every entry in the DB keyed by path.
 func (d *DB) All() (map[string]*Entry, error) {
 	rows, err := d.conn.Query(
-		`SELECT path, etag, is_dir, size, last_modified, file_id FROM sync_state`,
+		`SELECT path, etag, is_dir, size, last_modified, file_id, permissions FROM sync_state`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("db all: %w", err)
@@ -94,7 +140,7 @@ func (d *DB) All() (map[string]*Entry, error) {
 		var e Entry
 		var modUnix int64
 		var isDir int
-		if err := rows.Scan(&e.Path, &e.ETag, &isDir, &e.Size, &modUnix, &e.FileID); err != nil {
+		if err := rows.Scan(&e.Path, &e.ETag, &isDir, &e.Size, &modUnix, &e.FileID, &e.Permissions); err != nil {
 			return nil, err
 		}
 		e.IsDir = isDir != 0
@@ -111,15 +157,16 @@ func (d *DB) Upsert(e Entry) error {
 		isDir = 1
 	}
 	_, err := d.conn.Exec(
-		`INSERT INTO sync_state (path, etag, is_dir, size, last_modified, file_id)
-         VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO sync_state (path, etag, is_dir, size, last_modified, file_id, permissions)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(path) DO UPDATE SET
            etag=excluded.etag,
            is_dir=excluded.is_dir,
            size=excluded.size,
            last_modified=excluded.last_modified,
-           file_id=excluded.file_id`,
-		e.Path, e.ETag, isDir, e.Size, e.LastModified.Unix(), e.FileID,
+           file_id=excluded.file_id,
+           permissions=excluded.permissions`,
+		e.Path, e.ETag, isDir, e.Size, e.LastModified.Unix(), e.FileID, e.Permissions,
 	)
 	if err != nil {
 		return fmt.Errorf("db upsert %q: %w", e.Path, err)
@@ -147,7 +194,7 @@ func (d *DB) SeedBaseline(entries []Entry) (bool, error) {
 		return false, nil
 	}
 	stmt, err := tx.Prepare(
-		`INSERT INTO sync_state (path, etag, is_dir, size, last_modified, file_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sync_state (path, etag, is_dir, size, last_modified, file_id, permissions) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return false, fmt.Errorf("db seed: %w", err)
@@ -158,7 +205,7 @@ func (d *DB) SeedBaseline(entries []Entry) (bool, error) {
 		if e.IsDir {
 			isDir = 1
 		}
-		if _, err := stmt.Exec(e.Path, e.ETag, isDir, e.Size, e.LastModified.Unix(), e.FileID); err != nil {
+		if _, err := stmt.Exec(e.Path, e.ETag, isDir, e.Size, e.LastModified.Unix(), e.FileID, e.Permissions); err != nil {
 			return false, fmt.Errorf("db seed %q: %w", e.Path, err)
 		}
 	}
@@ -172,7 +219,7 @@ func (d *DB) SeedBaseline(entries []Entry) (bool, error) {
 // (i.e. path starts with prefix+"/"). The prefix itself is not included.
 func (d *DB) AllUnder(prefix string) (map[string]*Entry, error) {
 	rows, err := d.conn.Query(
-		`SELECT path, etag, is_dir, size, last_modified, file_id FROM sync_state WHERE path LIKE ? ESCAPE '\'`,
+		`SELECT path, etag, is_dir, size, last_modified, file_id, permissions FROM sync_state WHERE path LIKE ? ESCAPE '\'`,
 		escapeLike(prefix)+"/%",
 	)
 	if err != nil {
@@ -185,7 +232,7 @@ func (d *DB) AllUnder(prefix string) (map[string]*Entry, error) {
 		var e Entry
 		var modUnix int64
 		var isDir int
-		if err := rows.Scan(&e.Path, &e.ETag, &isDir, &e.Size, &modUnix, &e.FileID); err != nil {
+		if err := rows.Scan(&e.Path, &e.ETag, &isDir, &e.Size, &modUnix, &e.FileID, &e.Permissions); err != nil {
 			return nil, err
 		}
 		e.IsDir = isDir != 0
@@ -260,4 +307,3 @@ func (d *DB) DeleteConflict(conflictPath string) error {
 	}
 	return nil
 }
-

@@ -1,9 +1,14 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// ErrReadOnly is reported for a change that the server's permissions (or an
+// explicit 403) do not allow; the local item was left or restored as is.
+var ErrReadOnly = errors.New("not permitted on the server (read-only)")
 
 // FileError records an action that failed for a single path.
 type FileError struct {

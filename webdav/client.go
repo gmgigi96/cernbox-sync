@@ -1,6 +1,7 @@
 package webdav
 
 import (
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ type Client struct {
 	username string
 	password string
 	hc       *http.Client
+	ctx      context.Context // nil means context.Background()
 
 	maxRetries int
 	baseDelay  time.Duration
@@ -53,6 +55,22 @@ func NewClient(base, username, password string) *Client {
 		maxRetries: defaultMaxRetries,
 		baseDelay:  defaultBaseDelay,
 	}
+}
+
+// WithContext returns a shallow copy of the client whose requests (and retry
+// waits) are aborted when ctx is cancelled.
+func (c *Client) WithContext(ctx context.Context) *Client {
+	cp := *c
+	cp.ctx = ctx
+	return &cp
+}
+
+func (c *Client) newRequest(method, u string, body io.Reader) (*http.Request, error) {
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return http.NewRequestWithContext(ctx, method, u, body)
 }
 
 // SetRetryPolicy sets how many times retryable requests are retried (a request
@@ -164,7 +182,7 @@ func (c *Client) Propfind(remotePath string, depth int) ([]Resource, error) {
   </d:prop>
 </d:propfind>`
 
-	req, err := http.NewRequest("PROPFIND", u, strings.NewReader(body))
+	req, err := c.newRequest("PROPFIND", u, strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("propfind build request: %w", err)
 	}
@@ -217,28 +235,53 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("%s %s: status %d: %s", e.Method, e.Path, e.Code, e.Body)
 }
 
+// GetInfo carries the response headers of a GET that matter for sync.
+type GetInfo struct {
+	// ETag is the entity tag of the content actually served (quotes stripped),
+	// empty when the server did not send one.
+	ETag string
+	// ContentLength is the announced body length, -1 when unknown.
+	ContentLength int64
+	// LastModified is the Last-Modified header, zero when absent.
+	LastModified time.Time
+}
+
 // Get downloads a remote file and returns its content.
 func (c *Client) Get(remotePath string) (io.ReadCloser, error) {
+	rc, _, err := c.GetWithInfo(remotePath)
+	return rc, err
+}
+
+// GetWithInfo downloads a remote file and also returns the validators of the
+// content that is being served, which may be newer than a previous PROPFIND.
+func (c *Client) GetWithInfo(remotePath string) (io.ReadCloser, GetInfo, error) {
 	u := c.url(remotePath)
-	req, err := http.NewRequest("GET", u, nil)
+	req, err := c.newRequest("GET", u, nil)
 	if err != nil {
-		return nil, err
+		return nil, GetInfo{}, err
 	}
 	resp, err := c.do(req)
 	if err != nil {
-		return nil, err
+		return nil, GetInfo{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
-		return nil, statusErr("GET", remotePath, resp)
+		return nil, GetInfo{}, statusErr("GET", remotePath, resp)
 	}
-	return resp.Body, nil
+	info := GetInfo{
+		ETag:          strings.Trim(strings.TrimPrefix(resp.Header.Get("ETag"), "W/"), `"`),
+		ContentLength: resp.ContentLength,
+	}
+	if t, err := http.ParseTime(resp.Header.Get("Last-Modified")); err == nil {
+		info.LastModified = t
+	}
+	return resp.Body, info, nil
 }
 
 // Put uploads content to remotePath.
 func (c *Client) Put(remotePath string, content io.Reader, size int64) error {
 	u := c.url(remotePath)
-	req, err := http.NewRequest("PUT", u, content)
+	req, err := c.newRequest("PUT", u, content)
 	if err != nil {
 		return err
 	}
@@ -283,7 +326,7 @@ func (c *Client) PutFile(remotePath, localPath string, wrap func(io.Reader) io.R
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("PUT", c.url(remotePath), body)
+	req, err := c.newRequest("PUT", c.url(remotePath), body)
 	if err != nil {
 		_ = body.Close()
 		return err
@@ -310,7 +353,7 @@ func (c *Client) PutFile(remotePath, localPath string, wrap func(io.Reader) io.R
 // Mkcol creates a remote collection (directory).
 func (c *Client) Mkcol(remotePath string) error {
 	u := c.url(remotePath)
-	req, err := http.NewRequest("MKCOL", u, nil)
+	req, err := c.newRequest("MKCOL", u, nil)
 	if err != nil {
 		return err
 	}
@@ -328,7 +371,7 @@ func (c *Client) Mkcol(remotePath string) error {
 // Delete removes a remote resource.
 func (c *Client) Delete(remotePath string) error {
 	u := c.url(remotePath)
-	req, err := http.NewRequest("DELETE", u, nil)
+	req, err := c.newRequest("DELETE", u, nil)
 	if err != nil {
 		return err
 	}
@@ -346,7 +389,7 @@ func (c *Client) Delete(remotePath string) error {
 // Move renames src to dst on the server. With overwrite false an existing dst
 // makes the server answer 412.
 func (c *Client) Move(src, dst string, overwrite bool) error {
-	req, err := http.NewRequest("MOVE", c.url(src), nil)
+	req, err := c.newRequest("MOVE", c.url(src), nil)
 	if err != nil {
 		return err
 	}
