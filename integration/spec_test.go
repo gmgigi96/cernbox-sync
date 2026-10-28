@@ -1851,8 +1851,9 @@ func TestSpec_1_3_WrongPassword(t *testing.T) {
 		t.Errorf("upload happened with a wrong password?")
 	}
 
-	// With the right password again everything recovers.
-	if resp, err := ipc.Send(env.sockPath, ipc.Request{Cmd: ipc.CmdSetAccount, Account: &ipc.AccountPayload{Username: webdavUser, Password: webdavPass}}); err != nil || !resp.OK {
+	// With the original credentials (the app password from the login flow)
+	// everything recovers.
+	if resp, err := ipc.Send(env.sockPath, ipc.Request{Cmd: ipc.CmdSetAccount, Account: &ipc.AccountPayload{Username: webdavUser, Password: appPassword}}); err != nil || !resp.OK {
 		t.Fatalf("set-account: %v %+v", err, resp)
 	}
 	quick(t, env)
