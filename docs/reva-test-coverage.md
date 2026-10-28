@@ -65,6 +65,14 @@ engine package:
   `CK` for folders, without `D` for deletes): local changes are not uploaded,
   the server version is restored locally, a `FileError` is reported.
 
+## Dev environment limits
+
+The dev reva has no share manager (OCS share creation returns 996), and its
+trash-bin and versions endpoints list nothing. The integration tests for 8.1,
+8.2, 8.4, 8.5, 10.1 and 10.2 therefore skip; the same rows are covered by the
+engine tests against the fake server. `CS_IT_LARGE=1` enables the 2 GB / 10 GB
+and 10,000-file integration tests (they need ~15 GB free disk for EOS).
+
 ## Matrix
 
 | ID | Status | Notes / tests |
