@@ -26,6 +26,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "CERNBox Sync",
         "width": 1200,
         "height": 760,

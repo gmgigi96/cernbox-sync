@@ -6,6 +6,7 @@
  */
 
 import { test, expect } from "./fixture";
+import { login } from "./helpers";
 
 const step = (page: import("@playwright/test").Page) =>
   page.getByRole("list", { name: "Setup progress" }).locator("[aria-current=step]");
@@ -16,9 +17,8 @@ test.describe("Setup wizard", () => {
     await expect(page.getByRole("list", { name: "Setup progress" })).not.toContainText("Import");
     await page.getByRole("button", { name: "Get started" }).click();
 
-    await page.getByPlaceholder("your-cern-username").fill("einstein");
-    await page.getByPlaceholder("••••••••").fill("relativity");
-    await page.getByRole("button", { name: "Get Started" }).click();
+    await expect(page.getByText("Connect your CERN account")).toBeVisible();
+    await login(page); // browser login flow, granted as einstein
 
     await expect(step(page)).toContainText("Interface");
     await page.getByRole("radio", { name: /Advanced/ }).click();

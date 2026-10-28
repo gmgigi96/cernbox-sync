@@ -23,6 +23,7 @@ Usage:
   cernbox-sync <command> [flags]
 
 Commands:
+  login         Connect your account by granting access in the browser
   add           Register a new sync folder pair
   list          List registered sync folder pairs
   remove        Remove a registered sync folder pair
@@ -51,6 +52,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "login":
+		cmdLogin(os.Args[2:])
 	case "add":
 		cmdAdd(os.Args[2:])
 	case "list":

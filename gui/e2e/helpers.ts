@@ -7,6 +7,7 @@ import * as http from "http";
 import * as https from "https";
 import type { Page } from "@playwright/test";
 import { WEBDAV_BASE, WEBDAV_USER, WEBDAV_PASS, type DaemonHandle } from "./daemon";
+import { loginFlowAction } from "./loginflow";
 
 /** Create a unique remote subdirectory on the WebDAV server and return its URL. */
 export async function mkRemoteDir(): Promise<string> {
@@ -59,18 +60,20 @@ async function webdavMkcol(url: string): Promise<void> {
 }
 
 /**
- * Log in through the AccountSetup form so subsequent interactions see
- * the main app shell (Sidebar + pages).
+ * Log in through the AccountSetup browser login flow so subsequent
+ * interactions see the main app shell (Sidebar + pages). Access is granted
+ * through the OCS endpoints, as the web UI would.
  */
-export async function login(page: Page, username = WEBDAV_USER, password = WEBDAV_PASS): Promise<void> {
+export async function login(page: Page): Promise<void> {
   // If already past account setup, do nothing.
   const heading = page.getByText("Connect your CERN account");
   if (!(await heading.isVisible())) return;
 
-  await page.getByPlaceholder("your-cern-username").fill(username);
-  await page.getByPlaceholder("••••••••").fill(password);
-  await page.getByRole("button", { name: "Get Started" }).click();
-  await heading.waitFor({ state: "hidden", timeout: 5_000 });
+  await page.getByRole("button", { name: "Sign in with browser" }).click();
+  const link = page.getByText(/\/index\.php\/login\/v2\/flow\/[\w-]+$/);
+  await link.waitFor({ timeout: 10_000 });
+  await loginFlowAction((await link.textContent())!.trim(), "grant", "e2e-tests");
+  await heading.waitFor({ state: "hidden", timeout: 15_000 });
 }
 
 /**

@@ -69,7 +69,13 @@ function mockDaemon({ legacy = [] as LegacyClient[], account = ACCOUNT as Accoun
     switch (cmd) {
       case "ipc_legacy_detect":
         return legacy;
-      case "ipc_set_account":
+      // Browser login: access is granted on the first poll.
+      case "login_flow_start":
+        return `${SERVER}/index.php/login/v2/flow/login-token`;
+      case "login_flow_poll":
+        return account?.username ?? null;
+      case "login_flow_cancel":
+      case "plugin:opener|open_url":
         return undefined;
       case "ipc_get_account":
         return account;
@@ -137,12 +143,10 @@ describe("SetupWizard", () => {
     // Account: no import step without a desktop client.
     expect(currentStep()).toHaveTextContent("Account");
     expect(screen.queryByText("Import")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText("your-cern-username"), { target: { value: "gdelmont" } });
-    fireEvent.change(screen.getByPlaceholderText("••••••••"), { target: { value: "secret" } });
-    fireEvent.click(screen.getByRole("button", { name: /get started/i }));
+    fireEvent.click(screen.getByRole("button", { name: /sign in with browser/i }));
 
     await waitFor(() => expect(currentStep()).toHaveTextContent("Interface"));
-    expect(invoke).toHaveBeenCalledWith("ipc_set_account", { username: "gdelmont", password: "secret" });
+    expect(invoke).toHaveBeenCalledWith("login_flow_start", { serverUrl: SERVER });
     expect(onAccountChanged).toHaveBeenCalledWith(ACCOUNT);
 
     // Interface: simple is preselected; the choice is persisted.
@@ -173,10 +177,10 @@ describe("SetupWizard", () => {
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
 
-    expect(screen.getByPlaceholderText("your-cern-username")).toHaveValue("legacyuser");
+    // The account is chosen in the browser: the desktop client's is suggested.
+    expect(screen.getByText("legacyuser")).toBeInTheDocument();
     expect(screen.queryByText(/desktop client/)).not.toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText("••••••••"), { target: { value: "secret" } });
-    fireEvent.click(screen.getByRole("button", { name: /get started/i }));
+    fireEvent.click(screen.getByRole("button", { name: /sign in with browser/i }));
 
     // The import page of the desktop client is the next step; skipping moves on.
     await waitFor(() => expect(currentStep()).toHaveTextContent("Import"));
@@ -202,7 +206,7 @@ describe("SetupWizard", () => {
     fireEvent.click(screen.getByRole("button", { name: /back/i }));
     expect(currentStep()).toHaveTextContent("Account");
     fireEvent.click(screen.getByRole("button", { name: /use a different account/i }));
-    expect(screen.getByPlaceholderText("your-cern-username")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sign in with browser/i })).toBeInTheDocument();
   });
 
   it("opens the app at the end when folders are already synced", async () => {

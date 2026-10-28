@@ -137,6 +137,7 @@ export function SetupWizard({ serverUrl, daemon, account, onAccountChanged, onFi
     case "account":
       content = (
         <AccountStep
+          serverUrl={serverUrl}
           account={account}
           legacyClients={legacyClients ?? []}
           onSignedIn={(acc) => {
@@ -231,11 +232,13 @@ function WelcomeStep({ detecting, onNext }: { detecting: boolean; onNext: () => 
 // ── Account ───────────────────────────────────────────────────────────────────
 
 function AccountStep({
+  serverUrl,
   account,
   legacyClients,
   onSignedIn,
   onNext,
 }: {
+  serverUrl: string;
   account: Account | false;
   legacyClients: LegacyClient[];
   onSignedIn: (account: Account) => void;
@@ -269,6 +272,7 @@ function AccountStep({
   return (
     <AccountSetup
       embedded
+      serverUrl={serverUrl}
       suggestedUsername={legacyUsername}
       onDone={() =>
         ipc.getAccount().then((acc) => {

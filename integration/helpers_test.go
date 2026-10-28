@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,9 +26,10 @@ import (
 )
 
 const (
-	webdavBase   = "http://localhost/remote.php/webdav/eos/user/e/einstein"
+	serverURL    = "http://localhost"
+	webdavBase   = serverURL + "/remote.php/webdav/eos/user/e/einstein"
 	webdavUser   = "einstein"
-	webdavPass   = "relativity"
+	webdavPass   = "relativity" // account password; only used to grant login flows
 	folderName   = "test"
 	syncInterval = "24h" // disable periodic syncs; tests drive sync explicitly
 )
@@ -35,6 +37,10 @@ const (
 var (
 	cliPath    string // path to the built cernbox-sync binary
 	daemonPath string // path to the built cernbox-syncd binary
+
+	// appPassword is obtained once through the login flow. The client sends a
+	// sync-client User-Agent, so the server only accepts app passwords from it.
+	appPassword string
 )
 
 // TestMain checks that the dev environment is reachable, builds both binaries,
@@ -42,6 +48,13 @@ var (
 func TestMain(m *testing.M) {
 	if !webdavReachable() {
 		fmt.Fprintln(os.Stderr, "===> dev environment not reachable — start it with 'make dev-up'")
+		os.Exit(1)
+	}
+
+	var err error
+	appPassword, err = obtainAppPassword("integration-tests")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "===> could not obtain an app password through the login flow: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -137,8 +150,8 @@ func setup(t *testing.T) *testEnv {
 	remoteID := "it-" + randHex()
 	sockPath := filepath.Join(runDir, "cernbox-sync.sock")
 
-	rootClient := webdav.NewClient(webdavBase, webdavUser, webdavPass)
-	testClient := webdav.NewClient(webdavBase+"/"+remoteID, webdavUser, webdavPass)
+	rootClient := webdav.NewClient(webdavBase, webdavUser, appPassword)
+	testClient := webdav.NewClient(webdavBase+"/"+remoteID, webdavUser, appPassword)
 
 	// Create the per-test remote subdirectory.
 	if err := rootClient.Mkcol(remoteID); err != nil {
@@ -205,7 +218,7 @@ func setup(t *testing.T) *testEnv {
 		Cmd: ipc.CmdSetAccount,
 		Account: &ipc.AccountPayload{
 			Username: webdavUser,
-			Password: webdavPass,
+			Password: appPassword,
 		},
 	}); err != nil {
 		t.Fatalf("set-account: %v", err)
@@ -626,10 +639,5 @@ func randHex() string {
 }
 
 func sliceContains(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ss, s)
 }

@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gmgigi96/cernbox-sync/version"
 )
 
 const httpTimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
@@ -34,6 +36,7 @@ func NewClient(base, username, password string) *Client {
 // do executes a request with basic auth.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	req.SetBasicAuth(c.username, c.password)
+	req.Header.Set("User-Agent", version.UserAgent())
 	return c.hc.Do(req)
 }
 

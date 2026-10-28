@@ -23,6 +23,28 @@ Three users are pre-created in both EOS and the reva auth provider:
 
 WebDAV is reachable at `http://localhost/remote.php/webdav/`.
 
+## Login flow and app passwords
+
+The sync client does not use the account password: it connects through the
+browser with the Nextcloud Login Flow V2 and gets an **app password**. revad
+(>= v3.13.0) serves:
+
+- `POST /index.php/login/v2`, `POST /index.php/login/v2/poll` and
+  `GET /index.php/login/v2/flow/{token}`: the `loginflow` HTTP service.
+- `GET /ocs/v2.php/cloud/user/login-flow/{token}` and `POST .../grant|deny`: the
+  authenticated side, which the web UI calls after the user signs in.
+- `GET/DELETE /ocs/v2.php/cloud/user/clients[/{id}]`: connected clients (app
+  passwords) management.
+
+Requests whose User-Agent contains `mirall` (Nextcloud desktop client and
+cernbox-sync) are authenticated as **app passwords only**; other clients (curl,
+the helper scripts) keep using the account password. App passwords and pending
+flows live in SQLite files on the container tmpfs, so they reset when the
+container is recreated.
+
+There is no web UI in the dev environment: the browser redirect lands on a 404
+page. Grant access with `scripts/loginflow.sh` instead (see below).
+
 ## Starting and stopping
 
 ```bash
@@ -37,22 +59,30 @@ The first run will take a few minutes because both images are built from scratch
 
 ## Connecting the sync client
 
-Register a sync pair pointing at a demo user's WebDAV root:
+Start the daemon, then connect the account through the login flow. The CLI
+prints a login URL; grant it as a demo user with the helper script:
+
+```bash
+./cernbox-sync login -server http://localhost -no-browser
+# in another terminal, with the URL printed above:
+./dev/scripts/loginflow.sh grant http://localhost/index.php/login/v2/flow/<token>
+```
+
+In the GUI (`make gui-dev`, which uses `VITE_SERVER_URL=http://localhost`),
+click **Sign in with browser**, then grant the URL shown by the app the same way.
+
+Then register a sync pair pointing at a demo user's WebDAV root:
 
 ```bash
 ./cernbox-sync add \
-  --name dev \
-  --local /tmp/cernbox-dev \
-  --remote http://localhost/remote.php/webdav/ \
-  --username einstein \
-  --password relativity
+  -name dev \
+  -local /tmp/cernbox-dev \
+  -remote http://localhost/remote.php/webdav/eos/user/e/einstein
 ```
-
-Then start the daemon (or trigger a manual sync cycle) as usual.
 
 ## Helper scripts
 
-Two shell scripts in `scripts/` let you interact with the running stack from the host without any extra tooling beyond `curl` (and optionally `jq` / `xmllint` for pretty output).
+Three shell scripts in `scripts/` let you interact with the running stack from the host without any extra tooling beyond `curl` (and optionally `jq` / `xmllint` for pretty output).
 
 All scripts default to the `einstein` / `relativity` credentials and `http://localhost` as the base URL. Override with environment variables.
 
@@ -96,6 +126,36 @@ WEBDAV_PASS  password  (default: relativity)
 
 # Act as a different user
 WEBDAV_USER=marie WEBDAV_PASS=radioactivity ./dev/scripts/webdav.sh list /
+```
+
+---
+
+### `scripts/loginflow.sh` — Login flow helper
+
+Plays the web UI (grant / deny as a demo user), or the sync client.
+
+```
+LOGINFLOW_URL   server base URL  (default: http://localhost)
+LOGINFLOW_USER  granting user    (default: einstein)
+LOGINFLOW_PASS  its password     (default: relativity)
+LOGINFLOW_UA    client User-Agent for start/poll (default: a cernbox-sync mirall UA)
+```
+
+| Command | Description |
+|---------|-------------|
+| `start` | Start a flow as a sync client; prints the login URL and poll token |
+| `info <login-url\|token>` | Show what the grant page would show (client, user, age) |
+| `grant <login-url\|token> [name]` | Grant access, with an optional device name |
+| `deny <login-url\|token>` | Deny access |
+| `poll <poll-token>` | Poll once as the sync client (404 while pending) |
+| `clients` | List connected clients |
+| `revoke <client-id>` | Revoke a connected client (its app password stops working) |
+
+```bash
+# Full flow by hand
+./dev/scripts/loginflow.sh start          # note "login" and "poll.token"
+./dev/scripts/loginflow.sh grant <login-url> my-laptop
+./dev/scripts/loginflow.sh poll <poll-token>   # → {"loginName": ..., "appPassword": ...}
 ```
 
 ---
@@ -213,5 +273,6 @@ dev/
 └── scripts/
     ├── eos-run.sh        # EOS container entrypoint (init + daemon launch)
     ├── webdav.sh         # WebDAV client (list, get, put, mkdir, delete, move)
+    ├── loginflow.sh      # Login flow helper (grant/deny, connected clients)
     └── graph.sh          # LibreGraph API client (users, spaces, shares, permissions)
 ```
