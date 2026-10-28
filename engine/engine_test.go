@@ -1,12 +1,15 @@
 package engine_test
 
 import (
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -135,11 +138,17 @@ func (f *fakeWebDAV) servePropfind(w http.ResponseWriter, r *http.Request, relPa
 	_, _ = fmt.Fprint(w, `<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">`)
 	for _, p := range paths {
 		e := f.files[p]
+		// Like a real server, percent-encode every path segment of the href
+		// and XML-escape the result.
 		href := davBasePath
 		if p != "" {
-			href += "/" + p
+			for seg := range strings.SplitSeq(p, "/") {
+				href += "/" + url.PathEscape(seg)
+			}
 		}
-		_, _ = fmt.Fprintf(w, `<d:response><d:href>%s</d:href><d:propstat><d:prop>`, href)
+		_, _ = fmt.Fprint(w, `<d:response><d:href>`)
+		_ = xml.EscapeText(w, []byte(href))
+		_, _ = fmt.Fprint(w, `</d:href><d:propstat><d:prop>`)
 		_, _ = fmt.Fprintf(w, `<d:getetag>"%s"</d:getetag>`, e.etag)
 		_, _ = fmt.Fprintf(w, `<d:getlastmodified>%s</d:getlastmodified>`, e.modTime.UTC().Format(httpTimeLayout))
 		if e.isDir {
@@ -148,7 +157,9 @@ func (f *fakeWebDAV) servePropfind(w http.ResponseWriter, r *http.Request, relPa
 			_, _ = fmt.Fprint(w, `<d:resourcetype/>`)
 			_, _ = fmt.Fprintf(w, `<d:getcontentlength>%d</d:getcontentlength>`, len(e.content))
 		}
-		_, _ = fmt.Fprintf(w, `<oc:fileid>%s</oc:fileid>`, e.fileID)
+		_, _ = fmt.Fprint(w, `<oc:fileid>`)
+		_ = xml.EscapeText(w, []byte(e.fileID))
+		_, _ = fmt.Fprint(w, `</oc:fileid>`)
 		_, _ = fmt.Fprint(w, `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`)
 	}
 	_, _ = fmt.Fprint(w, `</d:multistatus>`)
@@ -1326,6 +1337,178 @@ func TestSync_Conflict_MultipleConflictsOnSameFile(t *testing.T) {
 		if e.Path != "shared.txt" {
 			t.Errorf("unexpected conflict path %q", e.Path)
 		}
+	}
+}
+
+// ─── special character tests ──────────────────────────────────────────────────
+
+// weirdNames returns file and directory names exercising non-ASCII scripts,
+// emoji, Unicode normalization forms and characters with a special meaning
+// in URLs or XML. Characters Windows forbids in file names are only added on
+// other platforms.
+func weirdNames() []string {
+	names := []string{
+		"café.txt",            // precomposed é (NFC)
+		"café décomposé.txt", // e + combining acute accent (NFD)
+		"日本語のファイル.txt",
+		"Ελληνικά.txt",
+		"Русский текст.txt",
+		"עברית.txt",
+		"العربية.txt",
+		"🚀 rocket.txt",
+		"👨‍👩‍👧‍👦 family.txt", // ZWJ sequence
+		"🇨🇭 flag.txt",
+		"zero​width.txt",
+		"with  two  spaces.txt",
+		"hash#tag.txt",
+		"question?mark.txt",
+		"100%.txt",
+		"percent%20encoded.txt",
+		"plus+sign.txt",
+		"amp&ersand.txt",
+		"semi;colon=equals.txt",
+		"at@dollar$comma,.txt",
+		"brackets[1](2){3}.txt",
+		"quote'back`tick.txt",
+		"tilde~excl!caret^.txt",
+		"no-extension",
+		"multiple.dots...txt",
+	}
+	if runtime.GOOS != "windows" {
+		names = append(names,
+			`lt<gt>.txt`,
+			`double"quote.txt`,
+			`pipe|star*colon:.txt`,
+			`back\slash.txt`,
+		)
+	}
+	return names
+}
+
+// weirdDir is a directory name with the same kind of characters, used to
+// check that nested paths are built and encoded correctly.
+const weirdDir = "📁 dossier é #1 ?&%"
+
+// Remote files and directories with special characters in their names are
+// downloaded with the right name and content, and a second sync is a no-op.
+func TestSync_SpecialChars_RemoteToLocal(t *testing.T) {
+	env := setup(t)
+	mt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	env.dav.addDir(weirdDir, "etag-dir")
+	for i, name := range weirdNames() {
+		env.dav.addFile(name, "content of "+name, fmt.Sprintf("etag-%d", i), mt)
+		env.dav.addFile(weirdDir+"/"+name, "nested "+name, fmt.Sprintf("etag-n%d", i), mt)
+	}
+
+	env.run()
+
+	if !env.localIsDir(weirdDir) {
+		t.Fatalf("%q should have been created locally", weirdDir)
+	}
+	for _, name := range weirdNames() {
+		for p, want := range map[string]string{
+			name:                  "content of " + name,
+			weirdDir + "/" + name: "nested " + name,
+		} {
+			if !env.localExists(p) {
+				t.Errorf("%q should have been downloaded", p)
+				continue
+			}
+			if got := env.readLocal(p); got != want {
+				t.Errorf("%q content: got %q, want %q", p, got, want)
+			}
+			if env.dbGet(p) == nil {
+				t.Errorf("DB entry for %q should exist", p)
+			}
+		}
+	}
+
+	env.dav.resetSideEffects()
+	env.run()
+	env.assertNoActions("second sync")
+}
+
+// Local files and directories with special characters in their names are
+// uploaded under the same name, and a second sync is a no-op.
+func TestSync_SpecialChars_LocalToRemote(t *testing.T) {
+	env := setup(t)
+	env.mkdirLocal(weirdDir)
+	for _, name := range weirdNames() {
+		env.writeLocal(name, "content of "+name)
+		env.writeLocal(weirdDir+"/"+name, "nested "+name)
+	}
+
+	env.run()
+
+	if !contains(env.dav.mkcols, weirdDir) {
+		t.Errorf("%q should have been created remotely; mkcols=%v", weirdDir, env.dav.mkcols)
+	}
+	for _, name := range weirdNames() {
+		for p, want := range map[string]string{
+			name:                  "content of " + name,
+			weirdDir + "/" + name: "nested " + name,
+		} {
+			f, ok := env.dav.files[p]
+			if !ok {
+				t.Errorf("%q should have been uploaded; puts=%v", p, env.dav.puts)
+				continue
+			}
+			if got := string(f.content); got != want {
+				t.Errorf("remote %q content: got %q, want %q", p, got, want)
+			}
+		}
+	}
+
+	env.dav.resetSideEffects()
+	env.run()
+	env.assertNoActions("second sync")
+}
+
+// A file with special characters created on one client reaches another
+// client, and its deletion propagates back the same way.
+func TestMultiClient_SpecialChars_RoundTrip(t *testing.T) {
+	dav := newFakeWebDAV()
+	srv := httptest.NewServer(dav)
+	t.Cleanup(srv.Close)
+
+	envA := setupWithSharedDAV(t, dav, srv.URL)
+	envB := setupWithSharedDAV(t, dav, srv.URL)
+
+	for _, name := range weirdNames() {
+		envA.writeLocal(weirdDir+"/"+name, "from A "+name)
+	}
+	envA.run()
+	envB.run()
+
+	for _, name := range weirdNames() {
+		p := weirdDir + "/" + name
+		if !envB.localExists(p) {
+			t.Errorf("client B should have downloaded %q", p)
+			continue
+		}
+		if got := envB.readLocal(p); got != "from A "+name {
+			t.Errorf("client B %q: got %q", p, got)
+		}
+	}
+
+	victim := weirdDir + "/" + weirdNames()[len(weirdNames())-1]
+	if err := os.Remove(filepath.Join(envB.localDir, filepath.FromSlash(victim))); err != nil {
+		t.Fatal(err)
+	}
+	dav.resetSideEffects()
+	envB.run()
+	if !contains(dav.deletes, victim) {
+		t.Fatalf("client B should have deleted %q remotely; deletes=%v", victim, dav.deletes)
+	}
+	// Simulate the server propagating the ETag change to the parent, so A's
+	// incremental scan rescans it.
+	dav.mu.Lock()
+	dav.files[weirdDir].etag = "etag-dir-updated"
+	dav.mu.Unlock()
+
+	envA.run()
+	if envA.localExists(victim) {
+		t.Errorf("client A should have removed %q", victim)
 	}
 }
 

@@ -181,12 +181,20 @@ func (c *Client) Delete(remotePath string) error {
 }
 
 // url builds the full URL for a remote path relative to base.
+// remotePath is a plain (unencoded) path; each segment is percent-encoded so
+// names containing characters such as '#', '?' or '%' address the right resource.
 func (c *Client) url(remotePath string) string {
-	if remotePath == "" || remotePath == "/" {
+	remotePath = strings.Trim(remotePath, "/")
+	if remotePath == "" {
 		return c.base
 	}
-	// Ensure single slash separator.
-	return c.base + "/" + strings.TrimLeft(remotePath, "/")
+	var b strings.Builder
+	b.WriteString(c.base)
+	for seg := range strings.SplitSeq(remotePath, "/") {
+		b.WriteByte('/')
+		b.WriteString(url.PathEscape(seg))
+	}
+	return b.String()
 }
 
 // parseResponse converts a raw PROPFIND response entry into a Resource.
