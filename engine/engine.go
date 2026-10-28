@@ -270,7 +270,8 @@ func Run(cfg Config) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	remoteMap, err := scanRemote(wdc, cfg.Folders, cfg.SyncHiddenFiles, dbState)
+	folders := plainFolders(cfg.Folders)
+	remoteMap, err := scanRemote(wdc, folders, cfg.SyncHiddenFiles, dbState)
 	if err != nil {
 		return fmt.Errorf("remote scan: %w", err)
 	}
@@ -284,8 +285,8 @@ func Run(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("local scan: %w", err)
 	}
-	if len(cfg.Folders) > 0 {
-		keepSelected(localMap, remoteMap, cfg.Folders)
+	if len(folders) > 0 {
+		keepSelected(localMap, remoteMap, folders)
 	}
 	logf(cfg.FolderLog, "[sync] local resources: %d", len(localMap))
 
@@ -498,6 +499,20 @@ func isSyncMetadata(name string) bool {
 	return false
 }
 
+// plainFolders turns the selected sub-folders into plain relative paths, the
+// form used by the scans and the WebDAV client. Selections may be stored
+// URL-encoded, as taken from server hrefs.
+func plainFolders(folders []string) []string {
+	out := make([]string, 0, len(folders))
+	for _, f := range folders {
+		if decoded, err := url.PathUnescape(f); err == nil {
+			f = decoded
+		}
+		out = append(out, strings.Trim(f, "/"))
+	}
+	return out
+}
+
 // keepSelected removes from localMap every entry outside the selected
 // sub-folders. The remote scan only covers the selection, so anything else
 // (e.g. files at the root of a selectively synced folder) would otherwise look
@@ -505,15 +520,7 @@ func isSyncMetadata(name string) bool {
 // Entries seen by the remote scan are always kept, so a selection spelled
 // differently from the scanned paths can never hide a file that exists on
 // both sides (which would look locally deleted).
-func keepSelected(localMap map[string]*localInfo, remoteMap map[string]*webdav.Resource, folders []string) {
-	selection := make([]string, 0, len(folders))
-	for _, f := range folders {
-		// Selections may be stored URL-encoded, as taken from server hrefs.
-		if decoded, err := url.PathUnescape(f); err == nil {
-			f = decoded
-		}
-		selection = append(selection, strings.Trim(f, "/"))
-	}
+func keepSelected(localMap map[string]*localInfo, remoteMap map[string]*webdav.Resource, selection []string) {
 	for path := range localMap {
 		if _, scanned := remoteMap[path]; scanned || path == "" {
 			continue
