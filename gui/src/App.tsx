@@ -138,7 +138,7 @@ export function App() {
   // Space picker replaces the main content area.
   if (flow.step === "spacePicker") {
     return (
-      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <SpacePicker
           serverUrl={SERVER_URL}
           username={account.username}
@@ -156,7 +156,7 @@ export function App() {
   if (flow.step === "folderPicker") {
     const { space, existingFolder } = flow;
     return (
-      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <FolderPicker
           space={space}
           username={account.username}
@@ -173,7 +173,7 @@ export function App() {
   if (flow.step === "localPath") {
     const { space, remoteUrls, existingFolder } = flow;
     return (
-      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <LocalFolderPicker
           space={space}
           remoteUrls={remoteUrls}
@@ -201,7 +201,7 @@ export function App() {
   const sidebarPage: NavPage = (page === "folderDetail" || page === "conflicts") ? "folders" : page;
 
   return (
-    <Layout page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
+    <Layout serverUrl={SERVER_URL} page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
       {page === "dashboard" && (
         <Dashboard
           daemon={daemon}

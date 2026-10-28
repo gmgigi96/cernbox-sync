@@ -6,13 +6,15 @@ import { Sidebar } from "./Sidebar";
 import type { NavPage } from "../types";
 
 interface LayoutProps {
+  /** CERNBox server, used to log in again when authentication fails. */
+  serverUrl: string;
   page: NavPage;
   onNavigate: (p: NavPage) => void;
   onAddFolder: () => void;
   children: React.ReactNode;
 }
 
-export function Layout({ page, onNavigate, onAddFolder, children }: LayoutProps) {
+export function Layout({ serverUrl, page, onNavigate, onAddFolder, children }: LayoutProps) {
   const authRequired = useSyncStore((s) => s.authRequired);
   const clearAuthRequired = useSyncStore((s) => s.clearAuthRequired);
   const [loggingIn, setLoggingIn] = useState(false);
@@ -20,6 +22,7 @@ export function Layout({ page, onNavigate, onAddFolder, children }: LayoutProps)
   if (authRequired && loggingIn) {
     return (
       <AccountSetup
+        serverUrl={serverUrl}
         onDone={() => {
           setLoggingIn(false);
           clearAuthRequired();

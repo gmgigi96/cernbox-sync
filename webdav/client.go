@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gmgigi96/cernbox-sync/version"
 )
 
 const httpTimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
@@ -111,6 +113,7 @@ func retryAfter(h string) (time.Duration, bool) {
 // whose body cannot be rewound is never resent.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	req.SetBasicAuth(c.username, c.password)
+	req.Header.Set("User-Agent", version.UserAgent())
 	rewindable := req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
 
 	for attempt := 0; ; attempt++ {

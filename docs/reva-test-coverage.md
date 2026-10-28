@@ -13,7 +13,7 @@ Test locations: `engine/spec_test.go` (fake WebDAV server), `webdav/spec_test.go
 
 ## Decisions (from the user)
 
-- VFS (7.x), sharing UI (8.7–8.10), Login Flow v2 (1.1), large-folder
+- VFS (7.x), sharing UI (8.7–8.10), large-folder
   confirmation (6.2): reported, not built.
 - 5.4 (same new name on both sides): keep current behaviour — local wins on
   first sync (`TestSync_FirstRun_LocalWins`). Contradicts the plan.
@@ -77,7 +77,7 @@ and 10,000-file integration tests (they need ~15 GB free disk for EOS).
 
 | ID | Status | Notes / tests |
 |---|---|---|
-| 1.1 | not built | CS uses username + password. Reva dev config has no Login Flow v2 endpoint. |
+| 1.1 | covered | Login Flow v2 (from master, PR #2): `loginflow/loginflow_test.go`, `gui/e2e/account.spec.ts`. On auth failure the re-login banner (1.3) runs the same flow. |
 | 1.2 | N/A | CS does no server version check, so it never shows an "unsupported server" warning. |
 | 1.3 | gap → fix | 401 aborts the cycle, nothing deleted; daemon publishes `sync-failed` with auth error; GUI asks to log in again. |
 | 1.4 | covered/new | `gui/src/test/graph.test.ts` — personal, project spaces, received shares. |
