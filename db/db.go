@@ -85,6 +85,14 @@ func Open(path string) (*DB, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("set busy timeout: %w", err)
 	}
+	// WAL with synchronous=NORMAL syncs the disk only at checkpoints instead of
+	// on every committed upsert, which made syncs of many small files crawl
+	// (notably on Windows). The DB stays consistent after a crash; at worst
+	// the last few entries are lost and the next cycle rechecks those files.
+	if _, err := conn.Exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL`); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("set journal mode: %w", err)
+	}
 	if _, err := conn.Exec(schema); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
