@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,23 +22,127 @@ type Client struct {
 	username string
 	password string
 	hc       *http.Client
+
+	maxRetries int
+	baseDelay  time.Duration
 }
+
+const (
+	defaultMaxRetries = 3
+	defaultBaseDelay  = time.Second
+	maxRetryDelay     = 5 * time.Minute
+)
 
 // NewClient creates a WebDAV client.
 // base must NOT have a trailing slash.
+//
+// There is no overall request timeout (transfers of large files may take
+// arbitrarily long); only connection establishment and the wait for response
+// headers are bounded.
 func NewClient(base, username, password string) *Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	tr.TLSHandshakeTimeout = 30 * time.Second
+	tr.ResponseHeaderTimeout = 120 * time.Second
+	tr.IdleConnTimeout = 90 * time.Second
 	return &Client{
-		base:     strings.TrimRight(base, "/"),
-		username: username,
-		password: password,
-		hc:       &http.Client{Timeout: 60 * time.Second},
+		base:       strings.TrimRight(base, "/"),
+		username:   username,
+		password:   password,
+		hc:         &http.Client{Transport: tr},
+		maxRetries: defaultMaxRetries,
+		baseDelay:  defaultBaseDelay,
 	}
 }
 
-// do executes a request with basic auth.
+// SetRetryPolicy sets how many times retryable requests are retried (a request
+// is attempted once plus maxRetries more times) and the base delay of the
+// exponential backoff.
+func (c *Client) SetRetryPolicy(maxRetries int, baseDelay time.Duration) {
+	c.maxRetries = max(maxRetries, 0)
+	c.baseDelay = baseDelay
+}
+
+// retryableStatus reports whether a response status is worth retrying.
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// retryAfter parses a Retry-After header (seconds or HTTP-date).
+func retryAfter(h string) (time.Duration, bool) {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(h); err == nil {
+		return time.Duration(max(secs, 0)) * time.Second, true
+	}
+	if t, err := http.ParseTime(h); err == nil {
+		return max(time.Until(t), 0), true
+	}
+	return 0, false
+}
+
+// do executes a request with basic auth, retrying transient failures
+// (transport errors and 429/502/503/504) with exponential backoff. A request
+// whose body cannot be rewound is never resent.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	req.SetBasicAuth(c.username, c.password)
-	return c.hc.Do(req)
+	rewindable := req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
+
+	for attempt := 0; ; attempt++ {
+		r := req
+		if attempt > 0 && req.GetBody != nil {
+			r = req.Clone(req.Context())
+			body, err := req.GetBody()
+			if err != nil {
+				return nil, err
+			}
+			r.Body = body
+		}
+		resp, err := c.hc.Do(r)
+
+		canRetry := rewindable && attempt < c.maxRetries && req.Context().Err() == nil
+		var wait time.Duration
+		switch {
+		case err != nil:
+			if !canRetry {
+				return nil, err
+			}
+		case retryableStatus(resp.StatusCode):
+			if !canRetry {
+				return resp, nil
+			}
+			if d, ok := retryAfter(resp.Header.Get("Retry-After")); ok {
+				wait = d
+			}
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			_ = resp.Body.Close()
+		default:
+			return resp, nil
+		}
+
+		if wait == 0 {
+			wait = c.baseDelay << min(attempt, 20)
+		}
+		wait = min(wait, maxRetryDelay)
+		select {
+		case <-time.After(wait):
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
+	}
+}
+
+// statusErr builds a StatusError from an unexpected response.
+func statusErr(method, path string, resp *http.Response) *StatusError {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	return &StatusError{Method: method, Path: path, Code: resp.StatusCode, Body: string(b)}
 }
 
 // Propfind fetches properties for remotePath (relative to base) at the given depth (0 or 1).
@@ -71,8 +178,7 @@ func (c *Client) Propfind(remotePath string, depth int) ([]Resource, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusMultiStatus {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, &StatusError{Code: resp.StatusCode, Body: string(b)}
+		return nil, statusErr("PROPFIND", remotePath, resp)
 	}
 
 	var ms Multistatus
@@ -108,7 +214,7 @@ func (e *StatusError) Is(target error) bool {
 }
 
 func (e *StatusError) Error() string {
-	return fmt.Sprintf("propfind: unexpected status %d: %s", e.Code, e.Body)
+	return fmt.Sprintf("%s %s: status %d: %s", e.Method, e.Path, e.Code, e.Body)
 }
 
 // Get downloads a remote file and returns its content.
@@ -123,8 +229,8 @@ func (c *Client) Get(remotePath string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("GET %s: status %d", remotePath, resp.StatusCode)
+		defer func() { _ = resp.Body.Close() }()
+		return nil, statusErr("GET", remotePath, resp)
 	}
 	return resp.Body, nil
 }
@@ -146,8 +252,57 @@ func (c *Client) Put(remotePath string, content io.Reader, size int64) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("PUT %s: status %d: %s", remotePath, resp.StatusCode, string(b))
+		return statusErr("PUT", remotePath, resp)
+	}
+	return nil
+}
+
+// PutFile uploads the local file to remotePath. The file is reopened for each
+// attempt so the upload can be retried; wrap (optional) decorates the reader
+// on every attempt, e.g. for rate limiting or progress reporting.
+func (c *Client) PutFile(remotePath, localPath string, wrap func(io.Reader) io.Reader) error {
+	fi, err := os.Stat(localPath)
+	if err != nil {
+		return err
+	}
+	open := func() (io.ReadCloser, error) {
+		f, err := os.Open(localPath)
+		if err != nil {
+			return nil, err
+		}
+		var r io.Reader = f
+		if wrap != nil {
+			r = wrap(f)
+		}
+		return struct {
+			io.Reader
+			io.Closer
+		}{r, f}, nil
+	}
+	body, err := open()
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("PUT", c.url(remotePath), body)
+	if err != nil {
+		_ = body.Close()
+		return err
+	}
+	req.GetBody = open
+	req.ContentLength = fi.Size()
+	if fi.Size() == 0 {
+		req.Body = http.NoBody
+		req.GetBody = func() (io.ReadCloser, error) { return http.NoBody, nil }
+		_ = body.Close()
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		return statusErr("PUT", remotePath, resp)
 	}
 	return nil
 }
@@ -165,8 +320,7 @@ func (c *Client) Mkcol(remotePath string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusMethodNotAllowed {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("MKCOL %s: status %d: %s", remotePath, resp.StatusCode, string(b))
+		return statusErr("MKCOL", remotePath, resp)
 	}
 	return nil
 }
@@ -184,30 +338,47 @@ func (c *Client) Delete(remotePath string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("DELETE %s: status %d: %s", remotePath, resp.StatusCode, string(b))
+		return statusErr("DELETE", remotePath, resp)
 	}
 	return nil
 }
 
-// Move renames src to dst on the server.
-// TODO: not implemented yet (stub for the shared API contract).
+// Move renames src to dst on the server. With overwrite false an existing dst
+// makes the server answer 412.
 func (c *Client) Move(src, dst string, overwrite bool) error {
-	return errors.New("MOVE: not implemented")
+	req, err := http.NewRequest("MOVE", c.url(src), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Destination", c.url(dst))
+	if overwrite {
+		req.Header.Set("Overwrite", "T")
+	} else {
+		req.Header.Set("Overwrite", "F")
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		return statusErr("MOVE", src, resp)
+	}
+	return nil
 }
 
-// SetRetryPolicy sets how many times retryable requests are retried and the
-// base delay of the exponential backoff.
-// TODO: not implemented yet (stub for the shared API contract).
-func (c *Client) SetRetryPolicy(maxRetries int, baseDelay time.Duration) {}
-
-// url builds the full URL for a remote path relative to base.
+// url builds the full URL for a remote path relative to base, escaping each
+// path segment.
 func (c *Client) url(remotePath string) string {
-	if remotePath == "" || remotePath == "/" {
+	remotePath = strings.Trim(remotePath, "/")
+	if remotePath == "" {
 		return c.base
 	}
-	// Ensure single slash separator.
-	return c.base + "/" + strings.TrimLeft(remotePath, "/")
+	segs := strings.Split(remotePath, "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	return c.base + "/" + strings.Join(segs, "/")
 }
 
 // parseResponse converts a raw PROPFIND response entry into a Resource.
