@@ -1361,7 +1361,6 @@ func weirdNames() []string {
 		"zero\u200bwidth.txt",
 		"with  two  spaces.txt",
 		"hash#tag.txt",
-		"question?mark.txt",
 		"100%.txt",
 		"percent%20encoded.txt",
 		"plus+sign.txt",
@@ -1376,6 +1375,7 @@ func weirdNames() []string {
 	}
 	if runtime.GOOS != "windows" {
 		names = append(names,
+			"question?mark.txt",
 			`lt<gt>.txt`,
 			`double"quote.txt`,
 			`pipe|star*colon:.txt`,
@@ -1387,7 +1387,7 @@ func weirdNames() []string {
 
 // weirdDir is a directory name with the same kind of characters, used to
 // check that nested paths are built and encoded correctly.
-const weirdDir = "📁 dossier é #1 ?&%"
+const weirdDir = "📁 dossier é #1 &%"
 
 // Remote files and directories with special characters in their names are
 // downloaded with the right name and content, and a second sync is a no-op.

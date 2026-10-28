@@ -547,8 +547,8 @@ func TestIntegration_Conflict_NotUploadedOnNextSync(t *testing.T) {
 
 // specialNames are file names with non-ASCII scripts, emoji, Unicode
 // normalization forms and characters with a special meaning in URLs or XML.
-// Characters Windows forbids in file names are left out, as other clients
-// cannot sync them anyway.
+// Most characters Windows forbids in file names are left out, as other
+// clients cannot sync them anyway; '?' is kept for its meaning in URLs.
 var specialNames = []string{
 	"café.txt",
 	"café décomposé.txt",
