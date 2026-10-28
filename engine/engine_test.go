@@ -1,9 +1,11 @@
 package engine_test
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -34,25 +36,68 @@ type fakeFile struct {
 	etag    string
 	modTime time.Time
 	fileID  string
+	perms   string // oc:permissions; empty = property not emitted
+}
+
+// fakeFault makes the server answer with a fixed status (or a truncated body
+// for GET) for matching requests. method/path may be "*" to match anything.
+type fakeFault struct {
+	method     string
+	path       string
+	status     int
+	remaining  int // number of requests to fail; <0 = every request
+	retryAfter string
+	truncate   bool // GET only: send half of the body, then abort the connection
 }
 
 // fakeWebDAV is a minimal in-memory WebDAV server.
-// It records side-effects (PUTs, DELETEs, MKCOLs) so tests can assert on them.
+// It records side-effects (PUTs, DELETEs, MKCOLs, MOVEs) so tests can assert on them.
 type fakeWebDAV struct {
 	mu    sync.Mutex
 	files map[string]*fakeFile // keyed by relative path (no leading slash)
+	seq   int
 
 	puts      []string
 	deletes   []string
 	mkcols    []string
 	propfinds []string // path of every PROPFIND received
+	gets      []string // path of every GET that was served (or faulted)
+	moves     []string // "src -> dst" of every MOVE received
+	counts    map[string]int
+
+	faults []*fakeFault
+	// onGet, when set, runs (without the server lock held) before every GET
+	// is served. It may mutate the server through the helper methods.
+	onGet func(path string)
 }
 
 func newFakeWebDAV() *fakeWebDAV {
-	f := &fakeWebDAV{files: make(map[string]*fakeFile)}
+	f := &fakeWebDAV{files: make(map[string]*fakeFile), counts: make(map[string]int)}
 	// Root collection must always be present so the initial PROPFIND succeeds.
 	f.files[""] = &fakeFile{isDir: true, etag: "root", modTime: time.Now(), fileID: "root-id"}
 	return f
+}
+
+// nextETag returns a never-before-used etag. Caller holds f.mu.
+func (f *fakeWebDAV) nextETag() string {
+	f.seq++
+	return fmt.Sprintf("etag-%d", f.seq)
+}
+
+// touchAncestors gives every ancestor collection (root included) a new etag,
+// as real servers do. Caller holds f.mu.
+func (f *fakeWebDAV) touchAncestors(p string) {
+	for p != "" {
+		i := strings.LastIndex(p, "/")
+		if i < 0 {
+			p = ""
+		} else {
+			p = p[:i]
+		}
+		if e, ok := f.files[p]; ok {
+			e.etag = f.nextETag()
+		}
+	}
 }
 
 func (f *fakeWebDAV) addFile(path, content, etag string, modTime time.Time) {
@@ -77,9 +122,226 @@ func (f *fakeWebDAV) addDir(path, etag string) {
 	}
 }
 
+// ── test helpers that mutate the server "from the outside" ──
+
+// setContent changes the content of an existing file (same fileid, new etag,
+// ancestors' etags propagated).
+func (f *fakeWebDAV) setContent(path string, content []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := f.files[path]
+	e.content = content
+	e.etag = f.nextETag()
+	e.modTime = time.Now()
+	f.touchAncestors(path)
+}
+
+// touch gives a file a new etag and mtime but keeps the content (mtime-only change).
+func (f *fakeWebDAV) touch(path string, mtime time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := f.files[path]
+	e.etag = f.nextETag()
+	e.modTime = mtime
+	f.touchAncestors(path)
+}
+
+// remove deletes a resource and its children without recording a request.
+func (f *fakeWebDAV) remove(path string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removeLocked(path)
+	f.touchAncestors(path)
+}
+
+func (f *fakeWebDAV) removeLocked(path string) {
+	for p := range f.files {
+		if p == path || strings.HasPrefix(p, path+"/") {
+			delete(f.files, p)
+		}
+	}
+}
+
+// rename moves a resource subtree on the server, keeping fileids.
+func (f *fakeWebDAV) rename(src, dst string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.moveLocked(src, dst)
+}
+
+func (f *fakeWebDAV) moveLocked(src, dst string) {
+	moved := map[string]*fakeFile{}
+	for p, e := range f.files {
+		if p == src || strings.HasPrefix(p, src+"/") {
+			moved[dst+strings.TrimPrefix(p, src)] = e
+		}
+	}
+	for p := range f.files {
+		if p == src || strings.HasPrefix(p, src+"/") {
+			delete(f.files, p)
+		}
+	}
+	maps.Copy(f.files, moved)
+	if e := f.files[dst]; e != nil {
+		e.etag = f.nextETag()
+	}
+	f.touchAncestors(src)
+	f.touchAncestors(dst)
+}
+
+// setPerms sets oc:permissions on a resource.
+func (f *fakeWebDAV) setPerms(path, perms string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[path].perms = perms
+	f.files[path].etag = f.nextETag()
+	f.touchAncestors(path)
+}
+
+// setPermsAll sets oc:permissions on every resource except the root.
+func (f *fakeWebDAV) setPermsAll(perms string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for p, e := range f.files {
+		if p != "" {
+			e.perms = perms
+		}
+	}
+}
+
+// restoreFromTrash makes a deleted file reappear (new fileid, new etag).
+func (f *fakeWebDAV) restoreFromTrash(path, content string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq++
+	f.files[path] = &fakeFile{
+		content: []byte(content),
+		etag:    f.nextETag(),
+		modTime: time.Now(),
+		fileID:  fmt.Sprintf("restored-%d", f.seq),
+	}
+	f.touchAncestors(path)
+}
+
+// restoreVersion puts old content back under the same fileid with a new etag.
+func (f *fakeWebDAV) restoreVersion(path, content string) {
+	f.setContent(path, []byte(content))
+}
+
+func (f *fakeWebDAV) fileIDOf(path string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.files[path]; e != nil {
+		return e.fileID
+	}
+	return ""
+}
+
+func (f *fakeWebDAV) contentOf(path string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := f.files[path]
+	if e == nil {
+		return "", false
+	}
+	return string(e.content), true
+}
+
+func (f *fakeWebDAV) exists(path string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.files[path]
+	return ok
+}
+
+// paths returns all resource paths (root excluded), sorted.
+func (f *fakeWebDAV) paths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for p := range f.files {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// count returns how many requests with the given method were received.
+func (f *fakeWebDAV) count(method string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.counts[method]
+}
+
+// failWith makes the next n requests (n<0: all) matching method+path fail with status.
+func (f *fakeWebDAV) failWith(method, path string, status, n int) *fakeFault {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ft := &fakeFault{method: method, path: path, status: status, remaining: n}
+	f.faults = append(f.faults, ft)
+	return ft
+}
+
+// clearFaults removes all injected faults.
+func (f *fakeWebDAV) clearFaults() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.faults = nil
+}
+
+// matchFault returns the first active fault for the request and consumes one use.
+func (f *fakeWebDAV) matchFault(method, rel string) *fakeFault {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.counts[method]++
+	for _, ft := range f.faults {
+		if ft.remaining == 0 {
+			continue
+		}
+		if (ft.method == "*" || ft.method == method) && (ft.path == "*" || ft.path == rel) {
+			if ft.remaining > 0 {
+				ft.remaining--
+			}
+			return ft
+		}
+	}
+	return nil
+}
+
+func escapeDAVPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	return strings.Join(segs, "/")
+}
+
 func (f *fakeWebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, davBasePath)
 	rel = strings.TrimLeft(rel, "/")
+
+	if ft := f.matchFault(r.Method, rel); ft != nil {
+		if r.Method == "GET" && ft.truncate {
+			f.serveTruncatedGet(w, r, rel)
+			return
+		}
+		if r.Method == "GET" {
+			f.mu.Lock()
+			f.gets = append(f.gets, rel)
+			f.mu.Unlock()
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		if ft.retryAfter != "" {
+			w.Header().Set("Retry-After", ft.retryAfter)
+		}
+		http.Error(w, "injected fault", ft.status)
+		return
+	}
 
 	switch r.Method {
 	case "PROPFIND":
@@ -92,6 +354,8 @@ func (f *fakeWebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.serveMkcol(w, r, rel)
 	case "DELETE":
 		f.serveDelete(w, r, rel)
+	case "MOVE":
+		f.serveMove(w, r, rel)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -131,62 +395,104 @@ func (f *fakeWebDAV) servePropfind(w http.ResponseWriter, r *http.Request, relPa
 	}
 	sort.Strings(paths)
 
-	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	w.WriteHeader(http.StatusMultiStatus)
-
-	_, _ = fmt.Fprint(w, `<?xml version="1.0"?>`)
-	_, _ = fmt.Fprint(w, `<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">`)
+	var sb strings.Builder
+	sb.WriteString(`<?xml version="1.0"?>`)
+	sb.WriteString(`<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">`)
 	for _, p := range paths {
 		e := f.files[p]
 		// Like a real server, percent-encode every path segment of the href
 		// and XML-escape the result.
 		href := davBasePath
 		if p != "" {
-			for seg := range strings.SplitSeq(p, "/") {
-				href += "/" + url.PathEscape(seg)
-			}
+			href += "/" + escapeDAVPath(p)
 		}
-		_, _ = fmt.Fprint(w, `<d:response><d:href>`)
-		_ = xml.EscapeText(w, []byte(href))
-		_, _ = fmt.Fprint(w, `</d:href><d:propstat><d:prop>`)
-		_, _ = fmt.Fprintf(w, `<d:getetag>"%s"</d:getetag>`, e.etag)
-		_, _ = fmt.Fprintf(w, `<d:getlastmodified>%s</d:getlastmodified>`, e.modTime.UTC().Format(httpTimeLayout))
+		var hb bytes.Buffer
+		_ = xml.EscapeText(&hb, []byte(href))
+		fmt.Fprintf(&sb, `<d:response><d:href>%s</d:href><d:propstat><d:prop>`, hb.String())
+		fmt.Fprintf(&sb, `<d:getetag>"%s"</d:getetag>`, e.etag)
+		fmt.Fprintf(&sb, `<d:getlastmodified>%s</d:getlastmodified>`, e.modTime.UTC().Format(httpTimeLayout))
 		if e.isDir {
-			_, _ = fmt.Fprint(w, `<d:resourcetype><d:collection/></d:resourcetype>`)
+			sb.WriteString(`<d:resourcetype><d:collection/></d:resourcetype>`)
 		} else {
-			_, _ = fmt.Fprint(w, `<d:resourcetype/>`)
-			_, _ = fmt.Fprintf(w, `<d:getcontentlength>%d</d:getcontentlength>`, len(e.content))
+			sb.WriteString(`<d:resourcetype/>`)
+			fmt.Fprintf(&sb, `<d:getcontentlength>%d</d:getcontentlength>`, len(e.content))
 		}
-		_, _ = fmt.Fprint(w, `<oc:fileid>`)
-		_ = xml.EscapeText(w, []byte(e.fileID))
-		_, _ = fmt.Fprint(w, `</oc:fileid>`)
-		_, _ = fmt.Fprint(w, `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`)
+		var fb bytes.Buffer
+		_ = xml.EscapeText(&fb, []byte(e.fileID))
+		fmt.Fprintf(&sb, `<oc:fileid>%s</oc:fileid>`, fb.String())
+		if e.perms != "" {
+			fmt.Fprintf(&sb, `<oc:permissions>%s</oc:permissions>`, e.perms)
+		}
+		sb.WriteString(`</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`)
 	}
-	_, _ = fmt.Fprint(w, `</d:multistatus>`)
+	sb.WriteString(`</d:multistatus>`)
+
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.WriteHeader(http.StatusMultiStatus)
+	_, _ = io.WriteString(w, sb.String())
 }
 
 func (f *fakeWebDAV) serveGet(w http.ResponseWriter, r *http.Request, relPath string) {
 	f.mu.Lock()
+	hook := f.onGet
+	f.mu.Unlock()
+	if hook != nil {
+		hook(relPath)
+	}
+
+	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gets = append(f.gets, relPath)
 	e, ok := f.files[relPath]
 	if !ok || e.isDir {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("ETag", `"`+e.etag+`"`)
+	w.Header().Set("Content-Length", fmt.Sprint(len(e.content)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(e.content)
+}
+
+// serveTruncatedGet announces the full length, sends half and kills the connection.
+func (f *fakeWebDAV) serveTruncatedGet(w http.ResponseWriter, r *http.Request, relPath string) {
+	f.mu.Lock()
+	f.gets = append(f.gets, relPath)
+	e, ok := f.files[relPath]
+	var content []byte
+	if ok {
+		content = append(content, e.content...)
+	}
+	f.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Length", fmt.Sprint(len(content)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content[:len(content)/2])
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush()
+	}
+	panic(http.ErrAbortHandler)
 }
 
 func (f *fakeWebDAV) servePut(w http.ResponseWriter, r *http.Request, relPath string) {
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	fid := "fid-" + strings.ReplaceAll(relPath, "/", "-")
+	if old := f.files[relPath]; old != nil {
+		fid = old.fileID
+	}
 	f.files[relPath] = &fakeFile{
 		content: body,
-		etag:    "etag-after-put",
+		etag:    f.nextETag(),
 		modTime: time.Now(),
-		fileID:  "fid-" + strings.ReplaceAll(relPath, "/", "-"),
+		fileID:  fid,
+		perms:   "",
 	}
+	f.touchAncestors(relPath)
 	f.puts = append(f.puts, relPath)
 	w.WriteHeader(http.StatusCreated)
 }
@@ -196,10 +502,11 @@ func (f *fakeWebDAV) serveMkcol(w http.ResponseWriter, r *http.Request, relPath 
 	defer f.mu.Unlock()
 	f.files[relPath] = &fakeFile{
 		isDir:   true,
-		etag:    "etag-after-mkcol",
+		etag:    f.nextETag(),
 		modTime: time.Now(),
 		fileID:  "fid-" + strings.ReplaceAll(relPath, "/", "-"),
 	}
+	f.touchAncestors(relPath)
 	f.mkcols = append(f.mkcols, relPath)
 	w.WriteHeader(http.StatusCreated)
 }
@@ -208,14 +515,46 @@ func (f *fakeWebDAV) serveDelete(w http.ResponseWriter, r *http.Request, relPath
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	// Remove the resource and any children (collection delete).
-	prefix := relPath + "/"
-	for p := range f.files {
-		if p == relPath || strings.HasPrefix(p, prefix) {
-			delete(f.files, p)
-		}
-	}
+	f.removeLocked(relPath)
+	f.touchAncestors(relPath)
 	f.deletes = append(f.deletes, relPath)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (f *fakeWebDAV) serveMove(w http.ResponseWriter, r *http.Request, src string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, err := url.Parse(r.Header.Get("Destination"))
+	if err != nil || r.Header.Get("Destination") == "" {
+		http.Error(w, "bad destination", http.StatusBadRequest)
+		return
+	}
+	dst := strings.TrimLeft(strings.TrimPrefix(u.Path, davBasePath), "/")
+	f.moves = append(f.moves, src+" -> "+dst)
+	if _, ok := f.files[src]; !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if i := strings.LastIndex(dst, "/"); i >= 0 {
+		if p, ok := f.files[dst[:i]]; !ok || !p.isDir {
+			http.Error(w, "parent missing", http.StatusConflict)
+			return
+		}
+	}
+	_, exists := f.files[dst]
+	if exists && src != dst {
+		if r.Header.Get("Overwrite") == "F" {
+			http.Error(w, "exists", http.StatusPreconditionFailed)
+			return
+		}
+		f.removeLocked(dst)
+	}
+	f.moveLocked(src, dst)
+	if exists {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
 }
 
 // resetSideEffects clears the recorded side-effect slices so a subsequent
@@ -226,6 +565,9 @@ func (f *fakeWebDAV) resetSideEffects() {
 	f.puts = nil
 	f.deletes = nil
 	f.mkcols = nil
+	f.gets = nil
+	f.moves = nil
+	f.counts = make(map[string]int)
 }
 
 // ─── test environment ─────────────────────────────────────────────────────────

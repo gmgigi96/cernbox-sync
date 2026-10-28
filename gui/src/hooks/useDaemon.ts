@@ -15,6 +15,8 @@ export interface DaemonState {
   daemonOnline: boolean;
   loading: boolean;
   error: string | null;
+  /** True when the daemon reported an authentication failure. */
+  authRequired: boolean;
   refresh: () => Promise<void>;
   addFolder: (f: Pick<Folder, "Name" | "LocalRoot" | "RemoteBase" | "Folders">) => Promise<void>;
   updateFolder: (f: Folder) => Promise<void>;
@@ -27,7 +29,7 @@ export interface DaemonState {
 }
 
 export function useDaemon(): DaemonState {
-  const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, error } = useSyncStore();
+  const { folders, status, progress, uploadBps, downloadBps, daemonOnline, loading, error, authRequired } = useSyncStore();
 
   // Manual refresh — re-fetches full state from the daemon directly.
   // Useful as a fallback when reconnecting after a missed event.
@@ -99,6 +101,7 @@ export function useDaemon(): DaemonState {
     daemonOnline,
     loading,
     error,
+    authRequired,
     refresh,
     addFolder,
     updateFolder,

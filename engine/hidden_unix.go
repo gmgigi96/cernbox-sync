@@ -12,3 +12,7 @@ import "strings"
 func isHidden(name string, _ string) bool {
 	return strings.HasPrefix(name, ".")
 }
+
+// validLocalName reports whether name can be stored on the local file system.
+// Any name the server sends is valid on Unix.
+func validLocalName(string) bool { return true }

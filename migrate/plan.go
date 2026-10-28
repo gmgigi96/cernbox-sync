@@ -312,7 +312,7 @@ func selectionExcluding(c *webdav.Client, excluded []string, includeHidden bool)
 
 	var visit func(encodedDir, plainDir string) error
 	visit = func(encodedDir, plainDir string) error {
-		children, err := c.Propfind(plainDir, 1)
+		children, err := c.Propfind(plainDir, 1) // the client escapes paths itself
 		if err != nil {
 			return err
 		}

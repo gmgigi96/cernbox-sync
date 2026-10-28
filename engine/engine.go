@@ -22,6 +22,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -84,6 +85,7 @@ func (c *bandwidthCounter) bytesPerSec() int64 {
 // call; using a fixed burst avoids having to split very large reads.
 // When counter is non-nil, each read is also recorded for bandwidth measurement.
 type rateLimitedReader struct {
+	ctx       context.Context
 	r         io.Reader
 	lim       *rate.Limiter
 	burstSize int
@@ -113,7 +115,7 @@ func (b *byteProgressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func newRateLimitedReader(r io.Reader, lim *rate.Limiter, counter *bandwidthCounter) io.Reader {
+func newRateLimitedReader(ctx context.Context, r io.Reader, lim *rate.Limiter, counter *bandwidthCounter) io.Reader {
 	if lim == nil && counter == nil {
 		return r
 	}
@@ -121,7 +123,7 @@ func newRateLimitedReader(r io.Reader, lim *rate.Limiter, counter *bandwidthCoun
 	if lim != nil {
 		burst = lim.Burst()
 	}
-	return &rateLimitedReader{r: r, lim: lim, burstSize: burst, counter: counter}
+	return &rateLimitedReader{ctx: ctx, r: r, lim: lim, burstSize: burst, counter: counter}
 }
 
 func (rl *rateLimitedReader) Read(p []byte) (int, error) {
@@ -132,7 +134,7 @@ func (rl *rateLimitedReader) Read(p []byte) (int, error) {
 	n, err := rl.r.Read(p)
 	if n > 0 {
 		if rl.lim != nil {
-			if waitErr := rl.lim.WaitN(context.Background(), n); waitErr != nil {
+			if waitErr := rl.lim.WaitN(rl.ctx, n); waitErr != nil {
 				return n, waitErr
 			}
 		}
@@ -190,14 +192,16 @@ type Config struct {
 type actionKind int
 
 const (
-	download     actionKind = iota // remote → local
-	upload                         // local → remote
-	deleteLocal                    // remote was deleted; remove local
-	deleteRemote                   // local was deleted; remove remote
-	mkcolRemote                    // create remote directory
-	mkdirLocal                     // create local directory
-	conflictTake                   // conflict: server wins, rename local
-	conflictDeleteLocal            // remote deleted while local changed: rename local as conflict, then delete
+	download            actionKind = iota // remote → local
+	upload                                // local → remote
+	deleteLocal                           // remote was deleted; remove local
+	deleteRemote                          // local was deleted; remove remote
+	mkcolRemote                           // create remote directory
+	mkdirLocal                            // create local directory
+	conflictTake                          // conflict: server wins, rename local
+	conflictDeleteLocal                   // remote deleted while local changed: rename local as conflict, then delete
+	moveRemote                            // local rename/move: one MOVE on the server
+	renameLocal                           // remote rename/move: os.Rename locally
 )
 
 type action struct {
@@ -206,6 +210,13 @@ type action struct {
 	isDir  bool
 	remote *webdav.Resource
 	local  *localInfo
+
+	// moveRemote / renameLocal only: path is the destination, from the source;
+	// moves lists the DB rows to rewrite (the item and everything below it);
+	// seq keeps renames in the order they were detected.
+	from  string
+	moves []db.Move
+	seq   int
 }
 
 type localInfo struct {
@@ -213,6 +224,8 @@ type localInfo struct {
 	size    int64
 	modTime time.Time
 	isDir   bool
+	dev     uint64 // device and inode, 0 when unavailable
+	ino     uint64
 }
 
 // logf writes to both the slog default logger and, when set, the per-folder logger.
@@ -230,9 +243,16 @@ func Run(cfg Config) error {
 		ctx = context.Background()
 	}
 
+	// runCtx is cancelled when the caller cancels or when the cycle must be
+	// aborted (e.g. the credentials were rejected); it aborts in-flight HTTP
+	// requests.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	logf(cfg.FolderLog, "[sync] starting — local: %s  remote: %s", cfg.LocalRoot, cfg.RemoteBase)
 
-	wdc := webdav.NewClient(cfg.RemoteBase, cfg.Username, cfg.Password)
+	wdc := webdav.NewClient(cfg.RemoteBase, cfg.Username, cfg.Password).WithContext(runCtx)
+	folders := normalizeFolders(cfg.Folders)
 
 	state, err := db.Open(cfg.DBPath)
 	if err != nil {
@@ -270,10 +290,9 @@ func Run(cfg Config) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	folders := plainFolders(cfg.Folders)
 	remoteMap, err := scanRemote(wdc, folders, cfg.SyncHiddenFiles, dbState)
 	if err != nil {
-		return fmt.Errorf("remote scan: %w", err)
+		return wrapAuth(ctx, fmt.Errorf("remote scan: %w", err))
 	}
 	logf(cfg.FolderLog, "[sync] remote resources: %d", len(remoteMap))
 
@@ -291,18 +310,63 @@ func Run(cfg Config) error {
 	logf(cfg.FolderLog, "[sync] local resources: %d", len(localMap))
 
 	// ── 4. Classify ──────────────────────────────────────────────────────────
-	actions := classify(remoteMap, localMap, dbState)
+	backfillIdentity(state, dbState, remoteMap, localMap)
+	renames := detectRenames(remoteMap, localMap, dbState)
+	actions := append(renames, classify(remoteMap, localMap, dbState)...)
+	sortActions(actions)
+	actions, refused := applyPermissions(actions, remoteMap, dbState)
+	actions, unsyncable := refuseInvalidLocalNames(actions)
+	refused = append(refused, unsyncable...)
 	logf(cfg.FolderLog, "[sync] actions: %d", len(actions))
+	for _, fe := range refused {
+		logf(cfg.FolderLog, "[sync] ERROR %s %q: %v", fe.Op, fe.Path, fe.Err)
+	}
 
 	// ── 5. Execute ───────────────────────────────────────────────────────────
 	uploadCounter := &bandwidthCounter{}
 	downloadCounter := &bandwidthCounter{}
-	if err := execute(ctx, cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter, uploadCounter, downloadCounter, cfg.TransferStreams, cfg.MetadataStreams); err != nil {
-		return fmt.Errorf("execute: %w", err)
+	fileErrs, authErr := execute(runCtx, cancel, cfg.LocalRoot, cfg.FolderLog, wdc, state, actions, cfg.OnProgress, cfg.UploadLimiter, cfg.DownloadLimiter, uploadCounter, downloadCounter, cfg.TransferStreams, cfg.MetadataStreams)
+	if authErr != nil {
+		return wrapAuth(ctx, fmt.Errorf("execute: %w", authErr))
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if all := append(refused, fileErrs...); len(all) > 0 {
+		sort.SliceStable(all, func(i, j int) bool { return all[i].Path < all[j].Path })
+		return &SyncError{Errors: all}
 	}
 
 	logf(cfg.FolderLog, "[sync] done")
 	return nil
+}
+
+// wrapAuth makes an authentication failure recognisable by its text as well
+// as by errors.Is(err, webdav.ErrUnauthorized). A cancelled caller context wins
+// over any error it caused.
+func wrapAuth(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(err, webdav.ErrUnauthorized) {
+		return fmt.Errorf("%w (the server rejected the credentials): %w", webdav.ErrUnauthorized, err)
+	}
+	return err
+}
+
+// normalizeFolders turns the stored selection (URL-encoded, as taken from
+// server hrefs) into plain relative paths.
+func normalizeFolders(folders []string) []string {
+	out := make([]string, 0, len(folders))
+	for _, f := range folders {
+		if decoded, err := url.PathUnescape(f); err == nil {
+			f = decoded
+		}
+		if f = strings.Trim(f, "/"); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // ─── remote scan ─────────────────────────────────────────────────────────────
@@ -369,7 +433,7 @@ func scanRemote(wdc *webdav.Client, folders []string, syncHiddenFiles bool, dbSt
 			if idx := strings.LastIndex(rel, "/"); idx >= 0 {
 				name = rel[idx+1:]
 			}
-			if isSyncMetadata(name) {
+			if isSyncMetadata(name) || isLockFile(name) {
 				continue
 			}
 			// Skip hidden entries unless enabled.
@@ -432,6 +496,7 @@ func dbEntryToResource(e *db.Entry) *webdav.Resource {
 		Size:         e.Size,
 		LastModified: e.LastModified,
 		FileID:       e.FileID,
+		Permissions:  e.Permissions,
 	}
 }
 
@@ -455,7 +520,10 @@ func scanLocal(root string, syncHiddenFiles bool) (map[string]*localInfo, error)
 
 		// Skip internal files — they live inside the local root but must
 		// never be uploaded or treated as sync-able files.
-		if rel != "" && (isSyncMetadata(d.Name()) || isConflictFile(d.Name())) {
+		if rel != "" && (isSyncMetadata(d.Name()) || isConflictFile(d.Name()) || isLockFile(d.Name())) {
+			if d.IsDir() && isLockFile(d.Name()) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -471,12 +539,14 @@ func scanLocal(root string, syncHiddenFiles bool) (map[string]*localInfo, error)
 		if err != nil {
 			return err
 		}
-		result[rel] = &localInfo{
+		li := &localInfo{
 			path:    absPath,
 			size:    info.Size(),
 			modTime: info.ModTime(),
 			isDir:   d.IsDir(),
 		}
+		li.dev, li.ino = fileIdentity(absPath, info)
+		result[rel] = li
 		return nil
 	})
 	return result, err
@@ -499,28 +569,31 @@ func isSyncMetadata(name string) bool {
 	return false
 }
 
-// plainFolders turns the selected sub-folders into plain relative paths, the
-// form used by the scans and the WebDAV client. Selections may be stored
-// URL-encoded, as taken from server hrefs.
-func plainFolders(folders []string) []string {
-	out := make([]string, 0, len(folders))
-	for _, f := range folders {
-		if decoded, err := url.PathUnescape(f); err == nil {
-			f = decoded
-		}
-		out = append(out, strings.Trim(f, "/"))
+// isLockFile reports whether name is an office/editor lock or scratch file
+// (MS Office "~$doc", LibreOffice ".~lock.doc#", Word "~WRL0001.tmp"). These
+// are only meaningful on the machine that created them and are never synced,
+// in either direction, whatever the hidden-files setting.
+func isLockFile(name string) bool {
+	switch {
+	case strings.HasPrefix(name, "~$"):
+		return true
+	case strings.HasPrefix(name, ".~lock.") && strings.HasSuffix(name, "#"):
+		return true
+	case strings.HasPrefix(name, "~") && strings.HasSuffix(name, ".tmp"):
+		return true
 	}
-	return out
+	return false
 }
 
-// keepSelected removes from localMap every entry outside the selected
+// keepSelected (folders already normalised) removes from localMap every entry outside the selected
 // sub-folders. The remote scan only covers the selection, so anything else
 // (e.g. files at the root of a selectively synced folder) would otherwise look
 // new and be uploaded, or look remotely deleted and be removed locally.
 // Entries seen by the remote scan are always kept, so a selection spelled
 // differently from the scanned paths can never hide a file that exists on
 // both sides (which would look locally deleted).
-func keepSelected(localMap map[string]*localInfo, remoteMap map[string]*webdav.Resource, selection []string) {
+func keepSelected(localMap map[string]*localInfo, remoteMap map[string]*webdav.Resource, folders []string) {
+	selection := folders
 	for path := range localMap {
 		if _, scanned := remoteMap[path]; scanned || path == "" {
 			continue
@@ -676,8 +749,50 @@ func classify(
 
 	// DB entries that are gone from both sides — clean up DB (handled during execute).
 
+	protectRemotelyDeletedDirs(actions)
 	sortActions(actions)
 	return actions
+}
+
+// protectRemotelyDeletedDirs keeps local data alive when a directory was
+// deleted on the server while something inside it is new or modified locally.
+// Such a directory (and every ancestor of the data to keep) is recreated on the
+// server instead of being removed locally; only the known and unchanged files
+// below it are still deleted locally.
+func protectRemotelyDeletedDirs(actions []action) {
+	doomed := make(map[string]int) // deleteLocal directories → index in actions
+	for i, a := range actions {
+		if a.kind == deleteLocal && a.isDir {
+			doomed[a.path] = i
+		}
+	}
+	if len(doomed) == 0 {
+		return
+	}
+	keep := make(map[string]bool)
+	for _, a := range actions {
+		switch a.kind {
+		case upload, mkcolRemote, conflictDeleteLocal:
+		default:
+			continue
+		}
+		for p := parentOf(a.path); p != ""; p = parentOf(p) {
+			if _, ok := doomed[p]; ok {
+				keep[p] = true
+			}
+		}
+	}
+	for p := range keep {
+		actions[doomed[p]].kind = mkcolRemote
+	}
+}
+
+// parentOf returns the parent directory of a relative path ("" for top level).
+func parentOf(p string) string {
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[:i]
+	}
+	return ""
 }
 
 // isLocalChanged returns true if the local file differs from the DB baseline.
@@ -695,6 +810,15 @@ func sortActions(actions []action) {
 	sort.SliceStable(actions, func(i, j int) bool {
 		ai, aj := actions[i], actions[j]
 
+		// Renames first, in the order they were detected (each one assumes
+		// the previous ones were applied).
+		if mi, mj := isMove(ai.kind), isMove(aj.kind); mi || mj {
+			if mi && mj {
+				return ai.seq < aj.seq
+			}
+			return mi
+		}
+
 		// Deletions: shallowest last (deepest first).
 		if isDelete(ai.kind) && isDelete(aj.kind) {
 			return depth(ai.path) > depth(aj.path)
@@ -709,12 +833,227 @@ func sortActions(actions []action) {
 }
 
 func isDelete(k actionKind) bool { return k == deleteLocal || k == deleteRemote }
+func isMove(k actionKind) bool   { return k == moveRemote || k == renameLocal }
 func depth(p string) int         { return strings.Count(p, "/") }
+
+// refuseInvalidLocalNames drops the actions that would create a local item
+// whose name the local file system cannot store (e.g. "a:b" on Windows) and
+// reports each of them. Nothing is written to the DB for them, so they are
+// neither deleted on the server nor retried as local deletions.
+func refuseInvalidLocalNames(actions []action) ([]action, []FileError) {
+	out := actions[:0]
+	var refused []FileError
+	for _, a := range actions {
+		if (a.kind == download || a.kind == mkdirLocal || a.kind == renameLocal) && !validLocalPath(a.path) {
+			refused = append(refused, FileError{Path: a.path, Op: kindName(a.kind), Err: ErrInvalidName})
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, refused
+}
+
+func validLocalPath(p string) bool {
+	for seg := range strings.SplitSeq(p, "/") {
+		if !validLocalName(seg) {
+			return false
+		}
+	}
+	return true
+}
+
+// ─── permissions ─────────────────────────────────────────────────────────────
+
+// applyPermissions enforces the server's oc:permissions on the planned
+// actions. Changes the server would refuse are not sent: modified or deleted
+// files are restored from the server, new items stay on disk untouched. Each
+// refusal is reported as a FileError. Resources without a permissions string
+// (property not provided) are unrestricted.
+//
+// Letters used: W (write file), D (delete), C (create file in folder),
+// K (create folder in folder).
+func applyPermissions(actions []action, remoteMap map[string]*webdav.Resource, dbState map[string]*db.Entry) ([]action, []FileError) {
+	out := make([]action, 0, len(actions))
+	var refused []FileError
+	refusedDirs := make(map[string]bool) // new local directories that were refused
+	mustKeep := make(map[string]bool)    // directories that still contain refused deletions
+	changed := false
+
+	refuse := func(a action) {
+		refused = append(refused, FileError{Path: a.path, Op: kindName(a.kind), Err: ErrReadOnly})
+	}
+	allows := func(perms, letter string) bool { return perms == "" || strings.Contains(perms, letter) }
+	createDenied := func(path, letter string) bool {
+		parent := parentOf(path)
+		if refusedDirs[parent] {
+			return true
+		}
+		r := remoteMap[parent]
+		return r != nil && !allows(r.Permissions, letter)
+	}
+	restore := func(rem *webdav.Resource, path string) action {
+		changed = true
+		if rem.IsDir {
+			return action{kind: mkdirLocal, path: path, isDir: true, remote: rem}
+		}
+		return action{kind: download, path: path, remote: rem}
+	}
+
+	for _, a := range actions {
+		rem := remoteMap[a.path]
+		switch a.kind {
+		case upload:
+			if rem != nil && !rem.IsDir {
+				if allows(rem.Permissions, "W") {
+					break
+				}
+				switch {
+				case dbState[a.path] != nil:
+					// Edited locally in a read-only location: put the server version back.
+					refuse(a)
+					out = append(out, restore(rem, a.path))
+				case a.local.size == rem.Size:
+					out = append(out, restore(rem, a.path))
+				default:
+					// First sync, contents differ: keep the local file as a conflict copy.
+					changed = true
+					out = append(out, action{kind: conflictTake, path: a.path, remote: rem, local: a.local})
+				}
+				continue
+			}
+			if rem == nil && createDenied(a.path, "C") {
+				refuse(a)
+				continue
+			}
+		case mkcolRemote:
+			if rem == nil && createDenied(a.path, "K") {
+				refusedDirs[a.path] = true
+				refuse(a)
+				continue
+			}
+		case deleteRemote:
+			if rem == nil {
+				break
+			}
+			denied := !allows(rem.Permissions, "D")
+			if denied || mustKeep[a.path] {
+				if denied {
+					refuse(a)
+				}
+				for p := parentOf(a.path); p != ""; p = parentOf(p) {
+					mustKeep[p] = true
+				}
+				out = append(out, restore(rem, a.path))
+				continue
+			}
+		}
+		out = append(out, a)
+	}
+	if changed {
+		sortActions(out)
+	}
+	return out, refused
+}
 
 // ─── execute ─────────────────────────────────────────────────────────────────
 
+// executor carries everything the actions of one cycle share.
+type executor struct {
+	ctx       context.Context
+	localRoot string
+	fl        *synclog.Logger
+	wdc       *webdav.Client
+	state     *db.DB
+
+	uploadLimiter, downloadLimiter *rate.Limiter
+	uploadCounter, downloadCounter *bandwidthCounter
+	onByteProgress                 func(path string, bytesDone, bytesTotal int64)
+
+	// dirs are the final DB entries of directories handled this cycle. They
+	// are committed only once everything below them is synced: a directory's
+	// ETag in the DB lets the next scan skip its whole subtree, so recording it
+	// early would hide children that failed or were never reached.
+	dirMu sync.Mutex
+	dirs  []db.Entry
+
+	// failedMoves are the destinations of renames that could not be done; the
+	// rest of the cycle leaves them (and everything below) alone.
+	failMu      sync.Mutex
+	failedMoves []string
+}
+
+// upsert writes an entry, recording the local identity (inode) of the item.
+func (x *executor) upsert(e db.Entry) error {
+	if e.Inode == 0 {
+		abs := filepath.Join(x.localRoot, filepath.FromSlash(e.Path))
+		if st, err := os.Lstat(abs); err == nil {
+			e.Device, e.Inode = fileIdentity(abs, st)
+		}
+	}
+	return x.state.Upsert(e)
+}
+
+func (x *executor) moveFailed(dst string) {
+	x.failMu.Lock()
+	x.failedMoves = append(x.failedMoves, dst)
+	x.failMu.Unlock()
+}
+
+func (x *executor) underFailedMove(path string) bool {
+	x.failMu.Lock()
+	defer x.failMu.Unlock()
+	for _, d := range x.failedMoves {
+		if path == d || strings.HasPrefix(path, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func isAncestorOfAny(dir string, paths []string) bool {
+	for _, p := range paths {
+		if strings.HasPrefix(p, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func isInsideAny(p string, dirs []string) bool {
+	for _, d := range dirs {
+		if strings.HasPrefix(p, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (x *executor) deferDir(e db.Entry) {
+	x.dirMu.Lock()
+	x.dirs = append(x.dirs, e)
+	x.dirMu.Unlock()
+}
+
+// placeholderDir records a directory without ETag so that it is revisited on
+// the next scan, unless the DB already knows it.
+func (x *executor) placeholderDir(path string) error {
+	e, err := x.state.Get(path)
+	if err != nil {
+		return err
+	}
+	if e != nil {
+		return nil
+	}
+	return x.upsert(db.Entry{Path: path, IsDir: true})
+}
+
+// execute runs the planned actions. A failing action is collected and the
+// others continue; the DB is only updated for actions that succeeded. When
+// the server rejects the credentials the whole cycle is aborted (cancel is
+// called, nothing further is executed) and that error is returned separately.
 func execute(
 	ctx context.Context,
+	cancel context.CancelFunc,
 	localRoot string,
 	fl *synclog.Logger,
 	wdc *webdav.Client,
@@ -724,7 +1063,7 @@ func execute(
 	uploadLimiter, downloadLimiter *rate.Limiter,
 	uploadCounter, downloadCounter *bandwidthCounter,
 	transferStreams, metadataStreams int,
-) error {
+) ([]FileError, error) {
 	if transferStreams < 1 {
 		transferStreams = 1
 	}
@@ -747,8 +1086,8 @@ func execute(
 	// path, bytes done, and total size so the ticker can report sub-action
 	// progress between action completions.
 	var (
-		fileMu        sync.Mutex
-		fileProgress  = make(map[string][2]int64) // path → [bytesDone, bytesTotal]
+		fileMu       sync.Mutex
+		fileProgress = make(map[string][2]int64) // path → [bytesDone, bytesTotal]
 	)
 	setFileProgress := func(path string, bytesDone, bytesTotal int64) {
 		fileMu.Lock()
@@ -783,11 +1122,40 @@ func execute(
 		}
 	}
 
-	// onByteProgress is passed into execOne so uploads/downloads can report
-	// streaming byte progress.
-	onByteProgress := func(path string, bytesDone, bytesTotal int64) {
-		setFileProgress(path, bytesDone, bytesTotal)
+	x := &executor{
+		ctx:             ctx,
+		localRoot:       localRoot,
+		fl:              fl,
+		wdc:             wdc,
+		state:           state,
+		uploadLimiter:   uploadLimiter,
+		downloadLimiter: downloadLimiter,
+		uploadCounter:   uploadCounter,
+		downloadCounter: downloadCounter,
 		// No need to call onProgress here; the ticker fires every second.
+		onByteProgress: setFileProgress,
+	}
+
+	var (
+		errMu    sync.Mutex
+		fileErrs []FileError
+		authErr  error
+	)
+	fail := func(a action, err error) {
+		logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
+		errMu.Lock()
+		defer errMu.Unlock()
+		switch {
+		case errors.Is(err, webdav.ErrUnauthorized):
+			if authErr == nil {
+				authErr = err
+			}
+			cancel() // abort the cycle: nothing more is sent or deleted
+		case ctx.Err() != nil:
+			// Interrupted, not failed.
+		default:
+			fileErrs = append(fileErrs, FileError{Path: a.path, Op: kindName(a.kind), Err: err})
+		}
 	}
 
 	// runPool dispatches a slice of actions to a worker pool of size n.
@@ -817,8 +1185,8 @@ func execute(
 						bd, bt := aggregateFileProgress()
 						onProgress(d, total, a.path, up, down, bd, bt)
 					}
-					if err := execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress); err != nil {
-						logf(fl, "[sync] ERROR %s %q: %v", kindName(a.kind), a.path, err)
+					if err := x.execOne(a); err != nil {
+						fail(a, err)
 					}
 					reportDone(a.path)
 				}
@@ -847,9 +1215,11 @@ func execute(
 	//   1. Dir creates  — mkdirLocal / mkcolRemote  (shallowest-first, then conflicts)
 	//   2. Transfers    — upload / download          (fully independent)
 	//   3. Deletes      — deleteLocal / deleteRemote (deepest-first)
-	var creates, conflicts, transfers, teardown []action
+	var creates, conflicts, transfers, teardown, moves []action
 	for _, a := range actions {
 		switch a.kind {
+		case moveRemote, renameLocal:
+			moves = append(moves, a)
 		case upload, download:
 			transfers = append(transfers, a)
 		case deleteLocal, deleteRemote:
@@ -890,6 +1260,30 @@ func execute(
 		defer close(stopTicker)
 	}
 
+	// Phase 0 — renames, one at a time in detection order. Remote directories
+	// that a move lands in must exist first; directories inside a moved
+	// subtree can only be created afterwards.
+	var dests []string
+	for _, m := range moves {
+		if m.kind == moveRemote {
+			dests = append(dests, m.path)
+		}
+	}
+	var early []action
+	if len(dests) > 0 {
+		rest := creates[:0:0]
+		for _, c := range creates {
+			if c.kind == mkcolRemote && isAncestorOfAny(c.path, dests) && !isInsideAny(c.path, dests) {
+				early = append(early, c)
+			} else {
+				rest = append(rest, c)
+			}
+		}
+		creates = rest
+	}
+	runByDepthTier(early, metadataStreams)
+	runPool(moves, 1)
+
 	// Phase 1a — concurrent dir creates, tier by tier (parents before children).
 	runByDepthTier(creates, metadataStreams)
 
@@ -902,138 +1296,123 @@ func execute(
 	// Phase 3 — concurrent deletes, tier by tier (children before parents).
 	runByDepthTier(teardown, metadataStreams)
 
+	// Commit directory state, except for directories with a failed descendant
+	// and when the cycle was cut short (some of their content never ran).
+	if authErr == nil && ctx.Err() == nil {
+		for _, e := range x.dirs {
+			blocked := false
+			for _, fe := range fileErrs {
+				if strings.HasPrefix(fe.Path, e.Path+"/") {
+					blocked = true
+					break
+				}
+			}
+			if blocked {
+				continue
+			}
+			if err := x.upsert(e); err != nil {
+				fileErrs = append(fileErrs, FileError{Path: e.Path, Op: "updateState", Err: err})
+			}
+		}
+	}
+
 	if onProgress != nil {
 		up, down := bps()
 		onProgress(total, total, "", up, down, 0, 0)
 	}
-	return nil
+	return fileErrs, authErr
 }
 
-func execOne(
-	localRoot string,
-	fl *synclog.Logger,
-	wdc *webdav.Client,
-	state *db.DB,
-	a action,
-	uploadLimiter, downloadLimiter *rate.Limiter,
-	uploadCounter, downloadCounter *bandwidthCounter,
-	onByteProgress func(path string, bytesDone, bytesTotal int64),
-) error {
-	localAbs := filepath.Join(localRoot, filepath.FromSlash(a.path))
+func (x *executor) execOne(a action) error {
+	localAbs := filepath.Join(x.localRoot, filepath.FromSlash(a.path))
+	fl := x.fl
+
+	if !isMove(a.kind) && x.underFailedMove(a.path) {
+		logf(fl, "[sync] skip %s %q — its rename failed", kindName(a.kind), a.path)
+		return nil
+	}
 
 	switch a.kind {
+
+	case moveRemote:
+		return x.moveRemote(a)
+
+	case renameLocal:
+		return x.renameLocal(a)
 
 	case mkdirLocal:
 		logf(fl, "[sync] mkdir local  %q", a.path)
 		if err := os.MkdirAll(localAbs, 0o755); err != nil {
 			return err
 		}
-		return state.Upsert(db.Entry{
+		x.deferDir(db.Entry{
 			Path:         a.path,
 			ETag:         a.remote.ETag,
 			IsDir:        true,
 			LastModified: a.remote.LastModified,
 			FileID:       a.remote.FileID,
+			Permissions:  a.remote.Permissions,
 		})
+		return x.placeholderDir(a.path)
 
 	case download:
 		logf(fl, "[sync] download     %q", a.path)
-		if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
-			return err
-		}
-		rc, err := wdc.Get(a.path)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = rc.Close() }()
-		f, err := os.CreateTemp(filepath.Dir(localAbs), ".tmp-sync-*")
-		if err != nil {
-			return err
-		}
-		tmpPath := f.Name()
-		fileTotal := a.remote.Size
-		src := newRateLimitedReader(rc, downloadLimiter, downloadCounter)
-		if onByteProgress != nil && fileTotal > 0 {
-			src = newByteProgressReader(src, a.path, fileTotal, onByteProgress)
-		}
-		if _, err := io.Copy(f, src); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmpPath)
-			return err
-		}
-		if err := f.Close(); err != nil {
-			_ = os.Remove(tmpPath)
-			return err
-		}
-		if err := os.Rename(tmpPath, localAbs); err != nil {
-			_ = os.Remove(tmpPath)
-			return err
-		}
-		if !a.remote.LastModified.IsZero() {
-			_ = os.Chtimes(localAbs, a.remote.LastModified, a.remote.LastModified)
-		}
-		return state.Upsert(db.Entry{
-			Path:         a.path,
-			ETag:         a.remote.ETag,
-			IsDir:        false,
-			Size:         a.remote.Size,
-			LastModified: a.remote.LastModified,
-			FileID:       a.remote.FileID,
-		})
+		return x.download(a, localAbs)
 
 	case mkcolRemote:
 		logf(fl, "[sync] mkcol remote %q", a.path)
-		if err := wdc.Mkcol(a.path); err != nil {
+		if err := x.wdc.Mkcol(a.path); err != nil {
 			return err
 		}
-		// Re-fetch the new etag for this directory.
-		resources, err := wdc.Propfind(a.path, 0)
-		if err != nil || len(resources) == 0 {
-			// Best-effort: store with empty etag; next sync will correct it.
-			return state.Upsert(db.Entry{Path: a.path, IsDir: true})
+		// Fetch the new etag for this directory.
+		resources, err := x.wdc.Propfind(a.path, 0)
+		if err != nil && (errors.Is(err, webdav.ErrUnauthorized) || x.ctx.Err() != nil) {
+			return err
 		}
-		r := resources[0]
-		return state.Upsert(db.Entry{
-			Path:         a.path,
-			ETag:         r.ETag,
-			IsDir:        true,
-			LastModified: r.LastModified,
-			FileID:       r.FileID,
-		})
+		if err == nil && len(resources) > 0 {
+			r := resources[0]
+			x.deferDir(db.Entry{
+				Path:         a.path,
+				ETag:         r.ETag,
+				IsDir:        true,
+				LastModified: r.LastModified,
+				FileID:       r.FileID,
+				Permissions:  r.Permissions,
+			})
+		}
+		// Otherwise the directory stays without etag; the next sync corrects it.
+		return x.placeholderDir(a.path)
 
 	case upload:
 		logf(fl, "[sync] upload       %q", a.path)
-		f, err := os.Open(localAbs)
-		if err != nil {
+		size := a.local.size
+		wrap := func(r io.Reader) io.Reader {
+			src := newRateLimitedReader(x.ctx, r, x.uploadLimiter, x.uploadCounter)
+			if x.onByteProgress != nil && size > 0 {
+				src = newByteProgressReader(src, a.path, size, x.onByteProgress)
+			}
+			return src
+		}
+		if err := x.wdc.PutFile(a.path, localAbs, wrap); err != nil {
 			return err
 		}
-		defer func() { _ = f.Close() }()
-		src := newRateLimitedReader(f, uploadLimiter, uploadCounter)
-		if onByteProgress != nil && a.local.size > 0 {
-			src = newByteProgressReader(src, a.path, a.local.size, onByteProgress)
-		}
-		if err := wdc.Put(a.path, src, a.local.size); err != nil {
-			return err
-		}
-		// Re-fetch etag so DB matches server.
-		resources, err := wdc.Propfind(a.path, 0)
-		if err != nil || len(resources) == 0 {
-			return state.Upsert(db.Entry{
-				Path:         a.path,
-				IsDir:        false,
-				Size:         a.local.size,
-				LastModified: a.local.modTime,
-			})
-		}
-		r := resources[0]
-		return state.Upsert(db.Entry{
+		// The DB records the local file as uploaded (size and mtime as found
+		// locally), so that a later server-side change is not mistaken for a
+		// local one. The etag is the one the server assigned.
+		e := db.Entry{
 			Path:         a.path,
-			ETag:         r.ETag,
-			IsDir:        false,
-			Size:         r.Size,
-			LastModified: r.LastModified,
-			FileID:       r.FileID,
-		})
+			Size:         size,
+			LastModified: a.local.modTime,
+		}
+		resources, err := x.wdc.Propfind(a.path, 0)
+		if err != nil && (errors.Is(err, webdav.ErrUnauthorized) || x.ctx.Err() != nil) {
+			return err
+		}
+		if err == nil && len(resources) > 0 {
+			r := resources[0]
+			e.ETag, e.FileID, e.Permissions = r.ETag, r.FileID, r.Permissions
+		}
+		return x.upsert(e)
 
 	case deleteLocal:
 		logf(fl, "[sync] delete local %q", a.path)
@@ -1046,14 +1425,14 @@ func execOne(
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		return state.Delete(a.path)
+		return x.state.Delete(a.path)
 
 	case deleteRemote:
 		logf(fl, "[sync] delete remote %q", a.path)
-		if err := wdc.Delete(a.path); err != nil {
+		if err := x.wdc.Delete(a.path); err != nil {
 			return err
 		}
-		return state.Delete(a.path)
+		return x.state.Delete(a.path)
 
 	case conflictTake:
 		// Rename local copy, then download server version.
@@ -1062,12 +1441,11 @@ func execOne(
 		if err := os.Rename(localAbs, conflictPath); err != nil {
 			return fmt.Errorf("rename conflict copy: %w", err)
 		}
-		if err := state.AddConflict(a.path, conflictPath, time.Now()); err != nil {
+		if err := x.state.AddConflict(a.path, conflictPath, time.Now()); err != nil {
 			logf(fl, "[sync] WARNING record conflict %q: %v", a.path, err)
 		}
 		// Now download the server version as if it were a fresh download.
-		a.kind = download
-		return execOne(localRoot, fl, wdc, state, a, uploadLimiter, downloadLimiter, uploadCounter, downloadCounter, onByteProgress)
+		return x.download(a, localAbs)
 
 	case conflictDeleteLocal:
 		// Remote was deleted while local was modified: preserve local changes as a
@@ -1077,40 +1455,136 @@ func execOne(
 		if err := os.Rename(localAbs, conflictPath); err != nil {
 			return fmt.Errorf("rename conflict copy: %w", err)
 		}
-		if err := state.AddConflict(a.path, conflictPath, time.Now()); err != nil {
+		if err := x.state.AddConflict(a.path, conflictPath, time.Now()); err != nil {
 			logf(fl, "[sync] WARNING record conflict %q: %v", a.path, err)
 		}
-		return state.Delete(a.path)
+		return x.state.Delete(a.path)
 	}
 
 	return nil
 }
 
-// isConflictFile reports whether name matches the conflict-rename pattern.
+// download fetches a.path into a temporary file next to its destination and
+// moves it into place only once the whole body has arrived. The DB records
+// what was actually written (the ETag, size and mtime of the content served by
+// the GET), which may be newer than the PROPFIND the plan was built from.
+func (x *executor) download(a action, localAbs string) error {
+	if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
+		return err
+	}
+	rc, info, err := x.wdc.GetWithInfo(a.path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rc.Close() }()
+	f, err := os.CreateTemp(filepath.Dir(localAbs), ".tmp-sync-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	abort := func(err error) error {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	fileTotal := a.remote.Size
+	if info.ContentLength >= 0 {
+		fileTotal = info.ContentLength
+	}
+	src := newRateLimitedReader(x.ctx, rc, x.downloadLimiter, x.downloadCounter)
+	if x.onByteProgress != nil && fileTotal > 0 {
+		src = newByteProgressReader(src, a.path, fileTotal, x.onByteProgress)
+	}
+	n, err := io.Copy(f, src)
+	if err != nil {
+		return abort(err)
+	}
+	// A different ETag means the file changed on the server after the scan;
+	// whatever was served is then the truth. Otherwise the body must be as
+	// long as the scan said.
+	changed := info.ETag != "" && info.ETag != a.remote.ETag
+	if info.ContentLength >= 0 && n != info.ContentLength {
+		return abort(fmt.Errorf("incomplete download: received %d of %d bytes", n, info.ContentLength))
+	}
+	if !changed && a.remote.Size > 0 && n != a.remote.Size {
+		return abort(fmt.Errorf("incomplete download: received %d of %d bytes", n, a.remote.Size))
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, localAbs); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	etag, mtime := a.remote.ETag, a.remote.LastModified
+	if info.ETag != "" {
+		etag = info.ETag
+	}
+	if changed && !info.LastModified.IsZero() {
+		mtime = info.LastModified
+	}
+	if !mtime.IsZero() {
+		_ = os.Chtimes(localAbs, mtime, mtime)
+	} else if st, err := os.Stat(localAbs); err == nil {
+		mtime = st.ModTime()
+	}
+	return x.upsert(db.Entry{
+		Path:         a.path,
+		ETag:         etag,
+		IsDir:        false,
+		Size:         n,
+		LastModified: mtime,
+		FileID:       a.remote.FileID,
+		Permissions:  a.remote.Permissions,
+	})
+}
+
+// isConflictFile reports whether name matches the conflict-rename pattern
+// "<base>.conflict-YYYYMMDD-HHMMSS[-N]<ext>".
 func isConflictFile(name string) bool {
 	ext := filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
-	// base ends with ".conflict-YYYYMMDD-HHMMSS"
 	const prefix = ".conflict-"
 	idx := strings.LastIndex(base, prefix)
 	if idx < 0 {
 		return false
 	}
 	suffix := base[idx+len(prefix):]
-	// expect exactly "YYYYMMDD-HHMMSS" (15 chars)
-	if len(suffix) != 15 {
+	// "YYYYMMDD-HHMMSS" (15 chars), optionally followed by "-<number>".
+	if len(suffix) < 15 {
 		return false
 	}
-	_, err := time.Parse("20060102-150405", suffix)
+	if rest := suffix[15:]; rest != "" {
+		if rest[0] != '-' || len(rest) == 1 {
+			return false
+		}
+		for _, c := range rest[1:] {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	_, err := time.Parse("20060102-150405", suffix[:15])
 	return err == nil
 }
 
-// conflictName appends a timestamp suffix before the file extension.
+// conflictName appends a timestamp suffix before the file extension. If that
+// name is taken (several conflicts within a second), a counter is added so an
+// existing conflict copy is never overwritten.
 func conflictName(abs string) string {
 	ext := filepath.Ext(abs)
 	base := strings.TrimSuffix(abs, ext)
 	ts := time.Now().Format("20060102-150405")
-	return fmt.Sprintf("%s.conflict-%s%s", base, ts, ext)
+	name := fmt.Sprintf("%s.conflict-%s%s", base, ts, ext)
+	for n := 2; ; n++ {
+		if _, err := os.Lstat(name); os.IsNotExist(err) {
+			return name
+		}
+		name = fmt.Sprintf("%s.conflict-%s-%d%s", base, ts, n, ext)
+	}
 }
 
 func kindName(k actionKind) string {
@@ -1131,6 +1605,10 @@ func kindName(k actionKind) string {
 		return "conflict"
 	case conflictDeleteLocal:
 		return "conflictDelete"
+	case moveRemote:
+		return "move"
+	case renameLocal:
+		return "renameLocal"
 	default:
 		return "unknown"
 	}

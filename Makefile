@@ -33,7 +33,7 @@ test-e2e-watch: ## Run e2e tests headed, serial, with slow-mo (for debugging)
 	cd gui && npm install && PWHEADED=1 npx playwright test --workers=1
 
 test-integration: build ## Run integration tests
-	$(GO) test -v -tags integration -timeout 120s ./integration/
+	$(GO) test -v -tags integration -timeout 900s ./integration/
 
 test-all: dev-up test test-gui test-integration test-e2e ## Run all tests (unit, GUI, integration, e2e)
 

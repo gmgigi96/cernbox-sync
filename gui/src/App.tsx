@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useSyncStore, type DaemonSnapshot, type DaemonEvent } from "./store/syncStore";
@@ -84,6 +84,18 @@ export function App() {
       .catch(() => setAccount(false));
   }, []);
 
+  // After a re-login from the auth banner (authRequired true -> false), reload
+  // the account so the pickers don't use the stale password.
+  const prevAuthRequired = useRef(false);
+  useEffect(() => {
+    if (prevAuthRequired.current && !daemon.authRequired) {
+      ipc.getAccount()
+        .then((acc) => { if (acc?.username) setAccount(acc); })
+        .catch(() => {});
+    }
+    prevAuthRequired.current = daemon.authRequired;
+  }, [daemon.authRequired]);
+
   // Whether the setup wizard is shown, decided once the account and the
   // folders are known. null = not decided yet.
   const [wizard, setWizard] = useState<boolean | null>(null);
@@ -126,7 +138,7 @@ export function App() {
   // Space picker replaces the main content area.
   if (flow.step === "spacePicker") {
     return (
-      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <SpacePicker
           serverUrl={SERVER_URL}
           username={account.username}
@@ -144,7 +156,7 @@ export function App() {
   if (flow.step === "folderPicker") {
     const { space, existingFolder } = flow;
     return (
-      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <FolderPicker
           space={space}
           username={account.username}
@@ -161,7 +173,7 @@ export function App() {
   if (flow.step === "localPath") {
     const { space, remoteUrls, existingFolder } = flow;
     return (
-      <Layout page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <LocalFolderPicker
           space={space}
           remoteUrls={remoteUrls}
@@ -189,7 +201,7 @@ export function App() {
   const sidebarPage: NavPage = (page === "folderDetail" || page === "conflicts") ? "folders" : page;
 
   return (
-    <Layout page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
+    <Layout serverUrl={SERVER_URL} page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
       {page === "dashboard" && (
         <Dashboard
           daemon={daemon}
