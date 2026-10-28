@@ -200,6 +200,8 @@ const (
 	mkdirLocal                            // create local directory
 	conflictTake                          // conflict: server wins, rename local
 	conflictDeleteLocal                   // remote deleted while local changed: rename local as conflict, then delete
+	moveRemote                            // local rename/move: one MOVE on the server
+	renameLocal                           // remote rename/move: os.Rename locally
 )
 
 type action struct {
@@ -208,6 +210,13 @@ type action struct {
 	isDir  bool
 	remote *webdav.Resource
 	local  *localInfo
+
+	// moveRemote / renameLocal only: path is the destination, from the source;
+	// moves lists the DB rows to rewrite (the item and everything below it);
+	// seq keeps renames in the order they were detected.
+	from  string
+	moves []db.Move
+	seq   int
 }
 
 type localInfo struct {
@@ -215,6 +224,8 @@ type localInfo struct {
 	size    int64
 	modTime time.Time
 	isDir   bool
+	dev     uint64 // device and inode, 0 when unavailable
+	ino     uint64
 }
 
 // logf writes to both the slog default logger and, when set, the per-folder logger.
@@ -299,7 +310,10 @@ func Run(cfg Config) error {
 	logf(cfg.FolderLog, "[sync] local resources: %d", len(localMap))
 
 	// ── 4. Classify ──────────────────────────────────────────────────────────
-	actions := classify(remoteMap, localMap, dbState)
+	backfillIdentity(state, dbState, remoteMap, localMap)
+	renames := detectRenames(remoteMap, localMap, dbState)
+	actions := append(renames, classify(remoteMap, localMap, dbState)...)
+	sortActions(actions)
 	actions, refused := applyPermissions(actions, remoteMap, dbState)
 	logf(cfg.FolderLog, "[sync] actions: %d", len(actions))
 	for _, fe := range refused {
@@ -523,12 +537,14 @@ func scanLocal(root string, syncHiddenFiles bool) (map[string]*localInfo, error)
 		if err != nil {
 			return err
 		}
-		result[rel] = &localInfo{
+		li := &localInfo{
 			path:    absPath,
 			size:    info.Size(),
 			modTime: info.ModTime(),
 			isDir:   d.IsDir(),
 		}
+		li.dev, li.ino = fileIdentity(info)
+		result[rel] = li
 		return nil
 	})
 	return result, err
@@ -792,6 +808,15 @@ func sortActions(actions []action) {
 	sort.SliceStable(actions, func(i, j int) bool {
 		ai, aj := actions[i], actions[j]
 
+		// Renames first, in the order they were detected (each one assumes
+		// the previous ones were applied).
+		if mi, mj := isMove(ai.kind), isMove(aj.kind); mi || mj {
+			if mi && mj {
+				return ai.seq < aj.seq
+			}
+			return mi
+		}
+
 		// Deletions: shallowest last (deepest first).
 		if isDelete(ai.kind) && isDelete(aj.kind) {
 			return depth(ai.path) > depth(aj.path)
@@ -806,6 +831,7 @@ func sortActions(actions []action) {
 }
 
 func isDelete(k actionKind) bool { return k == deleteLocal || k == deleteRemote }
+func isMove(k actionKind) bool   { return k == moveRemote || k == renameLocal }
 func depth(p string) int         { return strings.Count(p, "/") }
 
 // ─── permissions ─────────────────────────────────────────────────────────────
@@ -921,6 +947,56 @@ type executor struct {
 	// early would hide children that failed or were never reached.
 	dirMu sync.Mutex
 	dirs  []db.Entry
+
+	// failedMoves are the destinations of renames that could not be done; the
+	// rest of the cycle leaves them (and everything below) alone.
+	failMu      sync.Mutex
+	failedMoves []string
+}
+
+// upsert writes an entry, recording the local identity (inode) of the item.
+func (x *executor) upsert(e db.Entry) error {
+	if e.Inode == 0 {
+		if st, err := os.Lstat(filepath.Join(x.localRoot, filepath.FromSlash(e.Path))); err == nil {
+			e.Device, e.Inode = fileIdentity(st)
+		}
+	}
+	return x.state.Upsert(e)
+}
+
+func (x *executor) moveFailed(dst string) {
+	x.failMu.Lock()
+	x.failedMoves = append(x.failedMoves, dst)
+	x.failMu.Unlock()
+}
+
+func (x *executor) underFailedMove(path string) bool {
+	x.failMu.Lock()
+	defer x.failMu.Unlock()
+	for _, d := range x.failedMoves {
+		if path == d || strings.HasPrefix(path, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func isAncestorOfAny(dir string, paths []string) bool {
+	for _, p := range paths {
+		if strings.HasPrefix(p, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func isInsideAny(p string, dirs []string) bool {
+	for _, d := range dirs {
+		if strings.HasPrefix(p, d+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (x *executor) deferDir(e db.Entry) {
@@ -939,7 +1015,7 @@ func (x *executor) placeholderDir(path string) error {
 	if e != nil {
 		return nil
 	}
-	return x.state.Upsert(db.Entry{Path: path, IsDir: true})
+	return x.upsert(db.Entry{Path: path, IsDir: true})
 }
 
 // execute runs the planned actions. A failing action is collected and the
@@ -1110,9 +1186,11 @@ func execute(
 	//   1. Dir creates  — mkdirLocal / mkcolRemote  (shallowest-first, then conflicts)
 	//   2. Transfers    — upload / download          (fully independent)
 	//   3. Deletes      — deleteLocal / deleteRemote (deepest-first)
-	var creates, conflicts, transfers, teardown []action
+	var creates, conflicts, transfers, teardown, moves []action
 	for _, a := range actions {
 		switch a.kind {
+		case moveRemote, renameLocal:
+			moves = append(moves, a)
 		case upload, download:
 			transfers = append(transfers, a)
 		case deleteLocal, deleteRemote:
@@ -1153,6 +1231,30 @@ func execute(
 		defer close(stopTicker)
 	}
 
+	// Phase 0 — renames, one at a time in detection order. Remote directories
+	// that a move lands in must exist first; directories inside a moved
+	// subtree can only be created afterwards.
+	var dests []string
+	for _, m := range moves {
+		if m.kind == moveRemote {
+			dests = append(dests, m.path)
+		}
+	}
+	var early []action
+	if len(dests) > 0 {
+		rest := creates[:0:0]
+		for _, c := range creates {
+			if c.kind == mkcolRemote && isAncestorOfAny(c.path, dests) && !isInsideAny(c.path, dests) {
+				early = append(early, c)
+			} else {
+				rest = append(rest, c)
+			}
+		}
+		creates = rest
+	}
+	runByDepthTier(early, metadataStreams)
+	runPool(moves, 1)
+
 	// Phase 1a — concurrent dir creates, tier by tier (parents before children).
 	runByDepthTier(creates, metadataStreams)
 
@@ -1179,7 +1281,7 @@ func execute(
 			if blocked {
 				continue
 			}
-			if err := state.Upsert(e); err != nil {
+			if err := x.upsert(e); err != nil {
 				fileErrs = append(fileErrs, FileError{Path: e.Path, Op: "updateState", Err: err})
 			}
 		}
@@ -1196,7 +1298,18 @@ func (x *executor) execOne(a action) error {
 	localAbs := filepath.Join(x.localRoot, filepath.FromSlash(a.path))
 	fl := x.fl
 
+	if !isMove(a.kind) && x.underFailedMove(a.path) {
+		logf(fl, "[sync] skip %s %q — its rename failed", kindName(a.kind), a.path)
+		return nil
+	}
+
 	switch a.kind {
+
+	case moveRemote:
+		return x.moveRemote(a)
+
+	case renameLocal:
+		return x.renameLocal(a)
 
 	case mkdirLocal:
 		logf(fl, "[sync] mkdir local  %q", a.path)
@@ -1270,7 +1383,7 @@ func (x *executor) execOne(a action) error {
 			r := resources[0]
 			e.ETag, e.FileID, e.Permissions = r.ETag, r.FileID, r.Permissions
 		}
-		return x.state.Upsert(e)
+		return x.upsert(e)
 
 	case deleteLocal:
 		logf(fl, "[sync] delete local %q", a.path)
@@ -1389,7 +1502,7 @@ func (x *executor) download(a action, localAbs string) error {
 	} else if st, err := os.Stat(localAbs); err == nil {
 		mtime = st.ModTime()
 	}
-	return x.state.Upsert(db.Entry{
+	return x.upsert(db.Entry{
 		Path:         a.path,
 		ETag:         etag,
 		IsDir:        false,
@@ -1400,31 +1513,49 @@ func (x *executor) download(a action, localAbs string) error {
 	})
 }
 
-// isConflictFile reports whether name matches the conflict-rename pattern.
+// isConflictFile reports whether name matches the conflict-rename pattern
+// "<base>.conflict-YYYYMMDD-HHMMSS[-N]<ext>".
 func isConflictFile(name string) bool {
 	ext := filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
-	// base ends with ".conflict-YYYYMMDD-HHMMSS"
 	const prefix = ".conflict-"
 	idx := strings.LastIndex(base, prefix)
 	if idx < 0 {
 		return false
 	}
 	suffix := base[idx+len(prefix):]
-	// expect exactly "YYYYMMDD-HHMMSS" (15 chars)
-	if len(suffix) != 15 {
+	// "YYYYMMDD-HHMMSS" (15 chars), optionally followed by "-<number>".
+	if len(suffix) < 15 {
 		return false
 	}
-	_, err := time.Parse("20060102-150405", suffix)
+	if rest := suffix[15:]; rest != "" {
+		if rest[0] != '-' || len(rest) == 1 {
+			return false
+		}
+		for _, c := range rest[1:] {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	_, err := time.Parse("20060102-150405", suffix[:15])
 	return err == nil
 }
 
-// conflictName appends a timestamp suffix before the file extension.
+// conflictName appends a timestamp suffix before the file extension. If that
+// name is taken (several conflicts within a second), a counter is added so an
+// existing conflict copy is never overwritten.
 func conflictName(abs string) string {
 	ext := filepath.Ext(abs)
 	base := strings.TrimSuffix(abs, ext)
 	ts := time.Now().Format("20060102-150405")
-	return fmt.Sprintf("%s.conflict-%s%s", base, ts, ext)
+	name := fmt.Sprintf("%s.conflict-%s%s", base, ts, ext)
+	for n := 2; ; n++ {
+		if _, err := os.Lstat(name); os.IsNotExist(err) {
+			return name
+		}
+		name = fmt.Sprintf("%s.conflict-%s-%d%s", base, ts, n, ext)
+	}
 }
 
 func kindName(k actionKind) string {
@@ -1445,6 +1576,10 @@ func kindName(k actionKind) string {
 		return "conflict"
 	case conflictDeleteLocal:
 		return "conflictDelete"
+	case moveRemote:
+		return "move"
+	case renameLocal:
+		return "renameLocal"
 	default:
 		return "unknown"
 	}
