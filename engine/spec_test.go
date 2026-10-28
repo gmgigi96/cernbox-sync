@@ -126,13 +126,6 @@ func (e *testEnv) contentSomewhere(content string) bool {
 	return false
 }
 
-func (e *testEnv) setMTime(name string, mtime time.Time) {
-	e.t.Helper()
-	if err := os.Chtimes(filepath.Join(e.localDir, filepath.FromSlash(name)), mtime, mtime); err != nil {
-		e.t.Fatal(err)
-	}
-}
-
 func (e *testEnv) removeLocal(name string) {
 	e.t.Helper()
 	if err := os.RemoveAll(filepath.Join(e.localDir, filepath.FromSlash(name))); err != nil {
@@ -812,7 +805,7 @@ func TestSpec_8_3_Forbidden_PUT(t *testing.T) {
 	env.writeLocal("a.txt", "mine")
 	env.dav.failWith("PUT", "a.txt", 403, -1)
 
-	env.mustSyncError()
+	_ = env.mustSyncError()
 
 	if got := env.readLocal("a.txt"); got != "mine" {
 		t.Fatalf("local file lost: %q", got)
@@ -830,7 +823,7 @@ func TestSpec_8_3_Forbidden_DELETE(t *testing.T) {
 	env.removeLocal("a.txt")
 	env.dav.failWith("DELETE", "a.txt", 403, -1)
 
-	env.mustSyncError()
+	_ = env.mustSyncError()
 
 	if !env.dav.exists("a.txt") {
 		t.Error("server file must remain")
