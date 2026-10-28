@@ -5,6 +5,7 @@ const headed = process.env.PWHEADED === "1";
 
 export default defineConfig({
   testDir: "./e2e",
+  globalSetup: "./e2e/globalSetup.ts",
   timeout: headed ? 120_000 : 30_000,
   retries: 0,
   reporter: "line",

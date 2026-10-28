@@ -4,6 +4,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+#[cfg(windows)]
+use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::ShellExt;
 
@@ -172,7 +174,7 @@ fn ipc_send<T: Serialize>(req: &T) -> Result<IpcResponse, String> {
 
     #[cfg(windows)]
     let stream = {
-        use std::os::windows::net::UnixStream;
+        use uds_windows::UnixStream;
         UnixStream::connect(&path)
             .map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?
     };
@@ -196,7 +198,56 @@ fn ipc_send<T: Serialize>(req: &T) -> Result<IpcResponse, String> {
     Ok(resp)
 }
 
-// ── Daemon lifecycle (Windows only) ───────────────────────────────────────────
+// ── Daemon lifecycle (Windows and AppImage) ───────────────────────────────────
+
+/// Whether the GUI runs as an AppImage and no daemon is listening yet. The
+/// AppImage ships its own daemon, which only exists while the image is mounted,
+/// so the GUI starts it. A daemon that is already running (e.g. installed as a
+/// system package) is reused: a second one would take over its socket.
+#[cfg(target_os = "linux")]
+fn appimage_needs_daemon() -> bool {
+    std::env::var_os("APPIMAGE").is_some()
+        && std::os::unix::net::UnixStream::connect(socket_path()).is_err()
+}
+
+/// Starts the daemon shipped next to the GUI binary in the AppImage. It is
+/// spawned directly rather than through the shell plugin so that the kernel
+/// stops it whenever the GUI exits (PR_SET_PDEATHSIG), also when the GUI is
+/// killed by a signal: the daemon binary vanishes when the image is unmounted.
+#[cfg(target_os = "linux")]
+fn start_appimage_daemon() -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let daemon = exe.with_file_name("cernbox-syncd");
+    let mut cmd = std::process::Command::new(&daemon);
+    // SAFETY: prctl is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+        .map_err(|e| format!("Failed to spawn {}: {e}", daemon.display()))?;
+    Ok(())
+}
+
+/// Waits until the daemon accepts connections, so that the first IPC calls of
+/// the frontend do not fail while it is still starting up.
+#[cfg(target_os = "linux")]
+fn wait_for_daemon(timeout: std::time::Duration) {
+    let start = std::time::Instant::now();
+    while std::os::unix::net::UnixStream::connect(socket_path()).is_err() {
+        if start.elapsed() >= timeout {
+            eprintln!("Warning: cernbox-syncd did not start listening within {timeout:?}");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
 
 #[cfg(windows)]
 fn start_daemon(app: &AppHandle) -> Result<(), String> {
@@ -818,7 +869,7 @@ fn run_subscriber(app: &AppHandle) -> Result<(), String> {
 
     #[cfg(windows)]
     let stream = {
-        use std::os::windows::net::UnixStream;
+        use uds_windows::UnixStream;
         UnixStream::connect(&path)
             .map_err(|e| format!("Cannot connect to daemon at {path}: {e}"))?
     };
@@ -917,8 +968,9 @@ pub fn run() {
                 .user_agent(&user_agent())
                 .build()?;
 
-            // On Windows the daemon is bundled as a sidecar and started automatically.
-            // On Linux/macOS the user is expected to run cernbox-syncd themselves.
+            // On Windows and in the AppImage the daemon is bundled as a sidecar
+            // and started automatically. Otherwise on Linux/macOS the user is
+            // expected to run cernbox-syncd themselves.
             #[cfg(windows)]
             {
                 app.manage(DaemonState {
@@ -926,6 +978,13 @@ pub fn run() {
                 });
                 if let Err(e) = start_daemon(app.handle()) {
                     eprintln!("Warning: could not start cernbox-syncd sidecar: {e}");
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if appimage_needs_daemon() {
+                match start_appimage_daemon() {
+                    Ok(()) => wait_for_daemon(std::time::Duration::from_secs(5)),
+                    Err(e) => eprintln!("Warning: could not start cernbox-syncd sidecar: {e}"),
                 }
             }
             // Start the background event subscriber (all platforms).

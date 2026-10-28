@@ -8,6 +8,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# _build.yml's release jobs request contents: write. They are skipped on pull
+# requests, but a called workflow cannot ask for more than its caller grants,
+# so without this the whole run fails to start (default token is read-only).
+permissions:
+  contents: write
+
 jobs:
   build:
     uses: ./.github/workflows/_build.yml

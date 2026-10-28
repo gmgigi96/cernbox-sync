@@ -16,6 +16,7 @@ make dev-up   # Start Docker Compose with Revad WebDAV server for integration te
 make dev-down # Stop Docker Compose
 make gui      # Build Tauri desktop GUI application
 make gui-dev  # Run GUI in development mode with hot reload
+make appimage # Build the GUI as a Linux AppImage (bundles and starts the daemon)
 ```
 
 Run a single test:
