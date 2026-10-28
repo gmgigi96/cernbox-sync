@@ -544,3 +544,112 @@ func TestIntegration_Conflict_NotUploadedOnNextSync(t *testing.T) {
 	env.triggerSync()
 	env.assertInSync() // assertInSync excludes .conflict-* from its comparison
 }
+
+// specialNames are file names with non-ASCII scripts, emoji, Unicode
+// normalization forms and characters with a special meaning in URLs or XML.
+// Most characters Windows forbids in file names are left out, as other
+// clients cannot sync them anyway; '?' is kept for its meaning in URLs.
+var specialNames = []string{
+	"café.txt",
+	"café décomposé.txt",
+	"日本語のファイル.txt",
+	"Ελληνικά.txt",
+	"Русский текст.txt",
+	"עברית.txt",
+	"العربية.txt",
+	"🚀 rocket.txt",
+	"👨\u200d👩\u200d👧\u200d👦 family.txt",
+	"🇨🇭 flag.txt",
+	"with  two  spaces.txt",
+	"hash#tag.txt",
+	"question?mark.txt",
+	"100%.txt",
+	"percent%20encoded.txt",
+	"plus+sign.txt",
+	"amp&ersand.txt",
+	"semi;colon=equals.txt",
+	"at@dollar$comma,.txt",
+	"brackets[1](2){3}.txt",
+	"quote'back`tick.txt",
+	"tilde~excl!caret^.txt",
+}
+
+// specialDir is a directory name with the same kind of characters.
+const specialDir = "📁 dossier é #1 ?&%"
+
+// TestIntegration_SpecialChars_RemoteToLocal: remote files and directories
+// with special characters in their names are downloaded with the same names
+// and content, and a second sync changes nothing.
+func TestIntegration_SpecialChars_RemoteToLocal(t *testing.T) {
+	env := setup(t)
+
+	env.mkdirRemote(specialDir)
+	for _, name := range specialNames {
+		env.writeRemote(name, "content of "+name)
+		env.writeRemote(specialDir+"/"+name, "nested "+name)
+	}
+
+	env.triggerSync()
+
+	for _, name := range specialNames {
+		if got := env.readLocal(name); got != "content of "+name {
+			t.Errorf("%q: got %q", name, got)
+		}
+		if got := env.readLocal(filepath.Join(specialDir, name)); got != "nested "+name {
+			t.Errorf("%q: got %q", specialDir+"/"+name, got)
+		}
+	}
+	env.assertInSync()
+
+	env.triggerSync()
+	env.assertInSync()
+}
+
+// TestIntegration_SpecialChars_LocalToRemote: local files and directories
+// with special characters in their names are uploaded under the same names,
+// and a second sync changes nothing.
+func TestIntegration_SpecialChars_LocalToRemote(t *testing.T) {
+	env := setup(t)
+
+	env.mkdirLocal(specialDir)
+	for _, name := range specialNames {
+		env.writeLocal(name, "content of "+name)
+		env.writeLocal(filepath.Join(specialDir, name), "nested "+name)
+	}
+
+	env.triggerSync()
+
+	for _, name := range specialNames {
+		if got := env.readRemote(name); got != "content of "+name {
+			t.Errorf("remote %q: got %q", name, got)
+		}
+		if got := env.readRemote(specialDir + "/" + name); got != "nested "+name {
+			t.Errorf("remote %q: got %q", specialDir+"/"+name, got)
+		}
+	}
+	env.assertInSync()
+
+	env.triggerSync()
+	env.assertInSync()
+}
+
+// TestIntegration_SpecialChars_Deleted: deleting a file with special
+// characters on either side removes it on the other side too.
+func TestIntegration_SpecialChars_Deleted(t *testing.T) {
+	env := setup(t)
+
+	env.mkdirRemote(specialDir)
+	for _, name := range specialNames {
+		env.writeRemote(specialDir+"/"+name, "nested "+name)
+	}
+	env.triggerSync()
+
+	env.deleteRemote(specialDir + "/" + specialNames[0])
+	env.deleteLocal(filepath.Join(specialDir, specialNames[len(specialNames)-1]))
+	env.triggerSync()
+
+	if env.localExists(filepath.Join(specialDir, specialNames[0])) {
+		t.Errorf("%q should have been deleted locally", specialNames[0])
+	}
+	env.assertInSync()
+}
