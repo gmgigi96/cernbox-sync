@@ -4,10 +4,11 @@ This directory contains a local development environment that simulates a minimal
 
 ## Architecture
 
-Two containers are started via Docker Compose:
+Three containers are started via Docker Compose:
 
 - **eos-storage** — a standalone EOS instance (MGM + FST + QuarkDB) that provides the actual file storage. It exposes gRPC on port `50051` and HTTPS on port `8443`.
 - **revad** — a [reva](https://github.com/cs3org/reva) gateway that fronts EOS and exposes HTTP WebDAV on port `80`. It handles authentication, routing, and the WebDAV/OCS/ocdav HTTP surface that the sync client talks to.
+- **webui** — an nginx serving a minimal stand-in for the web UI's login-flow page on port `8080` (`webui/`): the browser step of the login flow lands there to grant or deny access. It proxies `/ocs/` to revad.
 
 `revad` depends on `eos-storage` being healthy before it starts.
 
@@ -42,8 +43,10 @@ the helper scripts) keep using the account password. App passwords and pending
 flows live in SQLite files on the container tmpfs, so they reset when the
 container is recreated.
 
-There is no web UI in the dev environment: the browser redirect lands on a 404
-page. Grant access with `scripts/loginflow.sh` instead (see below).
+The browser is redirected to `http://localhost:8080/login-flow/{token}`, a
+minimal grant page served by the `webui` container: sign in as a demo user
+(e.g. `einstein` / `relativity`) and click **Grant access**. Without a browser,
+grant access with `scripts/loginflow.sh` instead (see below).
 
 ## Starting and stopping
 
@@ -60,7 +63,9 @@ The first run will take a few minutes because both images are built from scratch
 ## Connecting the sync client
 
 Start the daemon, then connect the account through the login flow. The CLI
-prints a login URL; grant it as a demo user with the helper script:
+opens the login URL in the browser; sign in as a demo user on the grant page
+and grant access. Without a browser, grant the printed URL with the helper
+script:
 
 ```bash
 ./cernbox-sync login -server http://localhost -no-browser
@@ -69,7 +74,8 @@ prints a login URL; grant it as a demo user with the helper script:
 ```
 
 In the GUI (`make gui-dev`, which uses `VITE_SERVER_URL=http://localhost`),
-click **Sign in with browser**, then grant the URL shown by the app the same way.
+click **Sign in with browser**, then sign in and grant access on the page that
+opens in the browser (or grant the URL shown by the app with the script).
 
 Then register a sync pair pointing at a demo user's WebDAV root:
 

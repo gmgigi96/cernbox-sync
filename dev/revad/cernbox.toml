@@ -275,13 +275,14 @@ string = "10.0.11"
 ### LOGIN FLOW ###
 # Nextcloud Login Flow V2 for sync clients, served at /index.php/login/v2.
 # The authenticated grant/deny/info endpoints live in OCS under
-# /ocs/v2.php/cloud/user/login-flow/{logintoken}. There is no web UI in the dev
-# environment: grant access with dev/scripts/loginflow.sh.
+# /ocs/v2.php/cloud/user/login-flow/{logintoken}. The browser is redirected to
+# the minimal grant page of the webui container (dev/webui) on port 8080;
+# dev/scripts/loginflow.sh grants access without a browser.
 
 [http.services.loginflow]
 address = ":80"
 server_base_url = "http://localhost"
-webui_url = "http://localhost"
+webui_url = "http://localhost:8080"
 flow_ttl_seconds = 1200
 appauth_driver = "sql"
 store_driver = "sql"
