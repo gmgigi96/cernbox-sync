@@ -92,7 +92,7 @@ func Start(ctx context.Context, serverURL string) (*Flow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("login flow: init: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -146,7 +146,7 @@ func (f *Flow) Poll(ctx context.Context) (*Credentials, error) {
 	if err != nil {
 		return nil, fmt.Errorf("login flow: poll: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
