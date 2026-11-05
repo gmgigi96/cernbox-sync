@@ -21,6 +21,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -202,6 +203,7 @@ const (
 	conflictDeleteLocal                   // remote deleted while local changed: rename local as conflict, then delete
 	moveRemote                            // local rename/move: one MOVE on the server
 	renameLocal                           // remote rename/move: os.Rename locally
+	reconcile                             // on both sides without a baseline: compare, conflict if different
 )
 
 type action struct {
@@ -643,14 +645,21 @@ func classify(
 			actions = append(actions, a)
 
 		case dbEntry == nil && loc != nil:
-			// Remote has it, local has it, DB doesn't → ambiguous first run;
-			// treat remote as authoritative only if etags differ.
-			// Since we have no etag baseline, trust local (upload wins).
-			a := action{path: path, isDir: loc.isDir, local: loc}
-			if loc.isDir {
+			// Remote has it, local has it, DB doesn't → both sides created it
+			// independently (or a first run over existing data). Without a
+			// baseline only the contents can tell whether they differ.
+			a := action{path: path, isDir: loc.isDir, remote: rem, local: loc}
+			switch {
+			case loc.isDir:
 				a.kind = mkcolRemote
-			} else {
+			case rem.IsDir:
+				a.kind = upload // refused by the server; the local file stays
+			case rem.Size == 0 && loc.size > 0:
+				// Nothing to lose on the server. This can also be an upload in
+				// progress, which EOS lists as an empty file with a valid etag.
 				a.kind = upload
+			default:
+				a.kind = reconcile
 			}
 			actions = append(actions, a)
 
@@ -697,7 +706,7 @@ func classify(
 				}
 				actions = append(actions, a)
 			case localChanged:
-				a := action{path: path, isDir: loc.isDir, local: loc}
+				a := action{path: path, isDir: loc.isDir, remote: rem, local: loc}
 				if loc.isDir {
 					a.kind = mkcolRemote
 				} else {
@@ -907,18 +916,15 @@ func applyPermissions(actions []action, remoteMap map[string]*webdav.Resource, d
 				if allows(rem.Permissions, "W") {
 					break
 				}
-				switch {
-				case dbState[a.path] != nil:
-					// Edited locally in a read-only location: put the server version back.
-					refuse(a)
-					out = append(out, restore(rem, a.path))
-				case a.local.size == rem.Size:
-					out = append(out, restore(rem, a.path))
-				default:
-					// First sync, contents differ: keep the local file as a conflict copy.
-					changed = true
-					out = append(out, action{kind: conflictTake, path: a.path, remote: rem, local: a.local})
+				if dbState[a.path] == nil {
+					// No baseline, so this is not an edit: keep the local file.
+					a.kind = reconcile
+					out = append(out, a)
+					continue
 				}
+				// Edited locally in a read-only location: put the server version back.
+				refuse(a)
+				out = append(out, restore(rem, a.path))
 				continue
 			}
 			if rem == nil && createDenied(a.path, "C") {
@@ -1220,7 +1226,7 @@ func execute(
 		switch a.kind {
 		case moveRemote, renameLocal:
 			moves = append(moves, a)
-		case upload, download:
+		case upload, download, reconcile:
 			transfers = append(transfers, a)
 		case deleteLocal, deleteRemote:
 			teardown = append(teardown, a)
@@ -1393,7 +1399,20 @@ func (x *executor) execOne(a action) error {
 			}
 			return src
 		}
-		if err := x.wdc.PutFile(a.path, localAbs, wrap); err != nil {
+		// Only replace what the scan saw: a change made on the server since
+		// then is refused with a 412 rather than overwritten. Reva enforces
+		// If-Match but ignores If-None-Match, so there a new file can still
+		// replace one created on the server after the scan.
+		var cond webdav.PutCondition
+		if a.remote == nil {
+			cond.Absent = true
+		} else {
+			cond.ETag = a.remote.ETag
+		}
+		if err := x.wdc.PutFile(a.path, localAbs, cond, wrap); err != nil {
+			if errors.Is(err, webdav.ErrPreconditionFailed) {
+				return x.uploadRefused(a, localAbs)
+			}
 			return err
 		}
 		// The DB records the local file as uploaded (size and mtime as found
@@ -1413,6 +1432,10 @@ func (x *executor) execOne(a action) error {
 			e.ETag, e.FileID, e.Permissions = r.ETag, r.FileID, r.Permissions
 		}
 		return x.upsert(e)
+
+	case reconcile:
+		logf(fl, "[sync] reconcile    %q", a.path)
+		return x.reconcile(a, localAbs)
 
 	case deleteLocal:
 		logf(fl, "[sync] delete local %q", a.path)
@@ -1464,28 +1487,145 @@ func (x *executor) execOne(a action) error {
 	return nil
 }
 
-// download fetches a.path into a temporary file next to its destination and
-// moves it into place only once the whole body has arrived. The DB records
-// what was actually written (the ETag, size and mtime of the content served by
-// the GET), which may be newer than the PROPFIND the plan was built from.
-func (x *executor) download(a action, localAbs string) error {
-	if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
+// uploadRefused handles a 412 on an upload: the file is no longer what the
+// scan saw. It is settled like a file without a baseline, against what the
+// server has now. Identical contents also cover a retried PUT whose first
+// attempt reached the server.
+func (x *executor) uploadRefused(a action, localAbs string) error {
+	logf(x.fl, "[sync] upload       %q — refused, changed on the server since the scan", a.path)
+	resources, err := x.wdc.Propfind(a.path, 0)
+	if err != nil {
 		return err
+	}
+	if len(resources) == 0 || resources[0].IsDir {
+		return fmt.Errorf("upload refused: %q is no longer a file on the server", a.path)
+	}
+	if resources[0].Size == 0 {
+		// Probably another upload in progress: the next cycle sees its result.
+		return fmt.Errorf("upload refused: %q is being written on the server", a.path)
+	}
+	a.remote = &resources[0]
+	return x.reconcile(a, localAbs)
+}
+
+// reconcile settles a file that exists on both sides with no baseline to tell
+// which one changed. The server version is fetched first: identical contents
+// are only recorded in the DB; otherwise the server wins and the local file
+// becomes a conflict copy.
+func (x *executor) reconcile(a action, localAbs string) error {
+	fetched, err := x.fetch(a, localAbs)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(fetched.tmpPath) }()
+
+	same, err := sameContent(fetched.tmpPath, localAbs)
+	if err != nil {
+		return err
+	}
+	if same {
+		return x.upsert(db.Entry{
+			Path:         a.path,
+			ETag:         fetched.etag,
+			Size:         a.local.size,
+			LastModified: a.local.modTime,
+			FileID:       a.remote.FileID,
+			Permissions:  a.remote.Permissions,
+		})
+	}
+
+	conflictPath := conflictName(localAbs)
+	logf(x.fl, "[sync] conflict     %q — renaming local to %s", a.path, filepath.Base(conflictPath))
+	if err := os.Rename(localAbs, conflictPath); err != nil {
+		return fmt.Errorf("rename conflict copy: %w", err)
+	}
+	if err := x.state.AddConflict(a.path, conflictPath, time.Now()); err != nil {
+		logf(x.fl, "[sync] WARNING record conflict %q: %v", a.path, err)
+	}
+	return x.install(a, localAbs, fetched)
+}
+
+// sameContent reports whether two files have identical contents.
+func sameContent(pathA, pathB string) (bool, error) {
+	a, err := os.Open(pathA)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = a.Close() }()
+	b, err := os.Open(pathB)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = b.Close() }()
+	ia, err := a.Stat()
+	if err != nil {
+		return false, err
+	}
+	ib, err := b.Stat()
+	if err != nil {
+		return false, err
+	}
+	if ia.Size() != ib.Size() {
+		return false, nil
+	}
+	bufA, bufB := make([]byte, 64<<10), make([]byte, 64<<10)
+	for {
+		n, errA := io.ReadFull(a, bufA)
+		if _, errB := io.ReadFull(b, bufB[:n]); errB != nil && n > 0 {
+			return false, errB
+		}
+		if !bytes.Equal(bufA[:n], bufB[:n]) {
+			return false, nil
+		}
+		switch errA {
+		case nil:
+		case io.EOF, io.ErrUnexpectedEOF:
+			return true, nil
+		default:
+			return false, errA
+		}
+	}
+}
+
+// fetchedFile is a complete server version waiting in a temporary file.
+type fetchedFile struct {
+	tmpPath string
+	size    int64
+	etag    string    // of the content served by the GET
+	mtime   time.Time // zero when the server gave none
+}
+
+// download fetches a.path and moves it into place only once the whole body has
+// arrived.
+func (x *executor) download(a action, localAbs string) error {
+	fetched, err := x.fetch(a, localAbs)
+	if err != nil {
+		return err
+	}
+	return x.install(a, localAbs, fetched)
+}
+
+// fetch downloads a.path into a temporary file next to its destination. The
+// result describes what was actually served, which may be newer than the
+// PROPFIND the plan was built from.
+func (x *executor) fetch(a action, localAbs string) (fetchedFile, error) {
+	if err := os.MkdirAll(filepath.Dir(localAbs), 0o755); err != nil {
+		return fetchedFile{}, err
 	}
 	rc, info, err := x.wdc.GetWithInfo(a.path)
 	if err != nil {
-		return err
+		return fetchedFile{}, err
 	}
 	defer func() { _ = rc.Close() }()
 	f, err := os.CreateTemp(filepath.Dir(localAbs), ".tmp-sync-*")
 	if err != nil {
-		return err
+		return fetchedFile{}, err
 	}
 	tmpPath := f.Name()
-	abort := func(err error) error {
+	abort := func(err error) (fetchedFile, error) {
 		_ = f.Close()
 		_ = os.Remove(tmpPath)
-		return err
+		return fetchedFile{}, err
 	}
 
 	fileTotal := a.remote.Size
@@ -1512,11 +1652,7 @@ func (x *executor) download(a action, localAbs string) error {
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, localAbs); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
+		return fetchedFile{}, err
 	}
 
 	etag, mtime := a.remote.ETag, a.remote.LastModified
@@ -1526,6 +1662,17 @@ func (x *executor) download(a action, localAbs string) error {
 	if changed && !info.LastModified.IsZero() {
 		mtime = info.LastModified
 	}
+	return fetchedFile{tmpPath: tmpPath, size: n, etag: etag, mtime: mtime}, nil
+}
+
+// install moves a fetched file into place. The DB records what was actually
+// written (the ETag, size and mtime of the content served by the GET).
+func (x *executor) install(a action, localAbs string, fetched fetchedFile) error {
+	if err := os.Rename(fetched.tmpPath, localAbs); err != nil {
+		_ = os.Remove(fetched.tmpPath)
+		return err
+	}
+	mtime := fetched.mtime
 	if !mtime.IsZero() {
 		_ = os.Chtimes(localAbs, mtime, mtime)
 	} else if st, err := os.Stat(localAbs); err == nil {
@@ -1533,9 +1680,9 @@ func (x *executor) download(a action, localAbs string) error {
 	}
 	return x.upsert(db.Entry{
 		Path:         a.path,
-		ETag:         etag,
+		ETag:         fetched.etag,
 		IsDir:        false,
-		Size:         n,
+		Size:         fetched.size,
 		LastModified: mtime,
 		FileID:       a.remote.FileID,
 		Permissions:  a.remote.Permissions,
@@ -1609,6 +1756,8 @@ func kindName(k actionKind) string {
 		return "move"
 	case renameLocal:
 		return "renameLocal"
+	case reconcile:
+		return "reconcile"
 	default:
 		return "unknown"
 	}

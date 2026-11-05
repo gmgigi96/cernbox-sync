@@ -12,6 +12,8 @@ package integration_test
 //     lists nothing, so restore-from-trash skips.
 //   - versions: PROPFIND /remote.php/dav/meta/<fileid>/v lists no versions, so
 //     restore-version skips.
+//   - PUT: If-Match is enforced (412) for an existing file; If-None-Match is
+//     ignored, and so is If-Match when the file does not exist.
 //   - EOS refuses names containing a newline (HTTP 500) while Linux allows
 //     them, which is used to test that one rejected file does not block others.
 //
@@ -20,10 +22,12 @@ package integration_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -45,6 +49,7 @@ import (
 	"time"
 
 	"github.com/gmgigi96/cernbox-sync/ipc"
+	"github.com/gmgigi96/cernbox-sync/webdav"
 )
 
 // ── raw WebDAV helper (independent of the client under test) ─────────────────
@@ -1399,6 +1404,114 @@ func TestSpec_5_5_RemoteFolderDeletedWhileLocalFileAdded(t *testing.T) {
 	}
 }
 
+// Plan 5.4: the same new file on both sides, with different contents -> the
+// server keeps its version and the local one survives as a conflict copy.
+func TestSpec_5_4_BothCreated_DifferentContent(t *testing.T) {
+	env := setup(t)
+	env.writeRemote("added.dat", "content of winner")
+	env.writeLocal("added.dat", "content of loser")
+	quick(t, env)
+
+	if got := env.readRemote("added.dat"); got != "content of winner" {
+		t.Errorf("server version replaced: %q", got)
+	}
+	if got := env.readLocal("added.dat"); got != "content of winner" {
+		t.Errorf("local added.dat = %q", got)
+	}
+	conflicts := env.conflictFiles("")
+	if len(conflicts) != 1 {
+		t.Fatalf("conflict copies = %v, want exactly one", conflicts)
+	}
+	if got := env.readLocal(conflicts[0]); got != "content of loser" {
+		t.Errorf("conflict copy = %q", got)
+	}
+}
+
+// Plan 5.4: the same new file on both sides, with the same contents -> nothing
+// to resolve.
+func TestSpec_5_4_BothCreated_SameContent(t *testing.T) {
+	env := setup(t)
+	env.writeRemote("added.dat", "same content")
+	env.writeLocal("added.dat", "same content")
+	before := env.remoteETag("added.dat")
+	quick(t, env)
+
+	if conflicts := env.conflictFiles(""); len(conflicts) != 0 {
+		t.Errorf("unexpected conflict copies: %v", conflicts)
+	}
+	if after := env.remoteETag("added.dat"); after != before {
+		t.Errorf("file uploaded again: etag %q -> %q", before, after)
+	}
+}
+
+// While an upload runs, EOS already lists the file: empty, with a valid etag. A
+// sync that meets it must not take it for the server version of a local file.
+func TestSpec_5_4_UploadInProgressOnServer(t *testing.T) {
+	env := setup(t)
+	env.writeLocal("big.bin", "local content")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	r, w := io.Pipe()
+	defer w.Close()
+	go func() { done <- env.testClient.WithContext(ctx).Put("big.bin", r, 1<<20) }()
+	if _, err := w.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	for start := time.Now(); !env.rdav().exists("big.bin"); time.Sleep(50 * time.Millisecond) {
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("upload in progress not listed by the server")
+		}
+	}
+
+	quick(t, env)
+	cancel()
+	_ = w.CloseWithError(errors.New("upload aborted"))
+	<-done
+	time.Sleep(1100 * time.Millisecond) // syncWait has a resolution of one second
+	quick(t, env)
+
+	if conflicts := env.conflictFiles(""); len(conflicts) != 0 {
+		t.Errorf("unexpected conflict copies: %v", conflicts)
+	}
+	if got := env.readLocal("big.bin"); got != "local content" {
+		t.Errorf("local big.bin = %q", got)
+	}
+	if got := env.readRemote("big.bin"); got != "local content" {
+		t.Errorf("server big.bin = %q", got)
+	}
+}
+
+// Uploads of changed files rely on the server refusing a PUT whose If-Match
+// does not hold. If-None-Match is not checked here: reva ignores it on PUT.
+func TestSpec_ConditionalPut(t *testing.T) {
+	env := setup(t)
+	local := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(local, []byte("from the client"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.writeRemote("f.txt", "first version")
+
+	stale := env.remoteETag("f.txt")
+	if err := env.testClient.PutFile("f.txt", local, webdav.PutCondition{ETag: stale}, nil); err != nil {
+		t.Fatalf("replace the current version: %v", err)
+	}
+	if err := env.testClient.PutFile("f.txt", local, webdav.PutCondition{ETag: stale}, nil); !errors.Is(err, webdav.ErrPreconditionFailed) {
+		t.Errorf("replace a stale version: err = %v", err)
+	}
+}
+
+// remoteETag returns the current etag of a remote file.
+func (e *testEnv) remoteETag(relPath string) string {
+	e.t.Helper()
+	resources, err := e.testClient.Propfind(relPath, 0)
+	if err != nil || len(resources) == 0 {
+		e.t.Fatalf("propfind %s: %v", relPath, err)
+	}
+	return resources[0].ETag
+}
+
 // ── 8.x sharing ──────────────────────────────────────────────────────────────
 
 // sharedFolder creates /<id>/shared on einstein's side, shares it with marie
@@ -1782,6 +1895,7 @@ func TestSpec_13_5_RestartDuringSync(t *testing.T) {
 	setSettings(t, env, 0, 0, -1, -1)
 	// A startup sync may already be running; wait it out, then sync again.
 	syncWait(t, env, 5*time.Minute)
+	time.Sleep(1100 * time.Millisecond) // syncWait has a resolution of one second
 	syncWait(t, env, 5*time.Minute)
 
 	if h, n := d.hashOf(t, "big.bin"); n != 12<<20 || h != bigHash {

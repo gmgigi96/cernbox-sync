@@ -1,10 +1,13 @@
 package webdav_test
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -488,5 +491,58 @@ func TestDelete_ErrorStatus_ReturnsError(t *testing.T) {
 
 	if err := c.Delete("fail.txt"); err == nil {
 		t.Fatal("expected error for 500 response")
+	}
+}
+
+func TestPutFile_Condition(t *testing.T) {
+	local := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(local, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name                 string
+		cond                 webdav.PutCondition
+		ifMatch, ifNoneMatch string
+	}{
+		{"unconditional", webdav.PutCondition{}, "", ""},
+		{"replace version", webdav.PutCondition{ETag: "abc"}, `"abc"`, ""},
+		{"create only", webdav.PutCondition{Absent: true}, "", "*"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got http.Header
+			_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Clone()
+				w.WriteHeader(http.StatusCreated)
+			}), "")
+			if err := c.PutFile("f.txt", local, tt.cond, nil); err != nil {
+				t.Fatalf("PutFile: %v", err)
+			}
+			if v := got.Get("If-Match"); v != tt.ifMatch {
+				t.Errorf("If-Match = %q, want %q", v, tt.ifMatch)
+			}
+			if v := got.Get("If-None-Match"); v != tt.ifNoneMatch {
+				t.Errorf("If-None-Match = %q, want %q", v, tt.ifNoneMatch)
+			}
+		})
+	}
+}
+
+func TestPutFile_PreconditionFailed(t *testing.T) {
+	local := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(local, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	puts := 0
+	_, c := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		puts++
+		w.WriteHeader(http.StatusPreconditionFailed)
+	}), "")
+	err := c.PutFile("f.txt", local, webdav.PutCondition{Absent: true}, nil)
+	if !errors.Is(err, webdav.ErrPreconditionFailed) {
+		t.Fatalf("err = %v, want ErrPreconditionFailed", err)
+	}
+	if puts != 1 {
+		t.Fatalf("PUT sent %d times, want 1", puts)
 	}
 }

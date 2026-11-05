@@ -15,8 +15,9 @@ Test locations: `engine/spec_test.go` (fake WebDAV server), `webdav/spec_test.go
 
 - VFS (7.x), sharing UI (8.7–8.10), large-folder
   confirmation (6.2): reported, not built.
-- 5.4 (same new name on both sides): keep current behaviour — local wins on
-  first sync (`TestSync_FirstRun_LocalWins`). Contradicts the plan.
+- 5.4 (same new name on both sides): the contents are compared. Identical
+  files are only recorded; otherwise the server wins and the local file is kept
+  as a `.conflict-*` copy (`TestSync_BothCreated_*`).
 - 6.1 (de-selecting a folder): keep current behaviour — local copy is left
   untouched (`TestSync_SelectiveSync_LocalOutsideSelectionUntouched`).
   Contradicts the plan ("excluded folder is removed locally").
