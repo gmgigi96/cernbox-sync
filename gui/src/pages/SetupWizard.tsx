@@ -15,7 +15,7 @@ import { AccountSetup } from "./AccountSetup";
 import { LegacyImport } from "./LegacyImport";
 import { useUiStore, type ViewMode } from "../store/uiStore";
 import type { DaemonState } from "../hooks/useDaemon";
-import type { Account, LegacyClient } from "../types";
+import type { Account, Folder, LegacyClient } from "../types";
 
 // ── First-start detection ─────────────────────────────────────────────────────
 
@@ -94,6 +94,8 @@ interface SetupWizardProps {
   account: Account | false;
   /** Called after the user signed in. */
   onAccountChanged: (account: Account) => void;
+  /** Called when the user picks another server to sign in to. */
+  onServerChange: (url: string) => void;
   /** Called when the user leaves the wizard; addFolder opens the add-folder flow next. */
   onFinish: (addFolder: boolean) => void;
 }
@@ -103,18 +105,23 @@ interface SetupWizardProps {
  * the ownCloud / CERNBox desktop client if there is one, and pick the
  * interface. Sync settings keep their defaults, changed later in the settings.
  */
-export function SetupWizard({ serverUrl, daemon, account, onAccountChanged, onFinish }: SetupWizardProps) {
+export function SetupWizard({ serverUrl, daemon, account, onAccountChanged, onServerChange, onFinish }: SetupWizardProps) {
   const [step, setStep] = useState<WizardStep>("welcome");
   // Desktop clients syncing with this server, as found by the daemon. null = not detected yet.
   const [legacyClients, setLegacyClients] = useState<LegacyClient[] | null>(null);
   // Folders imported from the desktop client, for the summary.
   const [imported, setImported] = useState(0);
 
+  // Only clients of the chosen server count: detect again when it changes.
+  useEffect(() => setLegacyClients(null), [serverUrl]);
+
   useEffect(() => {
     if (legacyClients !== null || !daemon.daemonOnline) return;
+    let active = true;
     ipc.legacyDetect(serverUrl, false)
-      .then(setLegacyClients)
-      .catch(() => setLegacyClients([]));
+      .then((clients) => { if (active) setLegacyClients(clients); })
+      .catch(() => { if (active) setLegacyClients([]); });
+    return () => { active = false; };
   }, [legacyClients, daemon.daemonOnline, serverUrl]);
 
   const legacyFolders = legacyFolderCount(legacyClients ?? []);
@@ -140,6 +147,8 @@ export function SetupWizard({ serverUrl, daemon, account, onAccountChanged, onFi
           serverUrl={serverUrl}
           account={account}
           legacyClients={legacyClients ?? []}
+          folders={daemon.folders}
+          onServerChange={onServerChange}
           onSignedIn={(acc) => {
             onAccountChanged(acc);
             next();
@@ -235,12 +244,16 @@ function AccountStep({
   serverUrl,
   account,
   legacyClients,
+  folders,
+  onServerChange,
   onSignedIn,
   onNext,
 }: {
   serverUrl: string;
   account: Account | false;
   legacyClients: LegacyClient[];
+  folders: Folder[];
+  onServerChange: (url: string) => void;
   onSignedIn: (account: Account) => void;
   onNext: () => void;
 }) {
@@ -274,6 +287,10 @@ function AccountStep({
       embedded
       serverUrl={serverUrl}
       suggestedUsername={legacyUsername}
+      // An existing account belongs to the current server: changing it is up
+      // to the settings, which only switch once the sign-in succeeded.
+      onServerChange={account ? undefined : onServerChange}
+      folders={folders}
       onDone={() =>
         ipc.getAccount().then((acc) => {
           if (acc?.username) onSignedIn(acc);

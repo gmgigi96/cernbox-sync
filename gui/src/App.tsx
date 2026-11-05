@@ -2,12 +2,14 @@ import { useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useSyncStore, type DaemonSnapshot, type DaemonEvent } from "./store/syncStore";
+import { useUiStore } from "./store/uiStore";
 import { Layout } from "./components/Layout";
 import { Dashboard } from "./pages/Dashboard";
 import { Conflicts } from "./pages/Conflicts";
 import { Folders } from "./pages/Folders";
 import { FolderDetail } from "./pages/FolderDetail";
 import { Settings } from "./pages/Settings";
+import { AccountSetup } from "./pages/AccountSetup";
 import { SpacePicker } from "./pages/SpacePicker";
 import { FolderPicker } from "./pages/FolderPicker";
 import { LocalFolderPicker } from "./pages/LocalFolderPicker";
@@ -15,8 +17,6 @@ import { SetupWizard, markSetupDone, needsSetup, setupDone } from "./pages/Setup
 import { useDaemon } from "./hooks/useDaemon";
 import { ipc } from "./ipc";
 import type { Account, Folder, NavPage, Space } from "./types";
-
-const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 
 type FlowStep =
   | { step: "none" }
@@ -27,6 +27,11 @@ type FlowStep =
 export function App() {
   const daemon = useDaemon();
   const [page, setPage] = useState<NavPage>("dashboard");
+  const serverUrl = useUiStore((s) => s.serverUrl);
+  const setServerUrl = useUiStore((s) => s.setServerUrl);
+  // Server the user is signing in to from the settings. It only becomes the
+  // current server once the sign-in succeeded.
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
 
   // ── Subscribe to daemon push events ─────────────────────────────────────────
   useEffect(() => {
@@ -113,10 +118,11 @@ export function App() {
   if (wizard || account === false) {
     return (
       <SetupWizard
-        serverUrl={SERVER_URL}
+        serverUrl={serverUrl}
         daemon={daemon}
         account={account}
         onAccountChanged={setAccount}
+        onServerChange={setServerUrl}
         onFinish={(addFolder) => {
           markSetupDone();
           setWizard(false);
@@ -127,6 +133,7 @@ export function App() {
   }
 
   function openAddFolder() {
+    setSwitchingTo(null);
     setFlow({ step: "spacePicker" });
   }
 
@@ -138,9 +145,9 @@ export function App() {
   // Space picker replaces the main content area.
   if (flow.step === "spacePicker") {
     return (
-      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={serverUrl} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <SpacePicker
-          serverUrl={SERVER_URL}
+          serverUrl={serverUrl}
           username={account.username}
           password={account.password}
           existingFolders={daemon.folders}
@@ -156,7 +163,7 @@ export function App() {
   if (flow.step === "folderPicker") {
     const { space, existingFolder } = flow;
     return (
-      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={serverUrl} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <FolderPicker
           space={space}
           username={account.username}
@@ -173,7 +180,7 @@ export function App() {
   if (flow.step === "localPath") {
     const { space, remoteUrls, existingFolder } = flow;
     return (
-      <Layout serverUrl={SERVER_URL} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
+      <Layout serverUrl={serverUrl} page={page} onNavigate={cancelFlow} onAddFolder={openAddFolder}>
         <LocalFolderPicker
           space={space}
           remoteUrls={remoteUrls}
@@ -187,9 +194,19 @@ export function App() {
   }
 
   function navigate(p: NavPage) {
+    setSwitchingTo(null);
     if (p !== "folderDetail") setSelectedFolder(null);
     if (p !== "conflicts") setConflictFolder(null);
     setPage(p);
+  }
+
+  function finishServerSwitch(url: string) {
+    setServerUrl(url);
+    setSwitchingTo(null);
+    useSyncStore.getState().clearAuthRequired();
+    ipc.getAccount()
+      .then((acc) => { if (acc?.username) setAccount(acc); })
+      .catch(() => {});
   }
 
   function openConflicts(folderName?: string) {
@@ -201,7 +218,7 @@ export function App() {
   const sidebarPage: NavPage = (page === "folderDetail" || page === "conflicts") ? "folders" : page;
 
   return (
-    <Layout serverUrl={SERVER_URL} page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
+    <Layout serverUrl={serverUrl} page={sidebarPage} onNavigate={navigate} onAddFolder={openAddFolder}>
       {page === "dashboard" && (
         <Dashboard
           daemon={daemon}
@@ -241,7 +258,16 @@ export function App() {
           }}
         />
       )}
-      {page === "settings" && <Settings />}
+      {page === "settings" && (switchingTo ? (
+        <AccountSetup
+          embedded
+          serverUrl={switchingTo}
+          onDone={() => finishServerSwitch(switchingTo)}
+          onCancel={() => setSwitchingTo(null)}
+        />
+      ) : (
+        <Settings serverUrl={serverUrl} folders={daemon.folders} onSwitchServer={setSwitchingTo} />
+      ))}
     </Layout>
   );
 }

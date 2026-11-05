@@ -1,7 +1,9 @@
 import { LayoutDashboard, FolderSync, Settings, Plus } from "lucide-react";
+import { DEFAULT_SERVER_URL, serverName } from "../servers";
 import type { NavPage } from "../types";
 
 interface SidebarProps {
+  serverUrl: string;
   page: NavPage;
   onNavigate: (p: NavPage) => void;
   onAddFolder: () => void;
@@ -19,12 +21,15 @@ const NAV_ITEMS: NavItem[] = [
   { id: "settings",  label: "Settings", icon: Settings },
 ];
 
-export function Sidebar({ page, onNavigate, onAddFolder }: SidebarProps) {
+export function Sidebar({ serverUrl, page, onNavigate, onAddFolder }: SidebarProps) {
   return (
     <aside style={styles.sidebar}>
       {/* Brand */}
       <div style={styles.brand}>
         <img src="/cernbox-lrg.svg" alt="CERNBox" style={styles.brandLogo} />
+        {serverUrl !== DEFAULT_SERVER_URL && (
+          <span style={styles.serverBadge} title={serverUrl}>{serverName(serverUrl)}</span>
+        )}
       </div>
 
       {/* Navigation */}
@@ -80,6 +85,19 @@ const styles: Record<string, React.CSSProperties> = {
     width: "65%",
     marginLeft: "0.25rem",
     height: "auto",
+  },
+  serverBadge: {
+    maxWidth: "100%",
+    marginLeft: "0.25rem",
+    padding: "0.125rem 0.5rem",
+    borderRadius: "var(--radius-sm)",
+    background: "var(--surface-container-highest)",
+    color: "var(--primary)",
+    fontSize: "0.6875rem",
+    fontWeight: 600,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   brandSub: {
     fontSize: "0.6875rem",

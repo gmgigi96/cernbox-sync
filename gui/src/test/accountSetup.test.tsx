@@ -52,6 +52,25 @@ async function signIn() {
 }
 
 describe("AccountSetup", () => {
+  it("offers another server only when the caller allows it", async () => {
+    mockBackend([null]);
+    const { rerender } = render(<AccountSetup serverUrl={SERVER} onDone={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Change server" })).not.toBeInTheDocument();
+
+    rerender(<AccountSetup serverUrl={SERVER} onDone={vi.fn()} onServerChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Change server" })).toBeInTheDocument();
+  });
+
+  it("leaves the page on cancel", () => {
+    mockBackend([null]);
+    const onCancel = vi.fn();
+    render(<AccountSetup serverUrl={SERVER} onDone={vi.fn()} onCancel={onCancel} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onCancel).toHaveBeenCalled();
+  });
+
   it("starts the login flow and opens the login URL in the browser", async () => {
     mockBackend([null]);
     render(<AccountSetup serverUrl={SERVER} onDone={vi.fn()} />);
