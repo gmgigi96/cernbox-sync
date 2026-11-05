@@ -85,19 +85,22 @@ function mockDaemon({ legacy = [] as LegacyClient[], account = ACCOUNT as Accoun
   });
 }
 
-function renderWizard(props: { account?: Account | false; daemon?: DaemonState } = {}) {
+function renderWizard(props: { account?: Account | false; daemon?: DaemonState; serverUrl?: string } = {}) {
   const onFinish = vi.fn();
   const onAccountChanged = vi.fn();
-  render(
+  const onServerChange = vi.fn();
+  const wizard = (serverUrl: string) => (
     <SetupWizard
-      serverUrl={SERVER}
+      serverUrl={serverUrl}
       daemon={props.daemon ?? daemonState()}
       account={props.account ?? false}
       onAccountChanged={onAccountChanged}
+      onServerChange={onServerChange}
       onFinish={onFinish}
-    />,
+    />
   );
-  return { onFinish, onAccountChanged };
+  const { rerender } = render(wizard(props.serverUrl ?? SERVER));
+  return { onFinish, onAccountChanged, onServerChange, setServer: (url: string) => rerender(wizard(url)) };
 }
 
 const currentStep = () => screen.getByRole("listitem", { current: "step" });
@@ -131,6 +134,25 @@ describe("wizardSteps", () => {
 });
 
 describe("SetupWizard", () => {
+  it("detects the desktop clients again when the server changes", async () => {
+    mockDaemon();
+    const { setServer } = renderWizard();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("ipc_legacy_detect", { serverUrl: SERVER, plan: false }));
+
+    setServer("https://qa.cernbox.cern.ch");
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("ipc_legacy_detect", { serverUrl: "https://qa.cernbox.cern.ch", plan: false }),
+    );
+  });
+
+  it("only offers another server when no account is signed in yet", async () => {
+    mockDaemon();
+    renderWizard();
+    fireEvent.click(await screen.findByRole("button", { name: /Get started|Continue|Next/i }));
+    expect(await screen.findByRole("button", { name: "Change server" })).toBeInTheDocument();
+  });
+
   it("walks a new user through sign-in and the interface choice", async () => {
     mockDaemon();
     const { onFinish, onAccountChanged } = renderWizard();

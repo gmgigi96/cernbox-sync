@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
-import { Save, X, RotateCcw, AlertCircle, CheckCircle2, Timer, Upload, Download, ArrowLeftRight, FolderCog } from "lucide-react";
+import { Save, X, RotateCcw, AlertCircle, CheckCircle2, Timer, Upload, Download, ArrowLeftRight, FolderCog, Server } from "lucide-react";
 import { ipc } from "../ipc";
+import { ServerSelector } from "../components/ServerSelector";
+import type { Folder } from "../types";
 
 // ── Bandwidth helpers ─────────────────────────────────────────────────────────
 
@@ -128,7 +130,14 @@ const DEFAULTS = {
   metadataStreams: 1,
 };
 
-export function Settings() {
+interface SettingsProps {
+  serverUrl: string;
+  folders: Folder[];
+  /** Called with the server the user wants to sign in to instead. */
+  onSwitchServer: (url: string) => void;
+}
+
+export function Settings({ serverUrl, folders, onSwitchServer }: SettingsProps) {
   // committed = what the daemon currently has (loaded on mount, updated on save/reset)
   const [committed, setCommitted] = useState(DEFAULTS);
   const [logRotateMaxAge, setLogRotateMaxAge] = useState("");
@@ -276,6 +285,24 @@ export function Settings() {
 
 
       <div style={styles.grid}>
+        <div style={styles.section}>
+          <div style={styles.sectionHeader}>
+            <Server size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />
+            <span style={styles.sectionTitle}>Server</span>
+          </div>
+          <div style={styles.field}>
+            <p style={styles.hint}>
+              The server this app signs in to and adds folders from. Existing folders keep syncing with their own server.
+            </p>
+            <ServerSelector
+              serverUrl={serverUrl}
+              folders={folders}
+              confirmLabel="Continue to sign in"
+              onSelect={onSwitchServer}
+            />
+          </div>
+        </div>
+
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
             <Timer size={15} strokeWidth={1.5} style={{ color: "var(--primary)" }} />

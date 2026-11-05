@@ -86,6 +86,8 @@ Conflict resolution is hardcoded to server wins; the local file is renamed `.con
 
 **Account / login flow:** the account is connected through the browser (Nextcloud Login Flow V2): the client (CLI or GUI) starts a flow at `<server>/index.php/login/v2`, the user grants access in the browser, and the client polls until it gets a login name + app password, which it stores in the daemon via `set-account`. The daemon only uses those credentials for Basic-Auth.
 
+**GUI server:** the server the GUI signs in to and browses is a GUI preference (`serverUrl` in `uiStore`, default `VITE_SERVER_URL`, presets in `gui/src/servers.ts`). The daemon never sees it: folders keep their full WebDAV URL. Switching from Settings only takes effect after the sign-in succeeds.
+
 **GUI pages:** SetupWizard (first start: account, desktop-client import, view mode), Dashboard, Settings, Folders, FolderDetail, AccountSetup, LegacyImport (desktop-client import, a wizard step), SpacePicker (remote WebDAV browser), FolderPicker, LocalFolderPicker
 
 ## Project Rules

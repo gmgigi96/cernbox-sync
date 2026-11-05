@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { DEFAULT_SERVER_URL } from "../servers";
 
 /**
  * "simple"   — Nextcloud-style list of sync connections; add/modify only.
@@ -10,6 +11,9 @@ export type ViewMode = "simple" | "advanced";
 export interface UiState {
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
+  /** CERNBox server the GUI signs in to and browses. Folders keep their own full URL. */
+  serverUrl: string;
+  setServerUrl: (url: string) => void;
 }
 
 /** localStorage key holding the persisted GUI preferences. */
@@ -22,6 +26,8 @@ export const useUiStore = create<UiState>()(
     (set) => ({
       viewMode: "simple",
       setViewMode: (viewMode) => set({ viewMode }),
+      serverUrl: DEFAULT_SERVER_URL,
+      setServerUrl: (serverUrl) => set({ serverUrl }),
     }),
     { name: UI_STORAGE_KEY },
   ),

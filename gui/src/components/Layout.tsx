@@ -34,6 +34,7 @@ export function Layout({ serverUrl, page, onNavigate, onAddFolder, children }: L
   return (
     <div style={styles.root}>
       <Sidebar
+        serverUrl={serverUrl}
         page={page}
         onNavigate={onNavigate}
         onAddFolder={onAddFolder}

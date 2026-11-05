@@ -73,7 +73,7 @@ script:
 ./dev/scripts/loginflow.sh grant http://localhost/index.php/login/v2/flow/<token>
 ```
 
-In the GUI (`make gui-dev`, which uses `VITE_SERVER_URL=http://localhost`),
+In the GUI (`make gui-dev`, whose default server is `VITE_SERVER_URL=http://localhost`),
 click **Sign in with browser**, then sign in and grant access on the page that
 opens in the browser (or grant the URL shown by the app with the script).
 

@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { AlertCircle, ArrowRight, Copy, ExternalLink, Check } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ipc } from "../ipc";
+import { ServerSelector } from "../components/ServerSelector";
+import { serverName } from "../servers";
+import type { Folder } from "../types";
 
 interface AccountSetupProps {
   /** CERNBox server the login flow runs against. */
@@ -12,8 +15,14 @@ interface AccountSetupProps {
    * The account is chosen in the browser, so this is only shown as a hint.
    */
   suggestedUsername?: string;
-  /** Rendered inside the setup wizard, which provides the window frame. */
+  /** Rendered inside a page, which provides the window frame. */
   embedded?: boolean;
+  /** Lets the user pick another server before signing in. */
+  onServerChange?: (url: string) => void;
+  /** Registered folders, for the warning of the server selector. */
+  folders?: Folder[];
+  /** Offers to leave the page without signing in. */
+  onCancel?: () => void;
 }
 
 /** Delay between two polls; the server also holds each poll for a few seconds. */
@@ -31,7 +40,7 @@ type State =
  * grants access on the CERNBox web page and the server hands out an app
  * password, which the backend stores in the daemon. No password is typed here.
  */
-export function AccountSetup({ serverUrl, onDone, suggestedUsername, embedded }: AccountSetupProps) {
+export function AccountSetup({ serverUrl, onDone, suggestedUsername, embedded, onServerChange, folders, onCancel }: AccountSetupProps) {
   const [state, setState] = useState<State>({ step: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -128,7 +137,7 @@ export function AccountSetup({ serverUrl, onDone, suggestedUsername, embedded }:
         {state.step !== "waiting" ? (
           <>
             <p style={styles.subtitle}>
-              Sign in to CERNBox in your browser and grant access to this computer.
+              Sign in to {serverName(serverUrl)} in your browser and grant access to this computer.
               <br />
               Your password is never stored by CERNBox Sync.
             </p>
@@ -150,6 +159,21 @@ export function AccountSetup({ serverUrl, onDone, suggestedUsername, embedded }:
               {state.step === "starting" ? "Connecting…" : "Sign in with browser"}
               {state.step !== "starting" && <ArrowRight size={15} strokeWidth={1.5} />}
             </button>
+            {onCancel && (
+              <button type="button" className="btn-ghost" style={styles.cancelBtn} onClick={onCancel}>
+                Cancel
+              </button>
+            )}
+            {onServerChange && state.step === "idle" && (
+              <div style={styles.server}>
+                <ServerSelector
+                  serverUrl={serverUrl}
+                  folders={folders ?? []}
+                  confirmLabel="Use this server"
+                  onSelect={onServerChange}
+                />
+              </div>
+            )}
           </>
         ) : (
           <>
@@ -296,5 +320,12 @@ const styles: Record<string, React.CSSProperties> = {
     width: "100%",
     justifyContent: "center",
     gap: "0.5rem",
+  },
+  cancelBtn: {
+    marginTop: "0.5rem",
+  },
+  server: {
+    width: "100%",
+    marginTop: "1rem",
   },
 };
