@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect a client — reva dev</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f4f5f7; color: #1d1f23; margin: 0; }
+  main { max-width: 380px; margin: 10vh auto; background: #fff; border-radius: 8px;
+         padding: 24px 28px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  h1 { font-size: 1.2rem; margin: 0 0 16px; }
+  label { display: block; font-size: .85rem; margin: 12px 0 4px; }
+  input { width: 100%; box-sizing: border-box; padding: 8px; font-size: 1rem;
+          border: 1px solid #c4c7cc; border-radius: 4px; }
+  .buttons { display: flex; gap: 8px; margin-top: 20px; }
+  button { flex: 1; padding: 9px; font-size: 1rem; border-radius: 4px; cursor: pointer;
+           border: 1px solid #0b5cad; background: #0b5cad; color: #fff; }
+  button.secondary { background: #fff; color: #0b5cad; }
+  button:disabled { opacity: .5; cursor: default; }
+  .error { color: #b3261e; font-size: .9rem; margin-top: 12px; }
+  .muted { color: #5f636b; font-size: .85rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <!-- Step 1: sign in as a demo user (see dev/README.md). -->
+  <form id="login">
+    <h1>Sign in to connect a client</h1>
+    <label for="user">Username</label>
+    <input id="user" autocomplete="username" value="einstein" required>
+    <label for="pass">Password</label>
+    <input id="pass" type="password" autocomplete="current-password" required autofocus>
+    <div class="buttons"><button type="submit">Sign in</button></div>
+    <p class="error" id="login-error" hidden></p>
+  </form>
+
+  <!-- Step 2: grant or deny the flow. -->
+  <section id="consent" hidden>
+    <h1>Grant access?</h1>
+    <p><strong id="client"></strong> wants to access the account of <strong id="account"></strong>.</p>
+    <p class="muted">The client will get an app password, which you can revoke later.</p>
+    <div class="buttons">
+      <button id="deny" class="secondary">Deny</button>
+      <button id="grant">Grant access</button>
+    </div>
+    <p class="error" id="consent-error" hidden></p>
+  </section>
+
+  <!-- Step 3: outcome. -->
+  <section id="done" hidden>
+    <h1 id="done-title"></h1>
+    <p id="done-text"></p>
+  </section>
+</main>
+<script>
+  const token = location.pathname.replace(/\/+$/, "").split("/").pop();
+  const api = "/ocs/v2.php/cloud/user/login-flow/" + encodeURIComponent(token);
+  let auth = "";
+
+  const $ = (id) => document.getElementById(id);
+  function show(id) {
+    for (const s of ["login", "consent", "done"]) $(s).hidden = s !== id;
+  }
+  function error(id, msg) {
+    $(id).textContent = msg;
+    $(id).hidden = !msg;
+  }
+  function finish(title, text) {
+    $("done-title").textContent = title;
+    $("done-text").textContent = text;
+    show("done");
+  }
+  function call(method, path = "") {
+    return fetch(api + path, {
+      method,
+      headers: { Authorization: auth, "Content-Type": "application/json" },
+      body: method === "POST" ? "{}" : undefined,
+    });
+  }
+
+  function showStatus(info) {
+    switch (info.status) {
+      case "pending":
+        $("client").textContent = info.client || "A client";
+        $("account").textContent = info.user;
+        show("consent");
+        break;
+      case "granted":
+        finish("Already granted", "This client has already been connected. You can close this window.");
+        break;
+      case "denied":
+        finish("Access denied", "This request has been denied. You can close this window.");
+        break;
+      default:
+        finish("Request no longer valid", "Start the login again from the client.");
+    }
+  }
+
+  $("login").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    error("login-error", "");
+    auth = "Basic " + btoa($("user").value + ":" + $("pass").value);
+    const resp = await call("GET");
+    if (resp.status === 401) return error("login-error", "Wrong username or password.");
+    if (resp.status === 404) return finish("Request not found", "This login request is unknown or has expired. Start the login again from the client.");
+    if (!resp.ok) return error("login-error", "Unexpected response from the server (HTTP " + resp.status + ").");
+    showStatus(await resp.json());
+  });
+
+  async function decide(action) {
+    error("consent-error", "");
+    $("grant").disabled = $("deny").disabled = true;
+    const resp = await call("POST", "/" + action);
+    $("grant").disabled = $("deny").disabled = false;
+    if (!resp.ok) return error("consent-error", "Could not " + action + " access (HTTP " + resp.status + ").");
+    if (action === "grant") {
+      finish("Access granted", "The client is now connected. You can close this window and go back to it.");
+    } else {
+      finish("Access denied", "The client has not been connected. You can close this window.");
+    }
+  }
+  $("grant").addEventListener("click", () => decide("grant"));
+  $("deny").addEventListener("click", () => decide("deny"));
+</script>
+</body>
+</html>

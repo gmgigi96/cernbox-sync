@@ -33,3 +33,13 @@ services:
     depends_on:
       eos-storage:
         condition: service_healthy
+  # Stand-in for the web UI's login-flow page (grant/deny), see dev/webui.
+  webui:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./webui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./webui/index.html:/usr/share/nginx/html/index.html:ro
+    depends_on:
+      - revad
