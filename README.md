@@ -112,7 +112,7 @@ Each sync cycle runs five phases:
 
 ### Conflict resolution
 
-When both sides have changed since the last sync, the local file is renamed to `<name>.conflict-YYYYMMDD-HHMMSS<ext>` and the server version is downloaded in its place (server wins).
+When both sides have changed since the last sync, the local file is renamed to `<name>.conflict-YYYYMMDD-HHMMSS<ext>` and the server version is downloaded in its place (server wins). The same happens when a file was created on both sides with different contents; identical files are left alone. Uploads are conditional (`If-Match` / `If-None-Match`), so a change made on the server after the scan is treated as a conflict instead of being overwritten.
 
 ## Settings
 

@@ -69,6 +69,8 @@ type fakeWebDAV struct {
 	// onGet, when set, runs (without the server lock held) before every GET
 	// is served. It may mutate the server through the helper methods.
 	onGet func(path string)
+	// onPut is the same as onGet, for every PUT.
+	onPut func(path string)
 }
 
 func newFakeWebDAV() *fakeWebDAV {
@@ -480,9 +482,22 @@ func (f *fakeWebDAV) serveTruncatedGet(w http.ResponseWriter, r *http.Request, r
 func (f *fakeWebDAV) servePut(w http.ResponseWriter, r *http.Request, relPath string) {
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
+	hook := f.onPut
+	f.mu.Unlock()
+	if hook != nil {
+		hook(relPath)
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
+	old := f.files[relPath]
+	ifMatch := r.Header.Get("If-Match")
+	if (r.Header.Get("If-None-Match") == "*" && old != nil) ||
+		(ifMatch != "" && (old == nil || ifMatch != `"`+old.etag+`"`)) {
+		http.Error(w, "precondition failed", http.StatusPreconditionFailed)
+		return
+	}
 	fid := "fid-" + strings.ReplaceAll(relPath, "/", "-")
-	if old := f.files[relPath]; old != nil {
+	if old != nil {
 		fid = old.fileID
 	}
 	f.files[relPath] = &fakeFile{
@@ -1153,18 +1168,258 @@ func TestSync_IdempotentWithTree(t *testing.T) {
 	}
 }
 
-// Both remote and local have a file; DB is empty (first-ever sync).
-// Expected: local wins — file is uploaded (PUT).
-func TestSync_FirstRun_LocalWins(t *testing.T) {
+// assertServerWon checks the outcome of a conflict on path: the server keeps
+// its content, the local path has it too, and the local version survives as
+// the only conflict copy, recorded in the DB and never uploaded.
+func (e *testEnv) assertServerWon(path, serverContent, localContent string) {
+	e.t.Helper()
+	if contains(e.dav.puts, path) {
+		e.t.Fatalf("%s was uploaded over the server version", path)
+	}
+	if got, _ := e.dav.contentOf(path); got != serverContent {
+		e.t.Fatalf("server %s = %q, want %q", path, got, serverContent)
+	}
+	if got := e.readLocal(path); got != serverContent {
+		e.t.Fatalf("local %s = %q, want %q", path, got, serverContent)
+	}
+	conflicts := e.anyConflict()
+	if len(conflicts) != 1 {
+		e.t.Fatalf("conflict copies = %v, want exactly one", conflicts)
+	}
+	if got := e.readLocal(conflicts[0]); got != localContent {
+		e.t.Fatalf("conflict copy = %q, want %q", got, localContent)
+	}
+	if n := len(e.dbConflicts()); n != 1 {
+		e.t.Fatalf("conflict DB entries = %d, want 1", n)
+	}
+
+	e.dav.resetSideEffects()
+	e.run()
+	e.assertNoActions("cycle after the conflict")
+	if n := len(e.anyConflict()); n != 1 {
+		e.t.Fatalf("conflict copies after the next cycle = %d, want 1", n)
+	}
+}
+
+// Both remote and local created a file; DB is empty. Contents differ.
+// Expected: server wins, the local version is kept as a conflict copy.
+func TestSync_BothCreated_ServerWins(t *testing.T) {
 	env := setup(t)
 	env.dav.addFile("data.csv", "remote version", "etag-remote", time.Now())
-	env.writeLocal("data.csv", "local version")
-	// DB intentionally empty.
+	env.writeLocal("data.csv", "local")
 
 	env.run()
 
-	if !contains(env.dav.puts, "data.csv") {
-		t.Fatalf("local should win on first run; puts=%v", env.dav.puts)
+	env.assertServerWon("data.csv", "remote version", "local")
+}
+
+// Sizes alone must not be taken for equal contents.
+func TestSync_BothCreated_SameSizeDifferentContent(t *testing.T) {
+	env := setup(t)
+	env.dav.addFile("data.csv", "remote", "etag-remote", time.Now())
+	env.writeLocal("data.csv", "local!")
+
+	env.run()
+
+	env.assertServerWon("data.csv", "remote", "local!")
+}
+
+// Both sides have the same content; DB is empty (e.g. a folder set up again
+// over existing data). Expected: only recorded, nothing else happens.
+func TestSync_BothCreated_IdenticalContent(t *testing.T) {
+	env := setup(t)
+	env.dav.addFile("data.csv", "same", "etag-remote", time.Now().Add(-time.Hour))
+	env.writeLocal("data.csv", "same")
+
+	env.run()
+
+	env.assertNoActions("identical content")
+	if conf := env.anyConflict(); len(conf) != 0 {
+		t.Fatalf("unexpected conflict copies: %v", conf)
+	}
+	if e := env.dbGet("data.csv"); e == nil || e.ETag != "etag-remote" {
+		t.Fatalf("DB entry = %+v, want the server etag", e)
+	}
+	env.dav.resetSideEffects()
+	env.run()
+	env.assertNoActions("next cycle")
+	if len(env.dav.gets) != 0 {
+		t.Fatalf("file fetched again: %v", env.dav.gets)
+	}
+}
+
+// In a read-only location the same rule applies: nothing is sent to the server
+// and a different local file is not lost, even with the same size.
+func TestSync_BothCreated_ReadOnly(t *testing.T) {
+	env := setup(t)
+	env.dav.addFile("data.csv", "remote", "etag-remote", time.Now())
+	env.dav.mu.Lock()
+	env.dav.files["data.csv"].perms = "R"
+	env.dav.mu.Unlock()
+	env.writeLocal("data.csv", "local!")
+
+	env.run()
+
+	env.assertServerWon("data.csv", "remote", "local!")
+}
+
+// An empty server file can be an upload in progress (EOS lists it like that)
+// and has no content to lose: the local file must not become a conflict copy.
+func TestSync_BothCreated_EmptyOnServer(t *testing.T) {
+	env := setup(t)
+	env.dav.addFile("data.csv", "", "etag-remote", time.Now())
+	env.writeLocal("data.csv", "local")
+
+	env.run()
+
+	if conf := env.anyConflict(); len(conf) != 0 {
+		t.Fatalf("unexpected conflict copies: %v", conf)
+	}
+	if got, _ := env.dav.contentOf("data.csv"); got != "local" {
+		t.Fatalf("server data.csv = %q", got)
+	}
+	env.dav.resetSideEffects()
+	env.run()
+	env.assertNoActions("next cycle")
+}
+
+// In a read-only location the upload is not possible, and the local file must
+// not be replaced by the empty one without a copy.
+func TestSync_BothCreated_EmptyOnServer_ReadOnly(t *testing.T) {
+	env := setup(t)
+	env.dav.addFile("data.csv", "", "etag-remote", time.Now())
+	env.dav.mu.Lock()
+	env.dav.files["data.csv"].perms = "R"
+	env.dav.mu.Unlock()
+	env.writeLocal("data.csv", "local")
+
+	env.run()
+
+	env.assertServerWon("data.csv", "", "local")
+}
+
+// Two clients create the same new file: the one syncing last must not replace
+// the content of the first.
+func TestMultiClient_BothCreateSameFile(t *testing.T) {
+	dav, winner, loser := newSharedEnvs(t)
+	winner.writeLocal("TEST_FILE_ADDED_BOTH.dat", "content of winner")
+	loser.writeLocal("TEST_FILE_ADDED_BOTH.dat", "content of loser, longer")
+
+	winner.run()
+	dav.resetSideEffects()
+	loser.run()
+
+	loser.assertServerWon("TEST_FILE_ADDED_BOTH.dat", "content of winner", "content of loser, longer")
+
+	dav.resetSideEffects()
+	winner.run()
+	winner.assertNoActions("winner after the conflict")
+	if got := winner.readLocal("TEST_FILE_ADDED_BOTH.dat"); got != "content of winner" {
+		t.Fatalf("winner content = %q", got)
+	}
+}
+
+// onFirstPut runs change once, between the scan and the first PUT of a cycle.
+func (f *fakeWebDAV) onFirstPut(change func()) {
+	var once sync.Once
+	f.mu.Lock()
+	f.onPut = func(string) { once.Do(change) }
+	f.mu.Unlock()
+}
+
+// A new local file also appears on the server after the scan: the upload must
+// not replace it.
+func TestSync_Upload_CreatedOnServerAfterScan(t *testing.T) {
+	env := setup(t)
+	env.writeLocal("new.txt", "local")
+	env.dav.onFirstPut(func() { env.dav.addFile("new.txt", "from another client", "etag-other", time.Now()) })
+
+	env.run()
+
+	env.assertServerWon("new.txt", "from another client", "local")
+}
+
+// A locally edited file also changes on the server after the scan: the upload
+// must not replace that change.
+func TestSync_Upload_ChangedOnServerAfterScan(t *testing.T) {
+	env := setup(t)
+	base := time.Now().Add(-time.Hour)
+	env.dav.addFile("doc.txt", "base", "etag-base", base)
+	env.writeLocalAt("doc.txt", "base", base)
+	env.run()
+
+	env.writeLocal("doc.txt", "local edit")
+	env.dav.onFirstPut(func() { env.dav.setContent("doc.txt", []byte("edit from another client")) })
+	env.dav.resetSideEffects()
+
+	env.run()
+
+	env.assertServerWon("doc.txt", "edit from another client", "local edit")
+}
+
+// An upload refused because of another upload in progress is left to the next
+// cycle: the result of that upload is not known yet.
+func TestSync_Upload_RefusedByUploadInProgress(t *testing.T) {
+	env := setup(t)
+	env.writeLocal("new.txt", "local")
+	env.dav.onFirstPut(func() { env.dav.addFile("new.txt", "", "etag-other", time.Now()) })
+
+	if err := env.runErr(); err == nil {
+		t.Fatal("expected the refused upload to be reported")
+	}
+	if conf := env.anyConflict(); len(conf) != 0 {
+		t.Fatalf("unexpected conflict copies: %v", conf)
+	}
+	if got := env.readLocal("new.txt"); got != "local" {
+		t.Fatalf("local new.txt = %q", got)
+	}
+
+	env.dav.setContent("new.txt", []byte("from another client"))
+	env.dav.resetSideEffects()
+	env.run()
+
+	env.assertServerWon("new.txt", "from another client", "local")
+}
+
+// A refused upload of what the server already has (e.g. a retried PUT whose
+// first attempt went through) is no conflict.
+func TestSync_Upload_RefusedButIdentical(t *testing.T) {
+	env := setup(t)
+	env.writeLocal("new.txt", "same")
+	env.dav.onFirstPut(func() { env.dav.addFile("new.txt", "same", "etag-other", time.Now()) })
+
+	env.run()
+
+	if conf := env.anyConflict(); len(conf) != 0 {
+		t.Fatalf("unexpected conflict copies: %v", conf)
+	}
+	if e := env.dbGet("new.txt"); e == nil || e.ETag != "etag-other" {
+		t.Fatalf("DB entry = %+v, want the server etag", e)
+	}
+	env.dav.resetSideEffects()
+	env.run()
+	env.assertNoActions("next cycle")
+}
+
+// A file deleted on the server after the scan fails the If-Match; the local
+// edit is kept and settled by the next cycle.
+func TestSync_Upload_DeletedOnServerAfterScan(t *testing.T) {
+	env := setup(t)
+	base := time.Now().Add(-time.Hour)
+	env.dav.addFile("doc.txt", "base", "etag-base", base)
+	env.writeLocalAt("doc.txt", "base", base)
+	env.run()
+
+	env.writeLocal("doc.txt", "local edit")
+	env.dav.onFirstPut(func() { env.dav.remove("doc.txt") })
+
+	if err := env.runErr(); err == nil {
+		t.Fatal("expected the refused upload to be reported")
+	}
+	env.run()
+
+	if !env.contentSomewhere("local edit") {
+		t.Fatal("local edit lost")
 	}
 }
 

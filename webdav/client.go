@@ -221,6 +221,9 @@ func (c *Client) Propfind(remotePath string, depth int) ([]Resource, error) {
 // ErrUnauthorized matches (via errors.Is) a StatusError with code 401.
 var ErrUnauthorized = errors.New("webdav: unauthorized")
 
+// ErrPreconditionFailed matches (via errors.Is) a StatusError with code 412.
+var ErrPreconditionFailed = errors.New("webdav: precondition failed")
+
 // StatusError is returned when the server answers with an unexpected status.
 type StatusError struct {
 	Method string
@@ -229,9 +232,16 @@ type StatusError struct {
 	Body   string
 }
 
-// Is reports whether e matches target; a 401 matches ErrUnauthorized.
+// Is reports whether e matches target; a 401 matches ErrUnauthorized and a 412
+// matches ErrPreconditionFailed.
 func (e *StatusError) Is(target error) bool {
-	return target == ErrUnauthorized && e.Code == http.StatusUnauthorized
+	switch target {
+	case ErrUnauthorized:
+		return e.Code == http.StatusUnauthorized
+	case ErrPreconditionFailed:
+		return e.Code == http.StatusPreconditionFailed
+	}
+	return false
 }
 
 func (e *StatusError) Error() string {
@@ -303,10 +313,28 @@ func (c *Client) Put(remotePath string, content io.Reader, size int64) error {
 	return nil
 }
 
+// PutCondition makes an upload fail with ErrPreconditionFailed instead of
+// overwriting a change made on the server. The zero value is unconditional.
+type PutCondition struct {
+	// ETag, when set, only lets the upload replace this version (If-Match).
+	ETag string
+	// Absent only lets the upload create a new file (If-None-Match: *).
+	Absent bool
+}
+
+func (p PutCondition) apply(h http.Header) {
+	if p.ETag != "" {
+		h.Set("If-Match", `"`+p.ETag+`"`)
+	}
+	if p.Absent {
+		h.Set("If-None-Match", "*")
+	}
+}
+
 // PutFile uploads the local file to remotePath. The file is reopened for each
 // attempt so the upload can be retried; wrap (optional) decorates the reader
 // on every attempt, e.g. for rate limiting or progress reporting.
-func (c *Client) PutFile(remotePath, localPath string, wrap func(io.Reader) io.Reader) error {
+func (c *Client) PutFile(remotePath, localPath string, cond PutCondition, wrap func(io.Reader) io.Reader) error {
 	fi, err := os.Stat(localPath)
 	if err != nil {
 		return err
@@ -342,6 +370,7 @@ func (c *Client) PutFile(remotePath, localPath string, wrap func(io.Reader) io.R
 		_ = body.Close()
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
+	cond.apply(req.Header)
 	resp, err := c.do(req)
 	if err != nil {
 		return err
